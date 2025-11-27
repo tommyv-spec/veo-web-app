@@ -1282,17 +1282,33 @@ async def get_api_keys_status():
     """
     status = api_keys_config.get_status()
     
-    # Add masked preview of keys (first 8 chars + last 4)
+    # Add masked preview of keys with block status
     masked_keys = []
     for i, key in enumerate(api_keys_config.gemini_api_keys):
         if len(key) > 12:
             masked = f"{key[:8]}...{key[-4:]}"
         else:
             masked = "***"
+        
+        is_blocked = api_keys_config.is_key_blocked(i)
+        blocked_info = None
+        if is_blocked and i in api_keys_config.blocked_keys:
+            from datetime import datetime, timedelta
+            block_time = api_keys_config.blocked_keys[i]
+            unblock_time = block_time + timedelta(hours=api_keys_config.block_duration_hours)
+            remaining = unblock_time - datetime.now()
+            blocked_info = {
+                "blocked_at": block_time.isoformat(),
+                "unblocks_at": unblock_time.isoformat(),
+                "remaining_hours": round(max(0, remaining.total_seconds() / 3600), 1)
+            }
+        
         masked_keys.append({
-            "index": i,
+            "index": i + 1,
             "masked": masked,
-            "is_current": i == api_keys_config.current_key_index
+            "is_current": i == api_keys_config.current_key_index,
+            "is_blocked": is_blocked,
+            "blocked_info": blocked_info
         })
     
     return {
@@ -1300,18 +1316,64 @@ async def get_api_keys_status():
         "gemini_keys": masked_keys,
         "openai_masked": f"{api_keys_config.openai_api_key[:8]}...{api_keys_config.openai_api_key[-4:]}" if api_keys_config.openai_api_key else None,
         "config_file": ".env",
+        "block_duration_hours": api_keys_config.block_duration_hours,
         "instructions": "Add keys to .env file and restart server to update"
     }
 
 
+@app.post("/api/admin/keys/unblock/{key_index}")
+async def unblock_api_key(key_index: int):
+    """
+    Manually unblock a specific API key before the 12h timeout.
+    key_index is 1-based (1, 2, 3, etc.)
+    """
+    actual_index = key_index - 1  # Convert to 0-based
+    
+    if actual_index < 0 or actual_index >= len(api_keys_config.gemini_api_keys):
+        raise HTTPException(status_code=400, detail=f"Invalid key index. Must be 1-{len(api_keys_config.gemini_api_keys)}")
+    
+    if actual_index not in api_keys_config.blocked_keys:
+        return {
+            "success": True,
+            "message": f"Key {key_index} was not blocked",
+            "key_index": key_index
+        }
+    
+    del api_keys_config.blocked_keys[actual_index]
+    
+    return {
+        "success": True,
+        "message": f"Key {key_index} has been unblocked",
+        "key_index": key_index,
+        "available_keys": api_keys_config.get_available_key_count(),
+        "blocked_keys": len(api_keys_config.blocked_keys)
+    }
+
+
+@app.post("/api/admin/keys/unblock-all")
+async def unblock_all_api_keys():
+    """
+    Unblock all API keys at once.
+    """
+    blocked_count = len(api_keys_config.blocked_keys)
+    api_keys_config.blocked_keys.clear()
+    
+    return {
+        "success": True,
+        "message": f"Unblocked {blocked_count} keys",
+        "unblocked_count": blocked_count,
+        "available_keys": api_keys_config.get_available_key_count()
+    }
+
+
 @app.post("/api/admin/keys/rotate")
-async def rotate_api_key():
+async def rotate_api_key(block_current: bool = False):
     """Manually rotate to the next Gemini API key"""
     if not api_keys_config.gemini_api_keys:
         raise HTTPException(status_code=400, detail="No Gemini keys configured")
     
     old_index = api_keys_config.current_key_index
-    api_keys_config.rotate_key()
+    api_keys_config.rotate_key(block_current=block_current)
     new_index = api_keys_config.current_key_index
     
     return {

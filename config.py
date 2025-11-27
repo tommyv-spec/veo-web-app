@@ -252,27 +252,114 @@ class APIKeysConfig:
     rotate_keys_on_429: bool = True
     current_key_index: int = 0
     
+    # Key blocking - maps key index to block timestamp
+    blocked_keys: dict = field(default_factory=dict)
+    block_duration_hours: int = 12
+    
+    def is_key_blocked(self, key_index: int) -> bool:
+        """Check if a key is currently blocked"""
+        from datetime import datetime, timedelta
+        
+        if key_index not in self.blocked_keys:
+            return False
+        
+        block_time = self.blocked_keys[key_index]
+        unblock_time = block_time + timedelta(hours=self.block_duration_hours)
+        
+        if datetime.now() >= unblock_time:
+            # Block expired, remove it
+            del self.blocked_keys[key_index]
+            print(f"[APIKeys] ✅ Key {key_index + 1} unblocked (12h expired)", flush=True)
+            return False
+        
+        return True
+    
+    def block_key(self, key_index: int):
+        """Block a key for 12 hours after hitting 429"""
+        from datetime import datetime
+        
+        self.blocked_keys[key_index] = datetime.now()
+        key = self.gemini_api_keys[key_index] if key_index < len(self.gemini_api_keys) else "?"
+        key_suffix = key[-8:] if key else "?"
+        unblock_time = datetime.now().hour + self.block_duration_hours
+        print(f"[APIKeys] 🚫 Key {key_index + 1} (...{key_suffix}) BLOCKED for {self.block_duration_hours}h (429 quota exhausted)", flush=True)
+    
+    def get_available_key_count(self) -> int:
+        """Count how many keys are currently available (not blocked)"""
+        available = 0
+        for i in range(len(self.gemini_api_keys)):
+            if not self.is_key_blocked(i):
+                available += 1
+        return available
+    
     def get_current_gemini_key(self) -> Optional[str]:
-        """Get current Gemini API key"""
+        """Get current Gemini API key (skips blocked keys)"""
         if not self.gemini_api_keys:
             return None
         
         if self.current_key_index >= len(self.gemini_api_keys):
             self.current_key_index = 0
         
+        # If current key is blocked, find next available
+        if self.is_key_blocked(self.current_key_index):
+            self._find_next_available_key()
+        
+        # Check if we have any available keys
+        if self.get_available_key_count() == 0:
+            print(f"[APIKeys] ⚠️ ALL {len(self.gemini_api_keys)} keys are blocked!", flush=True)
+            return None
+        
         return self.gemini_api_keys[self.current_key_index]
     
-    def rotate_key(self):
-        """Rotate to next API key"""
-        if self.gemini_api_keys:
+    def _find_next_available_key(self):
+        """Find the next non-blocked key"""
+        start_index = self.current_key_index
+        attempts = 0
+        
+        while attempts < len(self.gemini_api_keys):
             self.current_key_index = (self.current_key_index + 1) % len(self.gemini_api_keys)
+            if not self.is_key_blocked(self.current_key_index):
+                return
+            attempts += 1
+        
+        # All keys blocked, reset to original
+        self.current_key_index = start_index
+    
+    def rotate_key(self, block_current: bool = False):
+        """Rotate to next API key, optionally blocking the current one"""
+        if not self.gemini_api_keys:
+            return
+        
+        if block_current:
+            self.block_key(self.current_key_index)
+        
+        self._find_next_available_key()
     
     def get_status(self) -> dict:
         """Get status of API keys for admin dashboard"""
+        blocked_info = []
+        from datetime import datetime, timedelta
+        
+        for idx, block_time in self.blocked_keys.items():
+            unblock_time = block_time + timedelta(hours=self.block_duration_hours)
+            remaining = unblock_time - datetime.now()
+            remaining_hours = max(0, remaining.total_seconds() / 3600)
+            key = self.gemini_api_keys[idx] if idx < len(self.gemini_api_keys) else "?"
+            blocked_info.append({
+                "index": idx + 1,
+                "key_suffix": key[-8:] if key else "?",
+                "blocked_at": block_time.isoformat(),
+                "unblocks_at": unblock_time.isoformat(),
+                "remaining_hours": round(remaining_hours, 1)
+            })
+        
         return {
             "gemini_keys_count": len(self.gemini_api_keys),
             "gemini_keys_configured": len(self.gemini_api_keys) > 0,
             "gemini_current_index": self.current_key_index,
+            "gemini_available_keys": self.get_available_key_count(),
+            "gemini_blocked_keys": len(self.blocked_keys),
+            "blocked_details": blocked_info,
             "openai_configured": self.openai_api_key is not None,
         }
     
@@ -281,7 +368,10 @@ class APIKeysConfig:
         errors = []
         
         if not self.get_current_gemini_key():
-            errors.append("No Gemini API keys configured. Add keys to .env file.")
+            if self.get_available_key_count() == 0 and len(self.gemini_api_keys) > 0:
+                errors.append(f"All {len(self.gemini_api_keys)} Gemini API keys are blocked (quota exhausted). Wait for unblock or add new keys.")
+            else:
+                errors.append("No Gemini API keys configured. Add keys to .env file.")
         
         return errors
 

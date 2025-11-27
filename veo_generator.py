@@ -542,14 +542,28 @@ class VeoGenerator:
             raise ValueError("No Gemini API key available")
         return genai.Client(api_key=api_key)
     
-    def _rotate_key(self):
-        """Rotate to next API key"""
+    def _rotate_key(self, block_current: bool = True):
+        """Rotate to next API key, blocking current one if specified"""
         old_index = self.api_keys.current_key_index
+        old_key = self.api_keys.get_current_gemini_key()
+        old_suffix = old_key[-8:] if old_key else "?"
         num_keys = len(self.api_keys.gemini_api_keys)
-        self.api_keys.rotate_key()
+        
+        # Block current key for 12 hours if requested
+        self.api_keys.rotate_key(block_current=block_current)
+        
         new_index = self.api_keys.current_key_index
-        print(f"[VeoGenerator] *** KEY ROTATION: {old_index} -> {new_index} (total {num_keys} keys) ***", flush=True)
-        print(f"[VeoGenerator] New key ends with: ...{self.api_keys.get_current_gemini_key()[-8:]}", flush=True)
+        new_key = self.api_keys.get_current_gemini_key()
+        
+        if new_key:
+            new_suffix = new_key[-8:]
+            available = self.api_keys.get_available_key_count()
+            blocked = len(self.api_keys.blocked_keys)
+            print(f"[VeoGenerator] 🔄 KEY ROTATION: {old_index+1}(...{old_suffix}) -> {new_index+1}(...{new_suffix})", flush=True)
+            print(f"[VeoGenerator]    Available: {available}/{num_keys} keys, Blocked: {blocked}", flush=True)
+        else:
+            print(f"[VeoGenerator] ⚠️ ALL KEYS BLOCKED! No available keys.", flush=True)
+        
         self.client = None  # Force new client
     
     def _emit_progress(
@@ -777,23 +791,31 @@ class VeoGenerator:
                         num_keys = len(self.api_keys.gemini_api_keys)
                         
                         if self.api_keys.rotate_keys_on_429:
-                            self._rotate_key()
+                            # Block current key for 12 hours and rotate to next
+                            self._rotate_key(block_current=True)
                         
-                        # Only wait if we've tried ALL keys once
-                        if num_keys > 1 and submit_attempt % num_keys == 0:
-                            wait_time = 5
+                        # Check if all keys are blocked
+                        available_keys = self.api_keys.get_available_key_count()
+                        if available_keys == 0:
                             self._emit_progress(
-                                clip_index, "rate_limited",
-                                f"All {num_keys} keys rate limited, waiting {wait_time}s before retry...",
-                                {"attempt": submit_attempt}
+                                clip_index, "all_keys_blocked",
+                                f"❌ All {num_keys} API keys are blocked (quota exhausted). Please wait or add new keys.",
+                                {"attempt": submit_attempt, "blocked_keys": num_keys}
                             )
-                            time.sleep(wait_time)
-                        else:
-                            self._emit_progress(
-                                clip_index, "rate_limited",
-                                f"Key {self.api_keys.current_key_index+1}/{num_keys} rate limited, trying next...",
-                                {"attempt": submit_attempt}
+                            error = VeoError(
+                                code=ErrorCode.RATE_LIMITED,
+                                message=f"All {num_keys} API keys are blocked for 12 hours (quota exhausted)",
+                                recoverable=False
                             )
+                            self._emit_error(error)
+                            break
+                        
+                        blocked_count = len(self.api_keys.blocked_keys)
+                        self._emit_progress(
+                            clip_index, "rate_limited",
+                            f"Key blocked, trying next... ({available_keys} available, {blocked_count} blocked)",
+                            {"attempt": submit_attempt, "available": available_keys, "blocked": blocked_count}
+                        )
                         
                         continue
                     
