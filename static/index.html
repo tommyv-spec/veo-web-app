@@ -165,8 +165,15 @@
         .section-step { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; background: var(--accent); color: white; border-radius: 50%; font-size: 10px; font-weight: 600; margin-right: 6px; }
         
         /* Info tooltip */
-        .info-icon { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; background: var(--bg-tertiary); color: var(--text-muted); border-radius: 50%; font-size: 10px; cursor: help; margin-left: 6px; }
+        .info-icon { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; background: var(--bg-tertiary); color: var(--text-muted); border-radius: 50%; font-size: 10px; cursor: help; margin-left: 6px; position: relative; }
         .info-icon:hover { background: var(--accent); color: white; }
+        .info-icon .tooltip { display: none; position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%); margin-bottom: 8px; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 10px 12px; width: 240px; z-index: 1000; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+        .info-icon:hover .tooltip { display: block; }
+        .info-icon .tooltip::after { content: ''; position: absolute; top: 100%; left: 50%; transform: translateX(-50%); border: 6px solid transparent; border-top-color: var(--border-color); }
+        .info-icon .tooltip h5 { font-size: 11px; font-weight: 600; color: var(--text-primary); margin-bottom: 6px; display: flex; align-items: center; gap: 6px; }
+        .info-icon .tooltip p { font-size: 10px; color: var(--text-secondary); line-height: 1.5; margin: 0; }
+        .info-icon .tooltip ul { font-size: 10px; color: var(--text-secondary); line-height: 1.5; margin: 6px 0 0 0; padding-left: 14px; }
+        .info-icon .tooltip li { margin-bottom: 3px; }
         
         .generation-progress { background: var(--bg-tertiary); border-radius: 6px; padding: 12px; margin-bottom: 10px; }
         .gen-status { font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
@@ -348,11 +355,37 @@
                             <div class="col"><label>Duration</label><select id="duration"><option value="8">8s</option><option value="6">6s</option><option value="4">4s</option></select></div>
                         </div>
                         <div class="toggle-row">
-                            <span class="toggle-label">Interpolation <span class="info-icon" title="Smooth motion between frames">?</span></span>
+                            <span class="toggle-label">Interpolation 
+                                <span class="info-icon">?
+                                    <div class="tooltip">
+                                        <h5>🎬 Interpolation</h5>
+                                        <p>Uses AI to generate smooth motion between start and end frames, creating fluid video transitions.</p>
+                                        <ul>
+                                            <li><strong>1 image + ON:</strong> Natural talking motion, subtle gestures</li>
+                                            <li><strong>Multiple + ON:</strong> Smooth transitions between scenes (1→2→3→1...)</li>
+                                            <li><strong>OFF:</strong> Static/minimal motion</li>
+                                        </ul>
+                                        <p style="margin-top:6px;color:var(--success);">✓ Recommended: Keep ON for best results</p>
+                                    </div>
+                                </span>
+                            </span>
                             <div class="toggle active" id="togInterp" data-value="true"></div>
                         </div>
                         <div class="toggle-row">
-                            <span class="toggle-label">AI Prompts <span class="info-icon" title="Let AI optimize visuals & voice">?</span></span>
+                            <span class="toggle-label">AI Prompts 
+                                <span class="info-icon">?
+                                    <div class="tooltip">
+                                        <h5>🤖 AI Prompts</h5>
+                                        <p>Let AI analyze your images and optimize the video generation prompts automatically.</p>
+                                        <ul>
+                                            <li><strong>Visual analysis:</strong> Detects camera angle, lighting, scene</li>
+                                            <li><strong>Voice profile:</strong> Matches voice to subject appearance</li>
+                                            <li><strong>Gestures:</strong> Suggests natural movements for dialogue</li>
+                                        </ul>
+                                        <p style="margin-top:6px;color:var(--text-muted);">Turn OFF to write your own custom prompt instead.</p>
+                                    </div>
+                                </span>
+                            </span>
                             <div class="toggle active" id="togAI" data-value="true"></div>
                         </div>
                     </div>
