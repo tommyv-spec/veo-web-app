@@ -1117,6 +1117,26 @@ class ScriptSplitRequest(BaseModel):
     script: str
     language: str = "English"
 
+# Speaking rates by language (words per second) for natural speech
+LANGUAGE_SPEAKING_RATES = {
+    "English": 2.5,      # ~150 wpm → 17-18 words per 7 sec
+    "Italian": 2.8,      # ~168 wpm → 19-20 words per 7 sec  
+    "Spanish": 2.8,      # ~168 wpm → 19-20 words per 7 sec
+    "French": 2.5,       # ~150 wpm → 17-18 words per 7 sec
+    "German": 2.2,       # ~132 wpm → 15-16 words per 7 sec
+    "Portuguese": 2.6,   # ~156 wpm → 18-19 words per 7 sec
+    "Dutch": 2.3,        # ~138 wpm → 16-17 words per 7 sec
+    "Polish": 2.4,       # ~144 wpm → 17 words per 7 sec
+    "Russian": 2.3,      # ~138 wpm → 16-17 words per 7 sec
+    "Japanese": 4.0,     # ~240 morae/min → 28 chars per 7 sec
+    "Chinese": 3.5,      # ~210 chars/min → 24-25 chars per 7 sec
+    "Korean": 3.5,       # Similar to Chinese
+    "Arabic": 2.5,       # ~150 wpm → 17-18 words per 7 sec
+    "Hindi": 2.6,        # ~156 wpm → 18-19 words per 7 sec
+}
+
+TARGET_DURATION_SECONDS = 7
+
 @app.post("/api/split-script")
 async def split_script(request: ScriptSplitRequest):
     """
@@ -1129,27 +1149,40 @@ async def split_script(request: ScriptSplitRequest):
     if not openai_key:
         raise HTTPException(status_code=400, detail="OpenAI API key not configured")
     
+    # Get language-specific rate
+    words_per_sec = LANGUAGE_SPEAKING_RATES.get(request.language, 2.5)
+    target_words = int(words_per_sec * TARGET_DURATION_SECONDS)
+    word_range_min = target_words - 3
+    word_range_max = target_words + 3
+    
     try:
         from openai import OpenAI
         client = OpenAI(api_key=openai_key)
         
         prompt = f"""Split this script into individual dialogue lines for video clips.
 
-RULES:
-1. Each line should be speakable in approximately 6-8 seconds (roughly 15-25 words)
-2. Keep natural sentence boundaries - don't cut mid-sentence
-3. Preserve the original meaning and flow
-4. Each line should be a complete thought when possible
-5. The script is in {request.language} - preserve the original language exactly
+CRITICAL RULES:
+1. TARGET DURATION: Each line must be speakable in approximately {TARGET_DURATION_SECONDS} seconds
+2. For {request.language}, this means each line should be {word_range_min}-{word_range_max} words (target: {target_words} words)
+3. NEVER split a line shorter than {word_range_min} words unless it's the end of the script
+4. Combine short sentences together to reach the target word count
+5. Keep natural sentence/phrase boundaries when possible
+6. Preserve the original meaning and flow
+7. The script is in {request.language} - preserve the original language exactly, do NOT translate
 
-SCRIPT:
+EXAMPLE for {request.language} (~{target_words} words per line):
+If input is: "Short sentence. Another short one. And a third."
+Output should combine them: ["Short sentence. Another short one. And a third."]
+NOT split them into 3 separate short lines.
+
+SCRIPT TO SPLIT:
 {request.script}
 
 OUTPUT FORMAT:
-Return ONLY a JSON array of strings, each string being one dialogue line.
-Example: ["First line of dialogue here.", "Second line continues the thought.", "Third line wraps up."]
+Return ONLY a JSON array of strings. Each string should be {word_range_min}-{word_range_max} words.
+Example: ["First complete thought with enough words to fill seven seconds of speaking time.", "Second thought continues with similar length to maintain consistent timing."]
 
-Return ONLY the JSON array, no explanation."""
+Return ONLY the JSON array, no explanation or markdown."""
 
         response = client.chat.completions.create(
             model="gpt-4o-mini",
@@ -1172,17 +1205,19 @@ Return ONLY the JSON array, no explanation."""
         if not isinstance(lines, list) or len(lines) == 0:
             raise ValueError("Invalid response format")
         
-        # Calculate average duration estimate (roughly 2.5 words per second)
+        # Calculate average duration estimate using language-specific rate
         total_words = sum(len(line.split()) for line in lines)
         avg_words = total_words / len(lines)
-        avg_duration = round(avg_words / 2.5, 1)
+        avg_duration = round(avg_words / words_per_sec, 1)
         
         return {
             "success": True,
             "lines": lines,
             "count": len(lines),
             "avg_duration": avg_duration,
-            "total_words": total_words
+            "total_words": total_words,
+            "target_words_per_line": target_words,
+            "language": request.language
         }
         
     except json.JSONDecodeError as e:
