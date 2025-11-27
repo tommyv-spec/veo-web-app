@@ -102,8 +102,11 @@ def describe_frame(image_path: str, openai_key: Optional[str] = None) -> str:
         system_msg = (
             "You are a cinematographer analyzing a video frame. "
             "Describe what you see in 60–80 words for a video generation model. "
-            "Focus on: camera angle, shot size, subject appearance, pose, "
-            "facial expression, lighting, and background elements."
+            "Focus on: camera angle, shot size, subject appearance (clothing, age, gender), pose, "
+            "facial expression, lighting, and background elements. "
+            "IMPORTANT: If there is text visible (signs, slides, screens), describe it as 'text' or 'slide with text' "
+            "but do NOT mention what language the text is in. The language of visible text is irrelevant - "
+            "only describe the visual composition."
         )
         
         resp = client.chat.completions.create(
@@ -113,7 +116,7 @@ def describe_frame(image_path: str, openai_key: Optional[str] = None) -> str:
                 {
                     "role": "user",
                     "content": [
-                        {"type": "text", "text": "Describe this frame."},
+                        {"type": "text", "text": "Describe this frame visually. Do not mention what language any visible text is in."},
                         {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
                     ],
                 },
@@ -147,6 +150,7 @@ def generate_voice_profile(
         system_msg = (
             f"You are a voice casting director. Define voice characteristics for a person who will speak {language}.\n\n"
             f"CRITICAL: The voice MUST be a native {language} speaker with authentic {language} accent and pronunciation.\n"
+            f"IMPORTANT: Ignore any text visible in the scene (signs, slides, screens) - the spoken language is {language} regardless of what text appears in the image.\n"
             f"Focus on: gender, age range, voice quality, native {language} accent, pitch, tempo.\n\n"
             f"OUTPUT FORMAT:\nVOICE_PROFILE:\n<2-3 sentences describing the voice as a native {language} speaker>\n"
         )
@@ -155,7 +159,7 @@ def generate_voice_profile(
             model=OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system_msg},
-                {"role": "user", "content": f"FRAME: {frame_description}\nLANGUAGE: {language}\nThe speaker must sound like a native {language} speaker."},
+                {"role": "user", "content": f"FRAME: {frame_description}\nSPOKEN LANGUAGE (not text in image): {language}\nThe speaker must sound like a native {language} speaker. Any text visible in the scene does NOT affect the spoken language."},
             ],
             temperature=0.3,
             max_tokens=250,
@@ -330,14 +334,18 @@ def build_prompt(
     
     # Build JSON payload
     prompt_payload = {
-        "audio_language": f"CRITICAL: All speech must be in {language} with native {language} accent and pronunciation.",
+        "audio_language": (
+            f"CRITICAL AUDIO INSTRUCTION: The speaker MUST speak in {language} with a native {language} accent. "
+            f"IGNORE any text visible in the image - the SPOKEN language must be {language} regardless of any on-screen text. "
+            f"The voice must sound like a native {language} speaker, NOT influenced by any foreign text visible in the scene."
+        ),
         "shot": {
             "description": visual_prompt,
         },
         "subject": {
             "description": "Match input frames.",
             "spoken_language": language,
-            "accent": f"Native {language} accent",
+            "accent": f"Native {language} accent - NOT influenced by any text visible in image",
         },
         "scene": {
             "start_frame_description": start_desc,
@@ -349,10 +357,11 @@ def build_prompt(
             "performance_direction": performance,
         },
         "audio": {
-            "language_requirement": f"The speaker must use {language} language with authentic native {language} pronunciation.",
+            "IMPORTANT": f"The speaker's voice must be in {language} only. Any text visible in the image (signs, slides, screens) should NOT affect the spoken language.",
+            "language_requirement": f"The speaker MUST use {language} language with authentic native {language} pronunciation.",
             "dialogue": {
                 "language": language,
-                "accent": f"Native {language} speaker",
+                "accent": f"Native {language} speaker with authentic {language} pronunciation",
                 "content": dialogue_line,
                 "delivery_notes": performance,
                 "voice_profile": voice_profile,
@@ -365,6 +374,7 @@ def build_prompt(
         },
         "visual_rules": {
             "clean_frame_policy": NO_TEXT_INSTRUCTION,
+            "text_in_image_note": "Any text visible in the source image should be kept visually but must NOT influence the spoken audio language.",
         },
         "technical_specifications": {
             "duration_seconds": float(config.duration.value if hasattr(config.duration, 'value') else config.duration),
