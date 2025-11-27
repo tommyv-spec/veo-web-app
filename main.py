@@ -1111,6 +1111,88 @@ async def download_output(job_id: str, filename: str, db: Session = Depends(get_
     )
 
 
+# ============ Script Splitting ============
+
+class ScriptSplitRequest(BaseModel):
+    script: str
+    language: str = "English"
+
+@app.post("/api/split-script")
+async def split_script(request: ScriptSplitRequest):
+    """
+    Split a full script into ~7 second dialogue lines using OpenAI.
+    """
+    import os
+    
+    # Get OpenAI API key
+    openai_key = os.environ.get("OPENAI_API_KEY")
+    if not openai_key:
+        raise HTTPException(status_code=400, detail="OpenAI API key not configured")
+    
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=openai_key)
+        
+        prompt = f"""Split this script into individual dialogue lines for video clips.
+
+RULES:
+1. Each line should be speakable in approximately 6-8 seconds (roughly 15-25 words)
+2. Keep natural sentence boundaries - don't cut mid-sentence
+3. Preserve the original meaning and flow
+4. Each line should be a complete thought when possible
+5. The script is in {request.language} - preserve the original language exactly
+
+SCRIPT:
+{request.script}
+
+OUTPUT FORMAT:
+Return ONLY a JSON array of strings, each string being one dialogue line.
+Example: ["First line of dialogue here.", "Second line continues the thought.", "Third line wraps up."]
+
+Return ONLY the JSON array, no explanation."""
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3,
+            max_tokens=4000
+        )
+        
+        result = response.choices[0].message.content.strip()
+        
+        # Parse JSON - handle potential markdown code blocks
+        if result.startswith("```"):
+            result = result.split("```")[1]
+            if result.startswith("json"):
+                result = result[4:]
+            result = result.strip()
+        
+        lines = json.loads(result)
+        
+        if not isinstance(lines, list) or len(lines) == 0:
+            raise ValueError("Invalid response format")
+        
+        # Calculate average duration estimate (roughly 2.5 words per second)
+        total_words = sum(len(line.split()) for line in lines)
+        avg_words = total_words / len(lines)
+        avg_duration = round(avg_words / 2.5, 1)
+        
+        return {
+            "success": True,
+            "lines": lines,
+            "count": len(lines),
+            "avg_duration": avg_duration,
+            "total_words": total_words
+        }
+        
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse AI response: {str(e)}")
+    except ImportError:
+        raise HTTPException(status_code=500, detail="OpenAI library not installed")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Script splitting failed: {str(e)}")
+
+
 # ============ Error Codes Reference ============
 
 @app.get("/api/error-codes")

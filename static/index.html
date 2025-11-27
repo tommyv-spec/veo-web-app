@@ -221,8 +221,12 @@
                         <div class="toggle-row"><span class="toggle-label">AI Prompts</span><div class="toggle active" id="togAI" data-value="true"></div></div>
                     </div>
                     <div class="config-box full">
-                        <label>Dialogue Lines (ID|Text)</label>
-                        <textarea id="dialogueInput" placeholder="1|First line here&#10;2|Second line&#10;3|Third line..."></textarea>
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                            <label style="margin:0;">Dialogue Lines (ID|Text)</label>
+                            <button class="btn btn-secondary btn-sm" onclick="autoSplitScript()" id="splitBtn" title="Paste full script and click to auto-split into ~7 second lines">✨ Auto-Split</button>
+                        </div>
+                        <textarea id="dialogueInput" placeholder="1|First line here&#10;2|Second line&#10;3|Third line...&#10;&#10;OR paste full script and click Auto-Split ✨"></textarea>
+                        <div id="splitStatus" style="font-size:10px;color:var(--text-muted);margin-top:4px;display:none;"></div>
                     </div>
                     <!-- Custom Prompt Section (shown when AI Prompts is OFF) -->
                     <div class="config-box full" id="customPromptSection" style="display:none;">
@@ -290,6 +294,64 @@ A realistic vertical video of a professional presenter speaking directly to came
             const isAIEnabled = this.dataset.value === 'true';
             document.getElementById('customPromptSection').style.display = isAIEnabled ? 'none' : 'block';
         });
+
+        // Auto-split script using OpenAI
+        async function autoSplitScript() {
+            const input = document.getElementById('dialogueInput');
+            const btn = document.getElementById('splitBtn');
+            const status = document.getElementById('splitStatus');
+            const script = input.value.trim();
+            
+            if (!script) {
+                alert('Paste your full script first, then click Auto-Split');
+                return;
+            }
+            
+            // Check if already in ID|Text format
+            const lines = script.split('\n').filter(l => l.trim());
+            const isFormatted = lines.every(l => /^\d+\|/.test(l.trim()));
+            if (isFormatted) {
+                alert('Script is already in ID|Text format!');
+                return;
+            }
+            
+            btn.disabled = true;
+            btn.textContent = '⏳ Splitting...';
+            status.style.display = 'block';
+            status.textContent = 'Analyzing script with AI...';
+            status.style.color = 'var(--accent)';
+            
+            try {
+                const language = document.getElementById('language').value;
+                const r = await fetch(`${API}/split-script`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ script, language })
+                });
+                
+                if (!r.ok) {
+                    const e = await r.json();
+                    throw new Error(e.detail || 'Failed to split script');
+                }
+                
+                const data = await r.json();
+                
+                // Format as ID|Text
+                const formatted = data.lines.map((line, i) => `${i + 1}|${line}`).join('\n');
+                input.value = formatted;
+                
+                status.textContent = `✓ Split into ${data.lines.length} clips (~${data.avg_duration}s each)`;
+                status.style.color = 'var(--success)';
+                
+            } catch (e) {
+                console.error('Auto-split error:', e);
+                status.textContent = '❌ ' + e.message;
+                status.style.color = 'var(--error)';
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '✨ Auto-Split';
+            }
+        }
 
         // Create job
         async function createJob(){
