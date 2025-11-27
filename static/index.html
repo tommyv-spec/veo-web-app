@@ -175,6 +175,23 @@
         .info-icon .tooltip ul { font-size: 10px; color: var(--text-secondary); line-height: 1.5; margin: 6px 0 0 0; padding-left: 14px; }
         .info-icon .tooltip li { margin-bottom: 3px; }
         
+        /* Line validation styles */
+        .line-validation { display: flex; flex-direction: column; gap: 4px; }
+        .line-check { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border-radius: 4px; font-size: 11px; }
+        .line-check.line-ok { background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.3); }
+        .line-check.line-short { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); }
+        .line-check.line-long { background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3); }
+        .line-check .line-num { font-weight: 600; min-width: 24px; }
+        .line-check .line-status { font-weight: 500; min-width: 70px; }
+        .line-check.line-ok .line-status { color: var(--success); }
+        .line-check.line-short .line-status { color: var(--error); }
+        .line-check.line-long .line-status { color: var(--warning); }
+        .line-check .line-info { color: var(--text-secondary); flex: 1; }
+        .line-check .line-preview { color: var(--text-muted); font-size: 10px; max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .validation-summary { font-size: 11px; padding: 6px 10px; border-radius: 4px; margin-bottom: 6px; }
+        .validation-summary.all-ok { background: rgba(16,185,129,0.15); color: var(--success); }
+        .validation-summary.has-issues { background: rgba(239,68,68,0.15); color: var(--error); }
+        
         .generation-progress { background: var(--bg-tertiary); border-radius: 6px; padding: 12px; margin-bottom: 10px; }
         .gen-status { font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
         .gen-bar { height: 6px; background: var(--bg-primary); border-radius: 3px; overflow: hidden; }
@@ -396,6 +413,7 @@
                         </div>
                         <textarea id="dialogueInput" placeholder="1|First line here&#10;2|Second line&#10;3|Third line...&#10;&#10;OR paste full script and click Auto-Split ✨"></textarea>
                         <div id="splitStatus" style="font-size:10px;color:var(--text-muted);margin-top:4px;display:none;"></div>
+                        <div id="lineValidation" style="margin-top:8px;display:none;"></div>
                         <div style="font-size:10px;color:var(--text-muted);margin-top:4px;">
                             <strong>💡 Tip:</strong> Paste your full script and click <strong>✨ Auto-Split</strong> to automatically split into ~7 second clips based on language.
                         </div>
@@ -580,8 +598,24 @@ A realistic vertical video of a professional presenter speaking directly to came
                 const formatted = data.lines.map((line, i) => `${i + 1}|${line}`).join('\n');
                 input.value = formatted;
                 
-                status.textContent = `✓ ${data.count} clips × ~${data.avg_duration}s (${language}, ~${data.target_words_per_line} words/clip)`;
+                // Calculate min/max durations from line_stats
+                let minDur = data.avg_duration, maxDur = data.avg_duration;
+                if (data.line_stats && data.line_stats.length > 0) {
+                    const durations = data.line_stats.map(s => s.duration_sec);
+                    minDur = Math.min(...durations);
+                    maxDur = Math.max(...durations);
+                }
+                
+                // Show detailed status
+                if (minDur === maxDur || data.count === 1) {
+                    status.textContent = `✓ ${data.count} clip${data.count > 1 ? 's' : ''} × ~${data.avg_duration}s each`;
+                } else {
+                    status.textContent = `✓ ${data.count} clips (${minDur}s - ${maxDur}s, avg ${data.avg_duration}s)`;
+                }
                 status.style.color = 'var(--success)';
+                
+                // Validate the generated lines
+                validateDialogueLines();
                 
             } catch (e) {
                 console.error('Auto-split error:', e);
@@ -592,6 +626,111 @@ A realistic vertical video of a professional presenter speaking directly to came
                 btn.textContent = '✨ Auto-Split';
             }
         }
+        
+        // Language-specific speaking rates (words per second)
+        const SPEAKING_RATES = {
+            "English": 2.5,
+            "Italian": 2.8,
+            "Spanish": 2.8,
+            "French": 2.5,
+            "German": 2.2,
+            "Portuguese": 2.6,
+            "Dutch": 2.3,
+            "Polish": 2.4,
+            "Russian": 2.3,
+            "Japanese": 4.0,
+            "Chinese": 3.5,
+            "Korean": 3.5,
+            "Arabic": 2.5,
+            "Hindi": 2.6
+        };
+        
+        const TARGET_DURATION = 7; // seconds
+        
+        function validateDialogueLines() {
+            const input = document.getElementById('dialogueInput').value.trim();
+            const container = document.getElementById('lineValidation');
+            const language = document.getElementById('language').value;
+            
+            // Check if input is in ID|Text format
+            const lines = input.split('\n').filter(l => l.trim());
+            const formattedLines = lines.filter(l => /^\d+\|/.test(l.trim()));
+            
+            // Only validate if we have formatted lines
+            if (formattedLines.length === 0) {
+                container.style.display = 'none';
+                return;
+            }
+            
+            const wordsPerSec = SPEAKING_RATES[language] || 2.5;
+            const targetWords = Math.round(wordsPerSec * TARGET_DURATION);
+            const minWords = Math.max(8, targetWords - 5);
+            const maxWords = targetWords + 8;
+            
+            let html = '';
+            let issues = 0;
+            let okCount = 0;
+            
+            formattedLines.forEach((line, idx) => {
+                const parts = line.split('|');
+                if (parts.length < 2) return;
+                
+                const lineNum = parts[0].trim();
+                const text = parts.slice(1).join('|').trim();
+                const wordCount = text.split(/\s+/).filter(w => w).length;
+                const duration = (wordCount / wordsPerSec).toFixed(1);
+                
+                let statusClass, statusText, statusIcon;
+                
+                if (wordCount < minWords) {
+                    statusClass = 'line-short';
+                    statusText = '⚠️ Too short';
+                    statusIcon = `Need ${minWords - wordCount}+ more words`;
+                    issues++;
+                } else if (wordCount > maxWords) {
+                    statusClass = 'line-long';
+                    statusText = '⚠️ Too long';
+                    statusIcon = `${wordCount - maxWords} words over`;
+                    issues++;
+                } else {
+                    statusClass = 'line-ok';
+                    statusText = '✓ OK';
+                    statusIcon = '';
+                    okCount++;
+                }
+                
+                const preview = text.length > 40 ? text.substring(0, 40) + '...' : text;
+                
+                html += `
+                    <div class="line-check ${statusClass}">
+                        <span class="line-num">#${lineNum}</span>
+                        <span class="line-status">${statusText}</span>
+                        <span class="line-info">${wordCount} words → ~${duration}s ${statusIcon ? '(' + statusIcon + ')' : ''}</span>
+                    </div>
+                `;
+            });
+            
+            // Add summary
+            let summaryHtml = '';
+            if (issues === 0) {
+                summaryHtml = `<div class="validation-summary all-ok">✓ All ${okCount} lines are ~7 seconds (${targetWords}±5 words for ${language})</div>`;
+            } else {
+                summaryHtml = `<div class="validation-summary has-issues">⚠️ ${issues} line${issues > 1 ? 's' : ''} need adjustment (target: ${targetWords}±5 words for ${language})</div>`;
+            }
+            
+            container.innerHTML = summaryHtml + '<div class="line-validation">' + html + '</div>';
+            container.style.display = 'block';
+        }
+        
+        // Re-validate when language changes
+        document.getElementById('language').addEventListener('change', validateDialogueLines);
+        
+        // Debounced validation for typing
+        let validateTimeout = null;
+        document.getElementById('dialogueInput').addEventListener('input', function() {
+            clearTimeout(validateTimeout);
+            validateTimeout = setTimeout(validateDialogueLines, 500);
+        });
 
         // Create job
         async function createJob(){
@@ -636,10 +775,13 @@ A realistic vertical video of a professional presenter speaking directly to came
                 
                 console.log('Job created:', job);
                 
-                // Clear upload state and thumbnails
+                // Clear upload state and thumbnails (keep dialogue for reference)
                 uploadJobId=null;uploadedImages=[];uploadedFilesData=[];
                 document.getElementById('uploadedCount').textContent='';
                 document.getElementById('imageThumbnails').innerHTML='';
+                document.getElementById('lineValidation').style.display='none';
+                document.getElementById('lineValidation').innerHTML='';
+                document.getElementById('splitStatus').style.display='none';
                 
                 // Refresh list and select new job
                 await refreshJobsList();

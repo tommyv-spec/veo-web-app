@@ -1142,6 +1142,7 @@ async def split_script(request: ScriptSplitRequest):
     """
     Split a full script into ~7 second dialogue lines using OpenAI.
     Preserves the EXACT original text - only splits, never rewrites.
+    Every line MUST be approximately 7 seconds (enforced via post-processing).
     """
     import os
     
@@ -1153,6 +1154,7 @@ async def split_script(request: ScriptSplitRequest):
     # Get language-specific rate
     words_per_sec = LANGUAGE_SPEAKING_RATES.get(request.language, 2.5)
     target_words = int(words_per_sec * TARGET_DURATION_SECONDS)
+    min_words = max(10, target_words - 5)  # Minimum words per line
     
     # Count total words to estimate expected clips
     total_words = len(request.script.split())
@@ -1162,33 +1164,31 @@ async def split_script(request: ScriptSplitRequest):
         from openai import OpenAI
         client = OpenAI(api_key=openai_key)
         
-        prompt = f"""TASK: Split this script into {expected_clips} chunks for video clips.
+        prompt = f"""TASK: Split this script into chunks of EXACTLY ~{target_words} words each.
 
-⚠️ CRITICAL - READ CAREFULLY:
-- You are ONLY splitting text, NOT rewriting it
-- Every single word in your output MUST be from the original script
-- DO NOT add words, remove words, or change any words
-- DO NOT rephrase, summarize, or paraphrase
-- The combined output must be IDENTICAL to the input
+⚠️ ABSOLUTE REQUIREMENTS:
+1. EVERY chunk MUST have AT LEAST {min_words} words (this is ~7 seconds of speech)
+2. NEVER create a chunk with less than {min_words} words
+3. If a sentence is short, COMBINE it with the next sentence(s) until you reach {min_words}+ words
+4. The LAST chunk can be slightly shorter only if all remaining text is less than {min_words} words
+5. Preserve EXACT original text - do NOT add, remove, or change any words
 
-ORIGINAL SCRIPT (copy EXACTLY, only add split points):
+ORIGINAL SCRIPT ({total_words} total words):
 "{request.script}"
 
-SPLITTING RULES:
-1. Split at sentence boundaries (periods) or natural pauses (commas)
-2. Target approximately {target_words} words per chunk (~7 seconds of speech)
-3. If a sentence is shorter than {target_words} words, combine it with the next sentence
-4. If the total script is short, it's OK to have fewer chunks
+MATH: {total_words} words ÷ {target_words} words = ~{expected_clips} chunks expected
 
-VERIFICATION: When you join all output chunks with spaces, it must equal the original script exactly.
+EXAMPLES of what NOT to do:
+❌ ["Short sentence.", "Another short one."] - BAD, each under {min_words} words
+✅ ["Short sentence. Another short one. And more text here."] - GOOD, combined to reach {min_words}+ words
 
-OUTPUT FORMAT: JSON array only, no markdown, no explanation.
-["exact text chunk 1", "exact text chunk 2"]"""
+OUTPUT: JSON array only. Each string MUST have {min_words}+ words.
+["chunk with {min_words}+ words here", "another chunk with {min_words}+ words"]"""
 
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,  # Very low for deterministic output
+            temperature=0.1,
             max_tokens=4000
         )
         
@@ -1206,19 +1206,61 @@ OUTPUT FORMAT: JSON array only, no markdown, no explanation.
         if not isinstance(lines, list) or len(lines) == 0:
             raise ValueError("Invalid response format")
         
+        # POST-PROCESSING: Merge any lines that are too short
+        merged_lines = []
+        buffer = ""
+        
+        for line in lines:
+            if buffer:
+                buffer += " " + line.strip()
+            else:
+                buffer = line.strip()
+            
+            word_count = len(buffer.split())
+            
+            # If buffer has enough words, add it to merged_lines
+            if word_count >= min_words:
+                merged_lines.append(buffer)
+                buffer = ""
+        
+        # Handle remaining buffer
+        if buffer:
+            if merged_lines:
+                # Append to last line if buffer is too short
+                buffer_words = len(buffer.split())
+                if buffer_words < min_words:
+                    merged_lines[-1] = merged_lines[-1] + " " + buffer
+                else:
+                    merged_lines.append(buffer)
+            else:
+                # Only one line in total
+                merged_lines.append(buffer)
+        
+        # Clean up whitespace
+        merged_lines = [" ".join(line.split()) for line in merged_lines]
+        
         # Calculate average duration estimate using language-specific rate
-        total_words_result = sum(len(line.split()) for line in lines)
-        avg_words = total_words_result / len(lines)
+        total_words_result = sum(len(line.split()) for line in merged_lines)
+        avg_words = total_words_result / len(merged_lines) if merged_lines else 0
         avg_duration = round(avg_words / words_per_sec, 1)
+        
+        # Calculate per-line stats
+        line_stats = []
+        for line in merged_lines:
+            wc = len(line.split())
+            dur = round(wc / words_per_sec, 1)
+            line_stats.append({"words": wc, "duration_sec": dur})
         
         return {
             "success": True,
-            "lines": lines,
-            "count": len(lines),
+            "lines": merged_lines,
+            "count": len(merged_lines),
             "avg_duration": avg_duration,
             "total_words": total_words_result,
             "target_words_per_line": target_words,
-            "language": request.language
+            "min_words_per_line": min_words,
+            "language": request.language,
+            "line_stats": line_stats
         }
         
     except json.JSONDecodeError as e:
