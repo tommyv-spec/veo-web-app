@@ -8,15 +8,15 @@ python-multipart>=0.0.9
 # Database
 sqlalchemy>=2.0.30
 
-# Pydantic for data validation (use newer version with pre-built wheels)
+# Pydantic for data validation
 pydantic>=2.9.0
 
-# OpenAI (optional, for prompt tuning)
+# Google Gemini / Veo 3.1
+google-genai>=1.0.0
+
+# OpenAI (for prompt tuning and auto-split)
 openai>=1.10.0
 
 # Utilities
 python-dotenv>=1.0.0
-
-# Note: For Veo 3.1, you may need:
-# pip install google-genai
-# If that fails due to Rust, the app will still work for UI testing
+aiofiles>=23.0.0
