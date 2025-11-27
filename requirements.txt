@@ -1,0 +1,22 @@
+# Veo Web App Dependencies
+
+# Web Framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+
+# Database
+sqlalchemy>=2.0.30
+
+# Pydantic for data validation (use newer version with pre-built wheels)
+pydantic>=2.9.0
+
+# OpenAI (optional, for prompt tuning)
+openai>=1.10.0
+
+# Utilities
+python-dotenv>=1.0.0
+
+# Note: For Veo 3.1, you may need:
+# pip install google-genai
+# If that fails due to Rust, the app will still work for UI testing

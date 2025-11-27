@@ -1,0 +1,964 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Veo 3.1 Video Generator</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-secondary: #12121a;
+            --bg-tertiary: #1a1a26;
+            --bg-card: #16161f;
+            --border-color: #2a2a3a;
+            --text-primary: #f0f0f5;
+            --text-secondary: #9090a0;
+            --text-muted: #606070;
+            --accent: #6366f1;
+            --accent2: #8b5cf6;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #ef4444;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Space Grotesk', sans-serif; background: var(--bg-primary); color: var(--text-primary); min-height: 100vh; }
+        
+        .header { background: var(--bg-secondary); border-bottom: 1px solid var(--border-color); padding: 10px 20px; display: flex; align-items: center; justify-content: space-between; }
+        .logo { display: flex; align-items: center; gap: 10px; }
+        .logo-icon { width: 32px; height: 32px; background: linear-gradient(135deg, var(--accent), var(--accent2)); border-radius: 6px; display: flex; align-items: center; justify-content: center; }
+        .logo h1 { font-size: 16px; }
+        .header-actions { display: flex; gap: 10px; }
+        
+        .main { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px; max-width: 1400px; margin: 0 auto; }
+        @media (max-width: 900px) { .main { grid-template-columns: 1fr; } }
+        
+        .card { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; padding: 14px; }
+        .card-title { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 12px; }
+        
+        .config-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+        .config-box { background: var(--bg-tertiary); border-radius: 6px; padding: 10px; }
+        .config-box.full { grid-column: 1 / -1; }
+        
+        label { display: block; font-size: 10px; font-weight: 500; color: var(--text-muted); text-transform: uppercase; margin-bottom: 4px; }
+        input, select, textarea { width: 100%; padding: 7px 10px; background: var(--bg-primary); border: 1px solid var(--border-color); border-radius: 4px; color: var(--text-primary); font-family: inherit; font-size: 12px; }
+        input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+        textarea { font-family: 'JetBrains Mono', monospace; font-size: 11px; min-height: 80px; resize: vertical; }
+        
+        .row { display: flex; gap: 8px; margin-bottom: 8px; }
+        .row:last-child { margin-bottom: 0; }
+        .col { flex: 1; }
+        
+        .upload-area { border: 2px dashed var(--border-color); border-radius: 6px; padding: 16px; text-align: center; cursor: pointer; transition: 0.2s; }
+        .upload-area:hover { border-color: var(--accent); background: rgba(99,102,241,0.05); }
+        .upload-area p { font-size: 12px; color: var(--text-secondary); }
+        .upload-area span { font-size: 10px; color: var(--text-muted); }
+        .uploaded { font-size: 11px; color: var(--success); margin-top: 6px; }
+        
+        .toggle-row { display: flex; align-items: center; justify-content: space-between; padding: 4px 0; }
+        .toggle-label { font-size: 11px; color: var(--text-secondary); }
+        .toggle { width: 32px; height: 18px; background: var(--bg-primary); border-radius: 9px; cursor: pointer; position: relative; }
+        .toggle.active { background: var(--accent); }
+        .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; background: #fff; border-radius: 50%; transition: 0.2s; }
+        .toggle.active::after { transform: translateX(14px); }
+        
+        .btn { display: inline-flex; align-items: center; gap: 5px; padding: 7px 14px; border: none; border-radius: 4px; font-family: inherit; font-size: 12px; font-weight: 500; cursor: pointer; transition: 0.15s; }
+        .btn:active { transform: scale(0.95); }
+        .btn:disabled { opacity: 0.5; cursor: wait; pointer-events: none; }
+        .btn-primary { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff; }
+        .btn-primary:hover { box-shadow: 0 4px 12px rgba(99,102,241,0.3); }
+        .btn-secondary { background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-color); }
+        .btn-danger { background: var(--error); color: #fff; }
+        .btn-sm { padding: 5px 10px; font-size: 11px; }
+        .btn-approve { background: var(--success); color: #fff; }
+        .btn-reject { background: var(--error); color: #fff; }
+        .btn-redo { background: var(--warning); color: #fff; }
+        
+        .job-item { cursor: pointer; transition: background 0.1s; }
+        .job-item:active { background: var(--bg-primary); }
+        
+        .badge { display: inline-block; padding: 3px 8px; border-radius: 99px; font-size: 10px; font-weight: 500; }
+        .badge-pending, .badge-pending_review { background: rgba(99,102,241,0.15); color: var(--accent); }
+        .badge-running, .badge-generating { background: rgba(99,102,241,0.15); color: var(--accent); }
+        .badge-completed, .badge-approved { background: rgba(16,185,129,0.15); color: var(--success); }
+        .badge-failed, .badge-max_attempts { background: rgba(239,68,68,0.15); color: var(--error); }
+        .badge-rejected { background: rgba(239,68,68,0.15); color: var(--error); }
+        
+        .jobs-list { display: flex; flex-direction: column; gap: 6px; max-height: 300px; overflow-y: auto; }
+        .job-item { background: var(--bg-tertiary); border-radius: 6px; padding: 10px; cursor: pointer; border: 1px solid transparent; }
+        .job-item:hover, .job-item.selected { border-color: var(--accent); }
+        .job-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+        .job-id { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: var(--text-muted); }
+        
+        .progress-bar { height: 4px; background: var(--bg-primary); border-radius: 2px; overflow: hidden; }
+        .progress-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width 0.3s; }
+        .progress-text { display: flex; justify-content: space-between; font-size: 10px; color: var(--text-muted); margin-top: 4px; }
+        
+        .stats-row { display: flex; gap: 8px; margin: 10px 0; }
+        .stat { flex: 1; text-align: center; padding: 8px; background: var(--bg-tertiary); border-radius: 4px; }
+        .stat-val { font-size: 16px; font-weight: 600; }
+        .stat-lbl { font-size: 9px; color: var(--text-muted); text-transform: uppercase; }
+        
+        .clips-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; margin-top: 10px; max-height: 400px; overflow-y: auto; }
+        .clip-card { background: var(--bg-tertiary); border-radius: 6px; overflow: hidden; transition: all 0.2s; }
+        .clip-card.clip-rejected { border: 1px solid var(--error); opacity: 0.8; }
+        .clip-card.clip-approved { border: 1px solid var(--success); }
+        .clip-video { background: #000; aspect-ratio: 9/16; max-height: 140px; display: flex; align-items: center; justify-content: center; position: relative; flex-direction: column; }
+        .clip-video video { max-width: 100%; max-height: 100%; }
+        
+        /* Variant navigation */
+        .variant-nav { position: absolute; bottom: 4px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 4px; background: rgba(0,0,0,0.7); padding: 2px 6px; border-radius: 10px; }
+        .variant-btn { background: transparent; border: none; color: white; cursor: pointer; font-size: 10px; padding: 2px 4px; opacity: 0.8; transition: opacity 0.2s; }
+        .variant-btn:hover:not(:disabled) { opacity: 1; }
+        .variant-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+        .variant-indicator { font-size: 10px; color: white; font-weight: 600; min-width: 30px; text-align: center; }
+        
+        .clip-content { padding: 8px; }
+        .clip-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
+        .clip-idx { font-weight: 600; font-size: 11px; }
+        .clip-text { font-size: 10px; color: var(--text-secondary); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin-bottom: 6px; }
+        .clip-actions { display: flex; gap: 4px; }
+        .clip-actions .btn { flex: 1; padding: 4px; font-size: 10px; }
+        
+        .generating-spinner { font-size: 24px; animation: spin 1s linear infinite; }
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+        @keyframes progress { 0% { background-position: 0 0; } 100% { background-position: 30px 0; } }
+        
+        .generation-progress { background: var(--bg-tertiary); border-radius: 6px; padding: 12px; margin-bottom: 10px; }
+        .gen-status { font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+        .gen-bar { height: 6px; background: var(--bg-primary); border-radius: 3px; overflow: hidden; }
+        .gen-bar-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width 0.5s ease; }
+        
+        .clip-generating { border: 1px solid var(--accent); }
+        .clip-pending { opacity: 0.7; }
+        
+        .generating-state, .pending-state, .failed-state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; height: 100%; }
+        .generating-state { animation: pulse 1.5s ease-in-out infinite; }
+        .generating-text, .pending-text, .failed-text { font-size: 10px; color: var(--text-muted); }
+        .pending-icon { font-size: 20px; opacity: 0.5; }
+        .failed-icon { font-size: 20px; }
+        .failed-state { color: var(--error); }
+        
+        .clip-progress { padding: 4px; }
+        .clip-progress-bar { height: 3px; background: var(--bg-primary); border-radius: 2px; overflow: hidden; position: relative; }
+        .clip-progress-bar::after { content: ''; position: absolute; top: 0; left: 0; height: 100%; width: 30%; background: linear-gradient(90deg, var(--accent), var(--accent2)); animation: clipProgress 1.5s ease-in-out infinite; }
+        @keyframes clipProgress { 0% { left: -30%; } 100% { left: 100%; } }
+        
+        .rejected-notice { display: flex; flex-direction: column; gap: 6px; align-items: center; padding: 4px; background: rgba(239,68,68,0.1); border-radius: 4px; }
+        .rejected-notice span { font-size: 10px; color: var(--error); }
+        .rejected-notice .btn { width: 100%; }
+        
+        .max-notice { font-size: 10px; color: var(--warning); text-align: center; padding: 4px; background: rgba(245,158,11,0.1); border-radius: 4px; }
+        
+        .review-banner { background: linear-gradient(135deg, var(--accent), var(--accent2)); color: #fff; padding: 10px 14px; border-radius: 6px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; }
+        .review-banner h3 { font-size: 13px; }
+        .review-stats { display: flex; gap: 10px; }
+        .review-stat { text-align: center; padding: 4px 10px; background: rgba(255,255,255,0.15); border-radius: 4px; }
+        .review-stat-val { font-size: 14px; font-weight: 600; }
+        .review-stat-lbl { font-size: 8px; text-transform: uppercase; opacity: 0.8; }
+        
+        .logs { max-height: 120px; overflow-y: auto; background: var(--bg-primary); border-radius: 4px; padding: 6px; font-family: 'JetBrains Mono', monospace; font-size: 9px; margin-top: 10px; }
+        .log { padding: 3px 0; display: flex; gap: 8px; border-bottom: 1px solid var(--border-color); }
+        .log:last-child { border: none; }
+        .log-time { color: var(--text-muted); }
+        .log-msg { color: var(--text-secondary); }
+        
+        .empty { text-align: center; padding: 30px; color: var(--text-muted); }
+        .empty h3 { font-size: 13px; color: var(--text-secondary); margin-bottom: 4px; }
+        
+        .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+        .modal-box { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; padding: 16px; width: 100%; max-width: 320px; }
+        .modal h3 { margin-bottom: 10px; font-size: 14px; }
+        .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+        
+        .max-notice { background: rgba(239,68,68,0.1); border: 1px solid var(--error); color: var(--error); padding: 6px; border-radius: 4px; font-size: 10px; margin-top: 6px; }
+        
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+        .generating { animation: pulse 2s infinite; }
+        ::-webkit-scrollbar { width: 5px; }
+        ::-webkit-scrollbar-track { background: var(--bg-secondary); }
+        ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="logo">
+            <div class="logo-icon">🎬</div>
+            <h1>Veo 3.1 Video Generator</h1>
+        </div>
+        <div class="header-actions">
+            <button class="btn btn-secondary btn-sm" onclick="refreshJobs()">🔄 Refresh</button>
+            <button class="btn btn-primary" id="startBtn" onclick="createJob()">🚀 Start</button>
+        </div>
+    </header>
+
+    <div class="main">
+        <div>
+            <div class="card" style="margin-bottom:12px;">
+                <div class="card-title">⚙️ Configuration</div>
+                <div class="config-grid">
+                    <div class="config-box">
+                        <label>Images</label>
+                        <div class="upload-area" id="uploadArea">
+                            <p>📤 Drop or click</p>
+                            <span>PNG, JPG, WebP (1+ images)</span>
+                        </div>
+                        <input type="file" id="fileInput" multiple accept=".png,.jpg,.jpeg,.webp" hidden>
+                        <div class="uploaded" id="uploadedCount"></div>
+                        <div style="font-size:10px;color:var(--text-muted);margin-top:4px;">Single image = same frame for start/end</div>
+                    </div>
+                    <div class="config-box">
+                        <div class="row">
+                            <div class="col"><label>Language</label><select id="language"><option>English</option><option>Italian</option><option>Spanish</option><option>French</option><option>German</option></select></div>
+                            <div class="col"><label>Aspect</label><select id="aspectRatio"><option value="9:16">9:16</option><option value="16:9">16:9</option></select></div>
+                        </div>
+                        <div class="row">
+                            <div class="col"><label>Resolution</label><select id="resolution"><option>720p</option><option>1080p</option></select></div>
+                            <div class="col"><label>Duration</label><select id="duration"><option value="8">8s</option><option value="6">6s</option><option value="4">4s</option></select></div>
+                        </div>
+                        <div class="toggle-row"><span class="toggle-label">Interpolation</span><div class="toggle active" id="togInterp" data-value="true"></div></div>
+                        <div class="toggle-row"><span class="toggle-label">AI Prompts</span><div class="toggle active" id="togAI" data-value="true"></div></div>
+                    </div>
+                    <div class="config-box full">
+                        <label>Dialogue Lines (ID|Text)</label>
+                        <textarea id="dialogueInput" placeholder="1|First line here&#10;2|Second line&#10;3|Third line..."></textarea>
+                    </div>
+                    <!-- Custom Prompt Section (shown when AI Prompts is OFF) -->
+                    <div class="config-box full" id="customPromptSection" style="display:none;">
+                        <label>Custom Visual Prompt</label>
+                        <textarea id="customPrompt" placeholder="Describe the visual style, camera movement, and scene details...
+
+Example:
+A realistic vertical video of a professional presenter speaking directly to camera. Medium close-up shot, soft studio lighting, neutral background. The subject maintains eye contact, uses natural hand gestures, and delivers the dialogue with confident, measured pacing. Smooth subtle camera movement. No text overlays."></textarea>
+                        <div style="font-size:10px;color:var(--text-muted);margin-top:4px;">
+                            <strong>Tips:</strong> Describe camera angle, lighting, subject behavior, background, mood. Be specific about what you want to see.
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-title">📋 Jobs</div>
+                <div class="jobs-list" id="jobsList"><div class="empty"><h3>No jobs</h3><p>Configure & start</p></div></div>
+            </div>
+        </div>
+        <div>
+            <div class="card">
+                <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
+                    <span>📊 Details</span>
+                    <div id="jobActions"></div>
+                </div>
+                <div id="noJob" class="empty"><h3>Select a job</h3></div>
+                <div id="jobDetails" style="display:none;">
+                    <div id="jobInfo"></div>
+                    <div id="clipsList"></div>
+                    <div class="logs" id="logs"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let uploadJobId=null, uploadedImages=[], selectedJobId=null, lastLogId=0, clipStates={};
+        const API='/api';
+
+        // Upload
+        const uploadArea=document.getElementById('uploadArea'), fileInput=document.getElementById('fileInput');
+        uploadArea.onclick=()=>fileInput.click();
+        uploadArea.ondragover=e=>{e.preventDefault();uploadArea.style.borderColor='var(--accent)'};
+        uploadArea.ondragleave=()=>uploadArea.style.borderColor='';
+        uploadArea.ondrop=async e=>{e.preventDefault();uploadArea.style.borderColor='';await upload(Array.from(e.dataTransfer.files))};
+        fileInput.onchange=async e=>await upload(Array.from(e.target.files));
+        
+        async function upload(files){
+            if(!files.length)return;
+            const fd=new FormData();
+            files.forEach(f=>fd.append('files',f));
+            if(uploadJobId)fd.append('job_id',uploadJobId);
+            const r=await fetch(`${API}/upload`,{method:'POST',body:fd});
+            const d=await r.json();
+            uploadJobId=d.job_id;
+            uploadedImages=uploadedImages.concat(d.uploaded);
+            document.getElementById('uploadedCount').textContent=uploadedImages.length?`✓ ${uploadedImages.length} images`:'';
+        }
+
+        // Toggles
+        document.querySelectorAll('.toggle').forEach(t=>t.onclick=()=>{t.classList.toggle('active');t.dataset.value=t.classList.contains('active')});
+        
+        // Show/hide custom prompt section based on AI toggle
+        document.getElementById('togAI').addEventListener('click', function() {
+            const isAIEnabled = this.dataset.value === 'true';
+            document.getElementById('customPromptSection').style.display = isAIEnabled ? 'none' : 'block';
+        });
+
+        // Create job
+        async function createJob(){
+            const btn=document.getElementById('startBtn');
+            btn.disabled=true;btn.textContent='⏳ Starting...';
+            try{
+                const lines=document.getElementById('dialogueInput').value.trim().split('\n').filter(l=>l.trim()).map((l,i)=>{
+                    const p=l.split('|');
+                    return p.length>=2?{id:parseInt(p[0])||i+1,text:p.slice(1).join('|').trim()}:{id:i+1,text:l.trim()};
+                }).filter(l=>l.text);
+                if(!lines.length)throw new Error('Add dialogue lines');
+                if(!uploadedImages.length)throw new Error('Upload at least 1 image first');
+                
+                const useAI = document.getElementById('togAI').dataset.value === 'true';
+                const customPrompt = document.getElementById('customPrompt')?.value?.trim() || '';
+                
+                // Validate custom prompt if AI is off
+                if (!useAI && !customPrompt) {
+                    throw new Error('Enter a custom prompt or enable AI Prompts');
+                }
+                
+                const cfg={
+                    aspect_ratio:document.getElementById('aspectRatio').value,
+                    resolution:document.getElementById('resolution').value,
+                    duration:document.getElementById('duration').value,
+                    language:document.getElementById('language').value,
+                    use_interpolation:document.getElementById('togInterp').dataset.value==='true',
+                    use_openai_prompt_tuning:useAI,
+                    use_frame_vision:useAI,
+                    custom_prompt: useAI ? '' : customPrompt,
+                    single_image_mode: uploadedImages.length === 1,
+                    max_retries_per_clip:5
+                };
+                
+                console.log('Creating job with language:', cfg.language);
+                
+                console.log('Creating job with config:', cfg, 'job_id:', uploadJobId);
+                
+                const r=await fetch(`${API}/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:cfg,dialogue_lines:lines,api_keys:{gemini_keys:[],openai_key:null},job_id:uploadJobId})});
+                if(!r.ok){const e=await r.json();throw new Error(e.detail?.errors?.join(', ')||e.detail||'Failed to create job');}
+                const job=await r.json();
+                
+                console.log('Job created:', job);
+                
+                // Clear upload state
+                uploadJobId=null;uploadedImages=[];
+                document.getElementById('uploadedCount').textContent='';
+                
+                // Refresh list and select new job
+                await refreshJobsList();
+                selectedJobId=null; // Reset so selectJob works
+                selectJob(job.id);
+                
+                btn.textContent='✓ Started!';
+                setTimeout(()=>{btn.textContent='🚀 Start';},2000);
+            }catch(e){
+                console.error('Create job error:', e);
+                alert(e.message);
+                btn.textContent='🚀 Start';
+            }
+            btn.disabled=false;
+        }
+
+        // Jobs list
+        async function refreshJobs(){
+            try{
+                const r=await fetch(`${API}/jobs`);
+                const jobs=await r.json();
+                const c=document.getElementById('jobsList');
+                if(!jobs.length){c.innerHTML='<div class="empty"><h3>No jobs</h3></div>';return;}
+                c.innerHTML=jobs.map(j=>`<div class="job-item ${selectedJobId===j.id?'selected':''}" onclick="selectJob('${j.id}')"><div class="job-header"><span class="badge badge-${j.status}">${j.status}</span><span class="job-id">${j.id.slice(0,8)}</span></div><div class="progress-bar"><div class="progress-fill" style="width:${j.progress_percent}%"></div></div><div class="progress-text"><span>${j.progress_percent.toFixed(0)}%</span><span>${j.completed_clips}/${j.total_clips}</span></div></div>`).join('');
+            }catch(e){console.error('refreshJobs error:',e);}
+        }
+
+        // Debounce helper - prevents duplicate calls
+        const pendingFetches = {};
+        function debouncedFetch(key, fn, delay=100){
+            if(pendingFetches[key]) return;
+            pendingFetches[key] = true;
+            setTimeout(()=>{
+                fn();
+                delete pendingFetches[key];
+            }, delay);
+        }
+
+        // Select job
+        function selectJob(id){
+            if(selectedJobId===id) return; // Already selected
+            selectedJobId=id;
+            lastLogId=0;
+            clipStates={}; // Reset clip states
+            
+            // Show immediately
+            document.getElementById('noJob').style.display='none';
+            document.getElementById('jobDetails').style.display='block';
+            document.getElementById('jobInfo').innerHTML='<div style="color:var(--text-muted);">Loading...</div>';
+            document.getElementById('clipsList').innerHTML='<div style="color:var(--text-muted);text-align:center;padding:20px;">Loading...</div>';
+            document.getElementById('logs').innerHTML='';  // Clear logs
+            
+            // Highlight in list immediately
+            document.querySelectorAll('.job-item').forEach(el=>el.classList.remove('selected'));
+            const item = document.querySelector(`.job-item[onclick*="${id}"]`);
+            if(item) item.classList.add('selected');
+            
+            // Load data once
+            loadJob(id);
+            loadClips(id);
+            loadLogs(id);
+            
+            // Poll every 1 second for real-time updates
+            let pollTimer = null;
+            
+            function startPolling(){
+                if(pollTimer) clearInterval(pollTimer);
+                pollTimer = setInterval(async ()=>{
+                    if(selectedJobId !== id){
+                        clearInterval(pollTimer);
+                        pollTimer = null;
+                        return;
+                    }
+                    
+                    // Load job status
+                    const jobRes = await fetch(`${API}/jobs/${id}`).catch(()=>null);
+                    if(!jobRes) return;
+                    const job = await jobRes.json();
+                    
+                    // Update job info
+                    document.getElementById('jobInfo').innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><span class="badge badge-${job.status}">${job.status}</span><span class="job-id">${job.id}</span></div><div class="progress-bar" style="height:5px;"><div class="progress-fill ${job.status==='running'?'generating':''}" style="width:${job.progress_percent}%"></div></div><div class="stats-row"><div class="stat"><div class="stat-val">${job.total_clips}</div><div class="stat-lbl">Total</div></div><div class="stat"><div class="stat-val" style="color:var(--success)">${job.completed_clips}</div><div class="stat-lbl">Done</div></div><div class="stat"><div class="stat-val" style="color:var(--error)">${job.failed_clips}</div><div class="stat-lbl">Failed</div></div></div>`;
+                    document.getElementById('jobActions').innerHTML=`${job.status==='running'?`<button class="btn btn-danger btn-sm" onclick="cancelJob('${job.id}')">⏹</button>`:''}${job.status==='completed'?`<button class="btn btn-primary btn-sm" onclick="downloadAll('${job.id}')">📥</button>`:''}<button class="btn btn-secondary btn-sm" onclick="deleteJob('${job.id}')">🗑</button>`;
+                    
+                    // Load clips
+                    loadClips(id);
+                    
+                    // Load logs
+                    loadLogs(id);
+                    
+                    // Update job list
+                    refreshJobsList();
+                    
+                    // NEVER stop polling - keep updating until user leaves this job
+                }, 1000);
+            }
+            
+            startPolling();
+        }
+        
+        // Lightweight job stats update
+        async function loadJobStats(id){
+            try{
+                const r=await fetch(`${API}/jobs/${id}`);
+                if(!r.ok)return;
+                const j=await r.json();
+                const statsRow=document.querySelector('.stats-row');
+                if(statsRow){
+                    statsRow.innerHTML=`<div class="stat"><div class="stat-val">${j.total_clips}</div><div class="stat-lbl">Total</div></div><div class="stat"><div class="stat-val" style="color:var(--success)">${j.completed_clips}</div><div class="stat-lbl">Done</div></div><div class="stat"><div class="stat-val" style="color:var(--error)">${j.failed_clips}</div><div class="stat-lbl">Failed</div></div>`;
+                }
+                const progressFill=document.querySelector('#jobInfo .progress-fill');
+                if(progressFill)progressFill.style.width=`${j.progress_percent}%`;
+            }catch(e){}
+        }
+        
+        // Refresh job list only
+        async function refreshJobsList(){
+            try{
+                const r=await fetch(`${API}/jobs`);
+                const jobs=await r.json();
+                const c=document.getElementById('jobsList');
+                if(!jobs.length){c.innerHTML='<div class="empty"><h3>No jobs</h3></div>';return;}
+                c.innerHTML=jobs.map(j=>`<div class="job-item ${selectedJobId===j.id?'selected':''}" onclick="selectJob('${j.id}')"><div class="job-header"><span class="badge badge-${j.status}">${j.status}</span><span class="job-id">${j.id.slice(0,8)}</span></div><div class="progress-bar"><div class="progress-fill" style="width:${j.progress_percent}%"></div></div><div class="progress-text"><span>${j.progress_percent.toFixed(0)}%</span><span>${j.completed_clips}/${j.total_clips}</span></div></div>`).join('');
+            }catch(e){}
+        }
+        
+        // Update a single clip without reloading all
+        async function updateSingleClip(jobId, clipIndex){
+            try{
+                const r=await fetch(`${API}/jobs/${jobId}/clips`);
+                if(!r.ok)return;
+                const clips=await r.json();
+                const clip=clips.find(c=>c.clip_index===clipIndex);
+                if(!clip)return;
+                
+                // Find the container
+                const container=document.querySelector('.clips-grid');
+                if(!container){
+                    // No grid yet - do full reload
+                    console.log('No clips grid, doing full loadClips');
+                    loadClips(jobId);
+                    return;
+                }
+                
+                const cards=container.querySelectorAll('.clip-card');
+                if(!cards[clipIndex]){
+                    // Card doesn't exist yet - do full reload
+                    console.log('Card not found at index', clipIndex, ', doing full loadClips');
+                    loadClips(jobId);
+                    return;
+                }
+                
+                // Replace just this clip card
+                console.log('Updating single clip at index', clipIndex);
+                cards[clipIndex].outerHTML=renderClip(clip,jobId);
+                
+                // Update review banner
+                updateReviewBanner(jobId, clips);
+            }catch(e){console.error('updateSingleClip:',e);}
+        }
+        
+        // Update just the review banner
+        async function updateReviewBanner(jobId, clips){
+            const hasCompleted=clips.some(x=>x.status==='completed');
+            const existing=document.querySelector('.review-banner');
+            
+            if(!hasCompleted){
+                if(existing)existing.remove();
+                return;
+            }
+            
+            try{
+                const rs=await fetch(`${API}/jobs/${jobId}/review-status`).then(r=>r.json());
+                let bannerHtml='';
+                
+                if(rs.all_approved){
+                    bannerHtml=`<div class="review-banner" style="background:var(--success);"><h3>✅ All Approved</h3><button class="btn btn-secondary btn-sm" onclick="downloadAll('${jobId}')">📥 Download</button></div>`;
+                }else if(rs.pending_review>0){
+                    bannerHtml=`<div class="review-banner"><h3>📋 Review</h3><div class="review-stats"><div class="review-stat"><div class="review-stat-val">${rs.approved}</div><div class="review-stat-lbl">OK</div></div><div class="review-stat"><div class="review-stat-val">${rs.pending_review}</div><div class="review-stat-lbl">Pending</div></div></div></div>`;
+                }
+                
+                if(existing){
+                    if(bannerHtml)existing.outerHTML=bannerHtml;
+                    else existing.remove();
+                }else if(bannerHtml){
+                    const clipsList=document.getElementById('clipsList');
+                    clipsList.insertAdjacentHTML('afterbegin',bannerHtml);
+                }
+            }catch(e){}
+        }
+        
+        // Mark a clip as generating (initial generation)
+        function markClipGenerating(clipIndex){
+            console.log('markClipGenerating:', clipIndex);
+            const container=document.querySelector('.clips-grid');
+            if(container){
+                const cards=container.querySelectorAll('.clip-card');
+                if(cards[clipIndex]){
+                    cards[clipIndex].classList.add('clip-generating');
+                    cards[clipIndex].classList.remove('clip-pending');
+                    const badge=cards[clipIndex].querySelector('.badge');
+                    if(badge){
+                        badge.className='badge badge-running';
+                        badge.textContent='generating...';
+                    }
+                    const video=cards[clipIndex].querySelector('.clip-video');
+                    if(video){
+                        video.innerHTML='<div class="generating-state"><div class="generating-spinner">🎬</div><div class="generating-text">Generating...</div></div>';
+                    }
+                    const pendingText=cards[clipIndex].querySelector('.clip-content > div:last-child');
+                    if(pendingText && pendingText.textContent.includes('In queue')){
+                        pendingText.innerHTML='<div class="clip-progress"><div class="clip-progress-bar"></div></div>';
+                    }
+                }
+            }
+        }
+        
+        // Mark a clip as regenerating
+        function markClipRegenerating(clipIndex){
+            console.log('markClipRegenerating:', clipIndex);
+            const container=document.querySelector('.clips-grid');
+            if(container){
+                const cards=container.querySelectorAll('.clip-card');
+                if(cards[clipIndex]){
+                    cards[clipIndex].classList.add('clip-generating');
+                    const badge=cards[clipIndex].querySelector('.badge');
+                    if(badge){
+                        badge.className='badge badge-running';
+                        badge.textContent='regenerating...';
+                    }
+                    const video=cards[clipIndex].querySelector('.clip-video');
+                    if(video){
+                        video.innerHTML='<div class="generating-state"><div class="generating-spinner">🎬</div><div class="generating-text">Regenerating...</div></div>';
+                    }
+                    const actions=cards[clipIndex].querySelector('.clip-actions');
+                    if(actions)actions.innerHTML='<div class="clip-progress"><div class="clip-progress-bar"></div></div>';
+                    // Also remove any other action divs
+                    const rejectedNotice=cards[clipIndex].querySelector('.rejected-notice');
+                    if(rejectedNotice)rejectedNotice.remove();
+                }
+            }
+        }
+
+        async function loadJob(id){
+            try{
+                const r=await fetch(`${API}/jobs/${id}`);
+                if(!r.ok)return;
+                const j=await r.json();
+                document.getElementById('jobInfo').innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><span class="badge badge-${j.status}">${j.status}</span><span class="job-id">${j.id}</span></div><div class="progress-bar" style="height:5px;"><div class="progress-fill ${j.status==='running'?'generating':''}" style="width:${j.progress_percent}%"></div></div><div class="stats-row"><div class="stat"><div class="stat-val">${j.total_clips}</div><div class="stat-lbl">Total</div></div><div class="stat"><div class="stat-val" style="color:var(--success)">${j.completed_clips}</div><div class="stat-lbl">Done</div></div><div class="stat"><div class="stat-val" style="color:var(--error)">${j.failed_clips}</div><div class="stat-lbl">Failed</div></div></div>`;
+                document.getElementById('jobActions').innerHTML=`${j.status==='running'?`<button class="btn btn-danger btn-sm" onclick="cancelJob('${j.id}')">⏹</button>`:''}${j.status==='completed'?`<button class="btn btn-primary btn-sm" onclick="downloadAll('${j.id}')">📥</button>`:''}<button class="btn btn-secondary btn-sm" onclick="deleteJob('${j.id}')">🗑</button>`;
+            }catch(e){console.error('loadJob:',e);}
+        }
+
+        async function loadClips(id){
+            try{
+                const r=await fetch(`${API}/jobs/${id}/clips`);
+                if(!r.ok)return;
+                const clips=await r.json();
+                const c=document.getElementById('clipsList');
+                
+                if(!clips.length){
+                    c.innerHTML='<p style="color:var(--text-muted);text-align:center;padding:10px;">Starting generation...</p>';
+                    return;
+                }
+                
+                // Check if we need to create the grid
+                let container = c.querySelector('.clips-grid');
+                if(!container){
+                    // First time - build everything
+                    const hasCompleted=clips.some(x=>x.status==='completed');
+                    const generating=clips.filter(x=>x.status==='generating'||x.status==='pending'||x.status==='redo_queued');
+                    let bannerHtml='';
+                    
+                    if(generating.length>0){
+                        const done=clips.filter(x=>x.status==='completed'||x.status==='failed').length;
+                        const total=clips.length;
+                        bannerHtml=`<div class="generation-progress"><div class="gen-status">🎬 Generating clip ${done+1} of ${total}...</div><div class="gen-bar"><div class="gen-bar-fill" style="width:${(done/total)*100}%"></div></div></div>`;
+                    }else if(hasCompleted){
+                        try{
+                            const rs=await fetch(`${API}/jobs/${id}/review-status`).then(r=>r.json());
+                            if(rs.all_approved){
+                                bannerHtml=`<div class="review-banner" style="background:var(--success);"><h3>✅ All Approved</h3><button class="btn btn-secondary btn-sm" onclick="downloadAll('${id}')">📥 Download</button></div>`;
+                            }else if(rs.pending_review>0){
+                                bannerHtml=`<div class="review-banner"><h3>📋 Review</h3><div class="review-stats"><div class="review-stat"><div class="review-stat-val">${rs.approved}</div><div class="review-stat-lbl">OK</div></div><div class="review-stat"><div class="review-stat-val">${rs.pending_review}</div><div class="review-stat-lbl">Pending</div></div></div></div>`;
+                            }
+                        }catch(e){}
+                    }
+                    
+                    c.innerHTML=bannerHtml+`<div class="clips-grid">${clips.map(x=>renderClip(x,id)).join('')}</div>`;
+                    
+                    // Save initial states
+                    clips.forEach(clip=>{
+                        clipStates[clip.clip_index] = getClipStateKey(clip);
+                    });
+                    return;
+                }
+                
+                // Update only changed clips
+                const cards = container.querySelectorAll('.clip-card');
+                clips.forEach((clip, idx)=>{
+                    const newState = getClipStateKey(clip);
+                    const oldState = clipStates[clip.clip_index];
+                    
+                    if(newState !== oldState){
+                        // This clip changed - update it
+                        console.log(`Clip ${clip.clip_index} changed: ${oldState} -> ${newState}`);
+                        if(cards[idx]){
+                            cards[idx].outerHTML = renderClip(clip, id);
+                        }
+                        clipStates[clip.clip_index] = newState;
+                    }
+                });
+                
+                // Update banner
+                updateBanner(id, clips);
+                
+            }catch(e){console.error('loadClips:',e);}
+        }
+        
+        function getClipStateKey(clip){
+            // Create a unique key for clip state (includes selected variant)
+            return `${clip.status}|${clip.approval_status}|${clip.output_filename||''}|${clip.generation_attempt}|${clip.selected_variant||1}`;
+        }
+        
+        async function updateBanner(jobId, clips){
+            const c = document.getElementById('clipsList');
+            const hasCompleted = clips.some(x=>x.status==='completed');
+            const generating = clips.filter(x=>x.status==='generating'||x.status==='pending'||x.status==='redo_queued');
+            
+            // Remove old banner
+            const oldProgress = c.querySelector('.generation-progress');
+            const oldReview = c.querySelector('.review-banner');
+            
+            if(generating.length > 0){
+                const done = clips.filter(x=>x.status==='completed'||x.status==='failed').length;
+                const total = clips.length;
+                const bannerHtml = `<div class="generation-progress"><div class="gen-status">🎬 Generating clip ${done+1} of ${total}...</div><div class="gen-bar"><div class="gen-bar-fill" style="width:${(done/total)*100}%"></div></div></div>`;
+                
+                if(oldProgress){
+                    oldProgress.outerHTML = bannerHtml;
+                }else{
+                    if(oldReview) oldReview.remove();
+                    c.insertAdjacentHTML('afterbegin', bannerHtml);
+                }
+            }else if(hasCompleted){
+                if(oldProgress) oldProgress.remove();
+                try{
+                    const rs = await fetch(`${API}/jobs/${jobId}/review-status`).then(r=>r.json());
+                    let bannerHtml = '';
+                    if(rs.all_approved){
+                        bannerHtml = `<div class="review-banner" style="background:var(--success);"><h3>✅ All Approved</h3><button class="btn btn-secondary btn-sm" onclick="downloadAll('${jobId}')">📥 Download</button></div>`;
+                    }else if(rs.pending_review > 0){
+                        bannerHtml = `<div class="review-banner"><h3>📋 Review</h3><div class="review-stats"><div class="review-stat"><div class="review-stat-val">${rs.approved}</div><div class="review-stat-lbl">OK</div></div><div class="review-stat"><div class="review-stat-val">${rs.pending_review}</div><div class="review-stat-lbl">Pending</div></div></div></div>`;
+                    }
+                    if(bannerHtml){
+                        if(oldReview){
+                            oldReview.outerHTML = bannerHtml;
+                        }else{
+                            c.insertAdjacentHTML('afterbegin', bannerHtml);
+                        }
+                    }
+                }catch(e){}
+            }
+        }
+
+        function renderClip(c,jid){
+            const approved=c.approval_status==='approved';
+            const rejected=c.approval_status==='rejected';
+            const maxed=c.approval_status==='max_attempts';
+            const generating=c.status==='generating';
+            const pending=c.status==='pending';
+            const failed=c.status==='failed';
+            const redoQueued=c.status==='redo_queued';  // Redo in progress
+            const isRegenerating = generating || redoQueued;  // Either generating or redo queued
+            const canReview=c.status==='completed'&&!approved&&!maxed&&!rejected;
+            
+            // Variant info - use API values
+            const versions = c.versions || [];
+            const totalVariants = c.total_variants || versions.length;
+            const selectedVariant = c.selected_variant || 1;
+            const hasMultipleVariants = totalVariants > 1;
+            
+            // Video display
+            let vid='';
+            if(isRegenerating){
+                vid=`<div class="generating-state"><div class="generating-spinner">🎬</div><div class="generating-text">${redoQueued ? 'Regenerating...' : 'Generating...'}</div></div>`;
+            }else if(pending){
+                vid=`<div class="pending-state"><div class="pending-icon">⏳</div><div class="pending-text">Waiting...</div></div>`;
+            }else if(c.output_filename){
+                // Add cache-busting timestamp to ensure fresh load
+                vid=`<video controls preload="auto" playsinline><source src="${API}/jobs/${jid}/outputs/${c.output_filename}?t=${Date.now()}" type="video/mp4"></video>`;
+            }else if(failed){
+                vid=`<div class="failed-state"><div class="failed-icon">❌</div><div class="failed-text">Failed</div></div>`;
+            }else{
+                vid='<div style="color:var(--text-muted);font-size:10px;">🎬</div>';
+            }
+            
+            // Variant navigation (if multiple variants exist and not regenerating)
+            let variantNav = '';
+            if(hasMultipleVariants && c.output_filename && !isRegenerating){
+                variantNav = `<div class="variant-nav">
+                    <button class="variant-btn" onclick="switchVariant(${c.id}, ${selectedVariant - 1})" ${selectedVariant <= 1 ? 'disabled' : ''}>◀</button>
+                    <span class="variant-indicator">v${selectedVariant}/${totalVariants}</span>
+                    <button class="variant-btn" onclick="switchVariant(${c.id}, ${selectedVariant + 1})" ${selectedVariant >= totalVariants ? 'disabled' : ''}>▶</button>
+                </div>`;
+            }
+            
+            // Status badge
+            let status = c.status;
+            let badgeClass = c.status;
+            if(isRegenerating){ status = redoQueued ? 'regenerating' : 'generating'; badgeClass = 'running'; }
+            else if(failed){ status = 'failed'; badgeClass = 'failed'; }
+            else if(approved){ status = 'approved'; badgeClass = 'approved'; }
+            else if(rejected){ status = 'rejected'; badgeClass = 'rejected'; }
+            else if(pending){ status = 'pending'; badgeClass = 'running'; }
+            else if(c.status === 'completed'){ status = c.approval_status || 'pending_review'; badgeClass = status; }
+            
+            // Actions
+            let acts='';
+            const clipId = c.id || 0;
+            if(isRegenerating){
+                acts=`<div class="clip-progress"><div class="clip-progress-bar"></div></div><div style="color:var(--text-muted);text-align:center;font-size:10px;margin-top:4px;">v${c.generation_attempt} in progress...</div>`;
+            }else if(approved){
+                acts=`<div style="color:var(--success);text-align:center;font-size:14px;">✓ Approved${hasMultipleVariants ? ` (v${selectedVariant})` : ''}</div>`;
+            }else if(rejected && !redoQueued){
+                acts=`<div class="rejected-notice"><span>❌ Rejected</span>${c.attempts_remaining>0 && clipId?`<button class="btn btn-redo btn-sm" onclick="redoModal(${clipId},${c.attempts_remaining},${c.clip_index})">↻ Redo (${c.attempts_remaining})</button>`:'<span class="text-muted">No redos left</span>'}</div>`;
+            }else if(maxed){
+                acts='<div class="max-notice">⚠️ Max attempts reached</div>';
+            }else if(pending){
+                acts='<div style="color:var(--text-muted);text-align:center;font-size:10px;">In queue</div>';
+            }else if(failed){
+                acts=`<div style="color:var(--error);text-align:center;font-size:10px;">${c.error_message||'Generation failed'}</div>`;
+            }else if(canReview && clipId){
+                acts=`<div class="clip-actions"><button class="btn btn-approve" onclick="approve(${clipId})">✓</button><button class="btn btn-reject" onclick="confirmDelete(${clipId},${c.clip_index})">🗑</button><button class="btn btn-redo" onclick="redoModal(${clipId},${c.attempts_remaining},${c.clip_index})" ${c.attempts_remaining<=0?'disabled':''}>↻${c.attempts_remaining}</button></div>`;
+            }
+            
+            return `<div class="clip-card ${rejected&&!redoQueued?'clip-rejected':''} ${approved?'clip-approved':''} ${isRegenerating?'clip-generating':''} ${pending?'clip-pending':''}"><div class="clip-video">${vid}${variantNav}</div><div class="clip-content"><div class="clip-header"><span class="clip-idx">#${c.clip_index+1}</span><span class="badge badge-${badgeClass}">${status.replace('_',' ')}</span></div><div class="clip-text">${c.dialogue_text}</div>${acts}</div></div>`;
+        }
+
+        async function loadLogs(id){
+            try{
+                // If no logs yet, load all; otherwise load since last
+                const isInitial = lastLogId === 0;
+                const url = isInitial 
+                    ? `${API}/jobs/${id}/logs?limit=100`
+                    : `${API}/jobs/${id}/logs?since_id=${lastLogId}&limit=30`;
+                const r=await fetch(url);
+                if(!r.ok)return;
+                const logs=await r.json();
+                if(!logs.length)return;
+                
+                lastLogId=logs[logs.length-1].id;
+                const c=document.getElementById('logs');
+                const logsHtml=logs.map(l=>`<div class="log"><span class="log-time">${new Date(l.created_at).toLocaleTimeString()}</span><span class="log-msg">${l.message}</span></div>`).join('');
+                
+                // If initial load, replace content; otherwise append
+                if(isInitial){
+                    c.innerHTML=logsHtml;
+                } else {
+                    c.innerHTML+=logsHtml;
+                }
+                c.scrollTop=c.scrollHeight;
+            }catch(e){console.error('loadLogs:',e);}
+        }
+
+        // Actions - optimistic UI updates (instant, no waiting)
+        function approve(cid){
+            const btn=event.target;
+            const card=btn.closest('.clip-card');
+            
+            // Instant UI update
+            card.classList.add('clip-approved');
+            card.querySelector('.badge').className='badge badge-approved';
+            card.querySelector('.badge').textContent='approved';
+            btn.closest('.clip-actions').innerHTML='<div style="color:var(--success);text-align:center;font-size:14px;">✓ Approved</div>';
+            
+            // Fire API in background (no await!)
+            fetch(`${API}/clips/${cid}/approve`,{method:'POST'}).catch(e=>{
+                console.error(e);
+                loadClips(selectedJobId); // Revert on error
+            });
+            
+            // Update banner in background
+            updateReviewBannerAsync();
+        }
+        
+        function confirmDelete(cid, clipIdx){
+            if(confirm(`Are you sure you want to delete Clip #${clipIdx + 1}?\n\nThis will permanently remove the clip and its video file.`)){
+                deleteClip(cid, clipIdx);
+            }
+        }
+        
+        function deleteClip(cid, clipIdx){
+            const card = document.querySelectorAll('.clip-card')[clipIdx];
+            if(card){
+                card.style.opacity = '0.5';
+                card.style.pointerEvents = 'none';
+            }
+            
+            fetch(`${API}/clips/${cid}`, {method: 'DELETE'})
+                .then(r => {
+                    if(!r.ok) throw new Error('Delete failed');
+                    return r.json();
+                })
+                .then(data => {
+                    // Remove card from UI
+                    if(card) card.remove();
+                    // Reset clip states so next loadClips rebuilds properly
+                    clipStates = {};
+                    loadClips(selectedJobId);
+                })
+                .catch(e => {
+                    console.error('Delete error:', e);
+                    if(card){
+                        card.style.opacity = '1';
+                        card.style.pointerEvents = 'auto';
+                    }
+                    alert('Failed to delete clip');
+                });
+        }
+        
+        // Switch between clip variants
+        async function switchVariant(clipId, variantNum){
+            if(variantNum < 1) return;
+            
+            console.log('Switching clip', clipId, 'to variant', variantNum);
+            
+            try {
+                const r = await fetch(`${API}/clips/${clipId}/select-variant/${variantNum}`, {method: 'POST'});
+                const data = await r.json();
+                
+                if(!r.ok) {
+                    throw new Error(data.detail || 'Failed to switch variant');
+                }
+                
+                console.log('Switch successful:', data);
+                
+                // Force full reload of clips to get updated data
+                clipStates = {};  // Reset states to force re-render
+                await loadClips(selectedJobId);
+                
+            } catch(e) {
+                console.error('Switch variant error:', e);
+                alert('Failed to switch variant: ' + e.message);
+            }
+        }
+        
+        // Update banner optimistically without fetching
+        function updateReviewBannerAsync(){
+            // Just reload clips which will update the banner
+            debouncedFetch('clips', ()=>loadClips(selectedJobId), 300);
+        }
+        
+        let redoClip=null,redoClipIndex=null;
+        function redoModal(cid,rem,clipIdx){
+            if(rem<=0)return alert('No redos left');
+            redoClip=cid;
+            redoClipIndex=clipIdx;
+            console.log('redoModal called with:', cid, rem, clipIdx);
+            const m=document.createElement('div');m.className='modal';m.id='modal';
+            m.innerHTML=`<div class="modal-box"><h3>🔄 Redo Clip</h3><p style="font-size:11px;color:var(--text-secondary);margin-bottom:10px;">Provide feedback to improve the regeneration</p><label>What should be different?</label><textarea id="redoReason" placeholder="e.g., More natural expression, slower movement..." style="min-height:60px;"></textarea><div class="modal-actions"><button class="btn btn-secondary btn-sm" onclick="closeModal()">Cancel</button><button class="btn btn-redo btn-sm" onclick="submitRedo()">↻ Regenerate (${rem-1} left after)</button></div></div>`;
+            document.body.appendChild(m);
+        }
+        function closeModal(){document.getElementById('modal')?.remove();redoClip=null;redoClipIndex=null;}
+        function submitRedo(){
+            if(!redoClip){
+                console.error('submitRedo: redoClip is null!');
+                return;
+            }
+            
+            // Save values BEFORE closing modal (which sets them to null)
+            const clipId = redoClip;
+            const clipIdx = redoClipIndex;
+            const reason = document.getElementById('redoReason')?.value || '';
+            
+            console.log('submitRedo:', clipId, clipIdx, reason);
+            
+            // Instant UI update
+            if(clipIdx !== null) markClipRegenerating(clipIdx);
+            
+            // Close modal (this sets redoClip/redoClipIndex to null)
+            closeModal();
+            
+            // Fire API in background using saved values
+            fetch(`${API}/clips/${clipId}/redo`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({reason})})
+                .then(r=>{if(!r.ok)throw new Error('Redo failed');})
+                .catch(e=>{console.error('Redo error:',e);loadClips(selectedJobId);});
+        }
+
+        function cancelJob(id){
+            if(!confirm('Cancel?'))return;
+            // Instant UI
+            document.querySelector(`.job-item.selected .badge`).textContent='cancelling...';
+            // Fire in background
+            fetch(`${API}/jobs/${id}/cancel`,{method:'POST'}).then(()=>{loadJob(id);refreshJobsList();}).catch(console.error);
+        }
+        
+        function deleteJob(id){
+            if(!confirm('Delete?'))return;
+            // Instant UI
+            document.getElementById('jobDetails').style.display='none';
+            document.getElementById('noJob').style.display='block';
+            selectedJobId=null;
+            // Fire in background
+            fetch(`${API}/jobs/${id}`,{method:'DELETE'}).then(()=>refreshJobsList()).catch(console.error);
+        }
+        
+        function downloadAll(id){
+            // Download only approved clips (selected variants)
+            fetch(`${API}/jobs/${id}/outputs?approved_only=true`).then(r=>r.json()).then(d=>{
+                if(d.videos.length === 0){
+                    alert('No approved clips to download. Please approve clips first.');
+                    return;
+                }
+                d.videos.forEach((v,i)=>{
+                    setTimeout(()=>{
+                        const a=document.createElement('a');a.href=v.url;a.download=v.filename;a.click();
+                    },i*500); // Stagger downloads
+                });
+            }).catch(console.error);
+        }
+
+        refreshJobs(); // Initial load only - SSE handles updates
+    </script>
+</body>
+</html>
