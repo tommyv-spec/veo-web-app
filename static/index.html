@@ -127,6 +127,47 @@
         @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
         @keyframes progress { 0% { background-position: 0 0; } 100% { background-position: 30px 0; } }
         
+        /* Step Map Styles */
+        .step-map { background: var(--bg-secondary); border-bottom: 1px solid var(--border-color); padding: 16px 20px; }
+        .step-map-inner { max-width: 1400px; margin: 0 auto; }
+        .step-map-title { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+        .step-map-title span { cursor: pointer; }
+        .step-map-title span:hover { color: var(--accent); }
+        .steps-container { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .step-item { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 8px 12px; background: var(--bg-tertiary); border-radius: 6px; border: 1px solid transparent; transition: all 0.2s; position: relative; }
+        .step-item:hover { border-color: var(--accent); background: var(--bg-card); }
+        .step-item.active { border-color: var(--accent); background: rgba(99,102,241,0.1); }
+        .step-item.completed { border-color: var(--success); }
+        .step-item.completed .step-num { background: var(--success); }
+        .step-num { width: 24px; height: 24px; background: var(--accent); color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; flex-shrink: 0; }
+        .step-label { font-size: 12px; font-weight: 500; color: var(--text-primary); }
+        .step-arrow { color: var(--text-muted); font-size: 14px; }
+        .step-details { display: none; position: absolute; top: 100%; left: 0; margin-top: 8px; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 12px; width: 280px; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.3); }
+        .step-item:hover .step-details { display: block; }
+        .step-details h4 { font-size: 12px; font-weight: 600; margin-bottom: 6px; color: var(--text-primary); }
+        .step-details p { font-size: 11px; color: var(--text-secondary); line-height: 1.5; }
+        .step-details table { width: 100%; margin-top: 8px; font-size: 10px; border-collapse: collapse; }
+        .step-details td { padding: 4px 6px; border: 1px solid var(--border-color); }
+        .step-details td:first-child { font-weight: 500; background: var(--bg-tertiary); }
+        
+        /* Image Thumbnails */
+        .image-thumbnails { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+        .image-thumb { position: relative; width: 60px; height: 60px; border-radius: 4px; overflow: hidden; border: 2px solid var(--border-color); cursor: pointer; transition: all 0.2s; }
+        .image-thumb:hover { border-color: var(--accent); }
+        .image-thumb img { width: 100%; height: 100%; object-fit: cover; }
+        .image-thumb .thumb-remove { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; background: var(--error); color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; cursor: pointer; opacity: 0; transition: opacity 0.2s; border: 2px solid var(--bg-card); }
+        .image-thumb:hover .thumb-remove { opacity: 1; }
+        .image-thumb .thumb-index { position: absolute; bottom: 2px; left: 2px; background: rgba(0,0,0,0.7); color: white; font-size: 9px; padding: 1px 4px; border-radius: 3px; }
+        .image-thumb .thumb-name { position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,0.7); color: white; font-size: 8px; padding: 2px; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0; transition: opacity 0.2s; }
+        .image-thumb:hover .thumb-name { opacity: 1; }
+        
+        /* Section step numbers */
+        .section-step { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; background: var(--accent); color: white; border-radius: 50%; font-size: 10px; font-weight: 600; margin-right: 6px; }
+        
+        /* Info tooltip */
+        .info-icon { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; background: var(--bg-tertiary); color: var(--text-muted); border-radius: 50%; font-size: 10px; cursor: help; margin-left: 6px; }
+        .info-icon:hover { background: var(--accent); color: white; }
+        
         .generation-progress { background: var(--bg-tertiary); border-radius: 6px; padding: 12px; margin-bottom: 10px; }
         .gen-status { font-size: 12px; color: var(--text-secondary); margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
         .gen-bar { height: 6px; background: var(--bg-primary); border-radius: 3px; overflow: hidden; }
@@ -195,22 +236,109 @@
         </div>
     </header>
 
+    <!-- Step Map -->
+    <div class="step-map">
+        <div class="step-map-inner">
+            <div class="step-map-title">📖 <span onclick="toggleStepDetails()">How to Use</span> — Follow these steps</div>
+            <div class="steps-container">
+                <div class="step-item" data-step="1">
+                    <div class="step-num">1</div>
+                    <div class="step-label">📤 Upload</div>
+                    <div class="step-details">
+                        <h4>Upload Images</h4>
+                        <p>Upload 1 or more images (PNG, JPG, WebP).</p>
+                        <table>
+                            <tr><td>1 image + Interp ON</td><td>Smooth natural motion, same scene</td></tr>
+                            <tr><td>1 image + Interp OFF</td><td>Static keyframe, minimal motion</td></tr>
+                            <tr><td>Multiple + Interp ON</td><td>Smooth transitions between images (1→2→3→1...)</td></tr>
+                            <tr><td>Multiple + Interp OFF</td><td>Uses first image only</td></tr>
+                        </table>
+                        <p style="margin-top:8px;"><strong>Tip:</strong> No need to match images to dialogue lines! Images cycle automatically.</p>
+                    </div>
+                </div>
+                <div class="step-arrow">→</div>
+                <div class="step-item" data-step="2">
+                    <div class="step-num">2</div>
+                    <div class="step-label">⚙️ Configure</div>
+                    <div class="step-details">
+                        <h4>Configure Settings</h4>
+                        <p>Select your preferred options:</p>
+                        <table>
+                            <tr><td>Language</td><td>Voice language (English, Italian, etc.)</td></tr>
+                            <tr><td>Aspect</td><td>9:16 (vertical) or 16:9 (horizontal)</td></tr>
+                            <tr><td>Duration</td><td>Clip length (4s, 6s, or 8s)</td></tr>
+                            <tr><td>Interpolation</td><td>Enable for smooth motion/transitions</td></tr>
+                            <tr><td>AI Prompts</td><td>Let AI optimize visuals & voice</td></tr>
+                        </table>
+                    </div>
+                </div>
+                <div class="step-arrow">→</div>
+                <div class="step-item" data-step="3">
+                    <div class="step-num">3</div>
+                    <div class="step-label">✍️ Dialogue</div>
+                    <div class="step-details">
+                        <h4>Add Dialogue Lines</h4>
+                        <p>Enter lines in format: <code>1|First line</code></p>
+                        <p style="margin-top:6px;">OR paste your full script and click <strong>✨ Auto-Split</strong> to automatically split into ~7 second clips.</p>
+                        <p style="margin-top:6px;"><strong>Tip:</strong> Auto-Split adapts word count based on your selected language!</p>
+                    </div>
+                </div>
+                <div class="step-arrow">→</div>
+                <div class="step-item" data-step="4">
+                    <div class="step-num">4</div>
+                    <div class="step-label">🚀 Generate</div>
+                    <div class="step-details">
+                        <h4>Start Generation</h4>
+                        <p>Click <strong>Start Generation</strong> to begin.</p>
+                        <p style="margin-top:6px;">Each clip takes ~2-3 minutes. Watch progress in real-time in the Details panel.</p>
+                        <p style="margin-top:6px;"><strong>Note:</strong> Multiple API keys rotate automatically for faster processing.</p>
+                    </div>
+                </div>
+                <div class="step-arrow">→</div>
+                <div class="step-item" data-step="5">
+                    <div class="step-num">5</div>
+                    <div class="step-label">✅ Review</div>
+                    <div class="step-details">
+                        <h4>Review & Approve</h4>
+                        <p>Watch each generated clip in the Details panel.</p>
+                        <p style="margin-top:6px;">Use <strong>◀ ▶</strong> arrows to browse different variants.</p>
+                        <p style="margin-top:6px;">Click <strong>Approve</strong> to keep a clip or <strong>Redo</strong> to regenerate it.</p>
+                    </div>
+                </div>
+                <div class="step-arrow">→</div>
+                <div class="step-item" data-step="6">
+                    <div class="step-num">6</div>
+                    <div class="step-label">📥 Download</div>
+                    <div class="step-details">
+                        <h4>Download Results</h4>
+                        <p>Once all clips are approved, click <strong>Download</strong> to get them as a ZIP file.</p>
+                        <p style="margin-top:6px;">Only approved clips are included in the download.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="main">
         <div>
             <div class="card" style="margin-bottom:12px;">
                 <div class="card-title">⚙️ Configuration</div>
                 <div class="config-grid">
                     <div class="config-box">
-                        <label>Images</label>
+                        <label><span class="section-step">1</span>Images</label>
                         <div class="upload-area" id="uploadArea">
                             <p>📤 Drop or click</p>
                             <span>PNG, JPG, WebP (1+ images)</span>
                         </div>
                         <input type="file" id="fileInput" multiple accept=".png,.jpg,.jpeg,.webp" hidden>
                         <div class="uploaded" id="uploadedCount"></div>
-                        <div style="font-size:10px;color:var(--text-muted);margin-top:4px;">Single image = same frame for start/end</div>
+                        <div class="image-thumbnails" id="imageThumbnails"></div>
+                        <div style="font-size:10px;color:var(--text-muted);margin-top:8px;">
+                            <strong>💡 Tip:</strong> With <strong>Interpolation ON</strong>, 1 image creates smooth natural motion; multiple images create seamless transitions between scenes.
+                        </div>
                     </div>
                     <div class="config-box">
+                        <label><span class="section-step">2</span>Settings</label>
                         <div class="row">
                             <div class="col"><label>Language</label><select id="language"><option>English</option><option>Italian</option><option>Spanish</option><option>French</option><option>German</option></select></div>
                             <div class="col"><label>Aspect</label><select id="aspectRatio"><option value="9:16">9:16</option><option value="16:9">16:9</option></select></div>
@@ -219,16 +347,25 @@
                             <div class="col"><label>Resolution</label><select id="resolution"><option>720p</option><option>1080p</option></select></div>
                             <div class="col"><label>Duration</label><select id="duration"><option value="8">8s</option><option value="6">6s</option><option value="4">4s</option></select></div>
                         </div>
-                        <div class="toggle-row"><span class="toggle-label">Interpolation</span><div class="toggle active" id="togInterp" data-value="true"></div></div>
-                        <div class="toggle-row"><span class="toggle-label">AI Prompts</span><div class="toggle active" id="togAI" data-value="true"></div></div>
+                        <div class="toggle-row">
+                            <span class="toggle-label">Interpolation <span class="info-icon" title="Smooth motion between frames">?</span></span>
+                            <div class="toggle active" id="togInterp" data-value="true"></div>
+                        </div>
+                        <div class="toggle-row">
+                            <span class="toggle-label">AI Prompts <span class="info-icon" title="Let AI optimize visuals & voice">?</span></span>
+                            <div class="toggle active" id="togAI" data-value="true"></div>
+                        </div>
                     </div>
                     <div class="config-box full">
                         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-                            <label style="margin:0;">Dialogue Lines (ID|Text)</label>
+                            <label style="margin:0;"><span class="section-step">3</span>Dialogue Lines (ID|Text)</label>
                             <button class="btn btn-secondary btn-sm" onclick="autoSplitScript()" id="splitBtn" title="Paste full script and click to auto-split into ~7 second lines">✨ Auto-Split</button>
                         </div>
                         <textarea id="dialogueInput" placeholder="1|First line here&#10;2|Second line&#10;3|Third line...&#10;&#10;OR paste full script and click Auto-Split ✨"></textarea>
                         <div id="splitStatus" style="font-size:10px;color:var(--text-muted);margin-top:4px;display:none;"></div>
+                        <div style="font-size:10px;color:var(--text-muted);margin-top:4px;">
+                            <strong>💡 Tip:</strong> Paste your full script and click <strong>✨ Auto-Split</strong> to automatically split into ~7 second clips based on language.
+                        </div>
                     </div>
                     <!-- Custom Prompt Section (shown when AI Prompts is OFF) -->
                     <div class="config-box full" id="customPromptSection" style="display:none;">
@@ -243,6 +380,7 @@ A realistic vertical video of a professional presenter speaking directly to came
                     </div>
                 </div>
                 <div style="margin-top:16px;text-align:center;">
+                    <span class="section-step" style="margin-right:8px;">4</span>
                     <button class="btn btn-primary btn-start" onclick="createJob()">🚀 Start Generation</button>
                 </div>
             </div>
@@ -254,7 +392,7 @@ A realistic vertical video of a professional presenter speaking directly to came
         <div>
             <div class="card">
                 <div class="card-title" style="display:flex;justify-content:space-between;align-items:center;">
-                    <span>📊 Details</span>
+                    <span><span class="section-step">5</span>📊 Review & Approve</span>
                     <div id="jobActions"></div>
                 </div>
                 <div id="noJob" class="empty"><h3>Select a job</h3></div>
@@ -279,6 +417,9 @@ A realistic vertical video of a professional presenter speaking directly to came
         uploadArea.ondrop=async e=>{e.preventDefault();uploadArea.style.borderColor='';await upload(Array.from(e.dataTransfer.files))};
         fileInput.onchange=async e=>await upload(Array.from(e.target.files));
         
+        // Store uploaded file data for thumbnails
+        let uploadedFilesData = [];
+        
         async function upload(files){
             if(!files.length)return;
             const fd=new FormData();
@@ -288,7 +429,67 @@ A realistic vertical video of a professional presenter speaking directly to came
             const d=await r.json();
             uploadJobId=d.job_id;
             uploadedImages=uploadedImages.concat(d.uploaded);
+            
+            // Store file data for thumbnails
+            for(const f of files){
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    uploadedFilesData.push({
+                        name: f.name,
+                        dataUrl: e.target.result,
+                        index: uploadedFilesData.length
+                    });
+                    renderThumbnails();
+                };
+                reader.readAsDataURL(f);
+            }
+            
             document.getElementById('uploadedCount').textContent=uploadedImages.length?`✓ ${uploadedImages.length} images`:'';
+        }
+        
+        function renderThumbnails(){
+            const container = document.getElementById('imageThumbnails');
+            container.innerHTML = uploadedFilesData.map((f, i) => `
+                <div class="image-thumb" data-index="${i}" title="${f.name}">
+                    <img src="${f.dataUrl}" alt="${f.name}">
+                    <div class="thumb-index">${i + 1}</div>
+                    <div class="thumb-remove" onclick="removeImage(${i})">✕</div>
+                    <div class="thumb-name">${f.name}</div>
+                </div>
+            `).join('');
+        }
+        
+        function removeImage(index){
+            uploadedFilesData.splice(index, 1);
+            uploadedImages.splice(index, 1);
+            // Re-index remaining files
+            uploadedFilesData.forEach((f, i) => f.index = i);
+            renderThumbnails();
+            document.getElementById('uploadedCount').textContent=uploadedImages.length?`✓ ${uploadedImages.length} images`:'';
+        }
+        
+        function clearAllImages(){
+            uploadedFilesData = [];
+            uploadedImages = [];
+            uploadJobId = null;
+            renderThumbnails();
+            document.getElementById('uploadedCount').textContent = '';
+        }
+        
+        // Toggle step details visibility
+        let stepDetailsVisible = false;
+        function toggleStepDetails(){
+            stepDetailsVisible = !stepDetailsVisible;
+            document.querySelectorAll('.step-details').forEach(d => {
+                d.style.display = stepDetailsVisible ? 'block' : '';
+                d.style.position = stepDetailsVisible ? 'static' : '';
+                d.style.width = stepDetailsVisible ? '100%' : '';
+                d.style.marginTop = stepDetailsVisible ? '8px' : '';
+            });
+            document.querySelectorAll('.step-item').forEach(s => {
+                s.style.flexDirection = stepDetailsVisible ? 'column' : '';
+                s.style.alignItems = stepDetailsVisible ? 'flex-start' : '';
+            });
         }
 
         // Toggles
@@ -320,14 +521,15 @@ A realistic vertical video of a professional presenter speaking directly to came
                 return;
             }
             
+            const language = document.getElementById('language').value;
+            
             btn.disabled = true;
             btn.textContent = '⏳ Splitting...';
             status.style.display = 'block';
-            status.textContent = 'Analyzing script with AI...';
+            status.textContent = `Splitting for ${language} (~7s per clip)...`;
             status.style.color = 'var(--accent)';
             
             try {
-                const language = document.getElementById('language').value;
                 const r = await fetch(`${API}/split-script`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -345,7 +547,7 @@ A realistic vertical video of a professional presenter speaking directly to came
                 const formatted = data.lines.map((line, i) => `${i + 1}|${line}`).join('\n');
                 input.value = formatted;
                 
-                status.textContent = `✓ Split into ${data.lines.length} clips (~${data.avg_duration}s each)`;
+                status.textContent = `✓ ${data.count} clips × ~${data.avg_duration}s (${language}, ~${data.target_words_per_line} words/clip)`;
                 status.style.color = 'var(--success)';
                 
             } catch (e) {
@@ -401,9 +603,10 @@ A realistic vertical video of a professional presenter speaking directly to came
                 
                 console.log('Job created:', job);
                 
-                // Clear upload state
-                uploadJobId=null;uploadedImages=[];
+                // Clear upload state and thumbnails
+                uploadJobId=null;uploadedImages=[];uploadedFilesData=[];
                 document.getElementById('uploadedCount').textContent='';
+                document.getElementById('imageThumbnails').innerHTML='';
                 
                 // Refresh list and select new job
                 await refreshJobsList();
@@ -579,7 +782,7 @@ A realistic vertical video of a professional presenter speaking directly to came
                 let bannerHtml='';
                 
                 if(rs.all_approved){
-                    bannerHtml=`<div class="review-banner" style="background:var(--success);"><h3>✅ All Approved</h3><button class="btn btn-secondary btn-sm" onclick="downloadAll('${jobId}')">📥 Download</button></div>`;
+                    bannerHtml=`<div class="review-banner" style="background:var(--success);"><h3>✅ All Approved</h3><span class="section-step" style="background:white;color:var(--success);">6</span><button class="btn btn-secondary btn-sm" onclick="downloadAll('${jobId}')">📥 Download</button></div>`;
                 }else if(rs.pending_review>0){
                     bannerHtml=`<div class="review-banner"><h3>📋 Review</h3><div class="review-stats"><div class="review-stat"><div class="review-stat-val">${rs.approved}</div><div class="review-stat-lbl">OK</div></div><div class="review-stat"><div class="review-stat-val">${rs.pending_review}</div><div class="review-stat-lbl">Pending</div></div></div></div>`;
                 }
@@ -684,7 +887,7 @@ A realistic vertical video of a professional presenter speaking directly to came
                         try{
                             const rs=await fetch(`${API}/jobs/${id}/review-status`).then(r=>r.json());
                             if(rs.all_approved){
-                                bannerHtml=`<div class="review-banner" style="background:var(--success);"><h3>✅ All Approved</h3><button class="btn btn-secondary btn-sm" onclick="downloadAll('${id}')">📥 Download</button></div>`;
+                                bannerHtml=`<div class="review-banner" style="background:var(--success);"><h3>✅ All Approved</h3><span class="section-step" style="background:white;color:var(--success);">6</span><button class="btn btn-secondary btn-sm" onclick="downloadAll('${id}')">📥 Download</button></div>`;
                             }else if(rs.pending_review>0){
                                 bannerHtml=`<div class="review-banner"><h3>📋 Review</h3><div class="review-stats"><div class="review-stat"><div class="review-stat-val">${rs.approved}</div><div class="review-stat-lbl">OK</div></div><div class="review-stat"><div class="review-stat-val">${rs.pending_review}</div><div class="review-stat-lbl">Pending</div></div></div></div>`;
                             }
@@ -753,7 +956,7 @@ A realistic vertical video of a professional presenter speaking directly to came
                     const rs = await fetch(`${API}/jobs/${jobId}/review-status`).then(r=>r.json());
                     let bannerHtml = '';
                     if(rs.all_approved){
-                        bannerHtml = `<div class="review-banner" style="background:var(--success);"><h3>✅ All Approved</h3><button class="btn btn-secondary btn-sm" onclick="downloadAll('${jobId}')">📥 Download</button></div>`;
+                        bannerHtml = `<div class="review-banner" style="background:var(--success);"><h3>✅ All Approved</h3><span class="section-step" style="background:white;color:var(--success);">6</span><button class="btn btn-secondary btn-sm" onclick="downloadAll('${jobId}')">📥 Download</button></div>`;
                     }else if(rs.pending_review > 0){
                         bannerHtml = `<div class="review-banner"><h3>📋 Review</h3><div class="review-stats"><div class="review-stat"><div class="review-stat-val">${rs.approved}</div><div class="review-stat-lbl">OK</div></div><div class="review-stat"><div class="review-stat-val">${rs.pending_review}</div><div class="review-stat-lbl">Pending</div></div></div></div>`;
                     }
