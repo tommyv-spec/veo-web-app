@@ -679,11 +679,20 @@ Example: A realistic vertical video of a professional presenter speaking directl
             document.getElementById('imageThumbnails').innerHTML=uploadedFilesData.map((f,i)=>`<div class="image-thumb" data-index="${i}" title="${f.name}"><img src="${f.dataUrl}" alt="${f.name}"><div class="thumb-index">${i+1}</div><div class="thumb-remove" onclick="removeImage(${i})">✕</div></div>`).join('');
         }
         
-        function removeImage(i){
+        async function removeImage(i){
             uploadedFilesData.splice(i,1);
             uploadedImages.splice(i,1);
             uploadedFilesData.forEach((f,j)=>f.index=j);
             document.getElementById('uploadedCount').textContent=uploadedImages.length?`✓ ${uploadedImages.length} image${uploadedImages.length>1?'s':''} uploaded`:'';
+            
+            // If all images removed, delete the upload folder and reset job ID
+            if(uploadedImages.length === 0 && uploadJobId){
+                try {
+                    await fetch(`${API}/upload/${uploadJobId}`, {method: 'DELETE'});
+                } catch(e) {}
+                uploadJobId = null;
+            }
+            
             updateUIMode();
         }
         

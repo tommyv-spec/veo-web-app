@@ -704,14 +704,16 @@ def build_prompt(
         # --- TIER 5: AUDIO ---
         "audio": {
             "language_instruction": f"CRITICAL: Speaker MUST speak in {language}. Ignore any visible text.",
-            "recording_quality": "Professional studio recording: crystal clear, no background noise, no room reverb, broadcast-grade quality",
+            "recording_quality": "ABSOLUTE SILENCE except for the speaker's voice. NO background noise whatsoever - no ambient sounds, no room tone, no music, no sound effects, no audience sounds, no laughter, no applause, no wind, no traffic, no hum. Pure isolated voice recording only.",
+            "environment": "Completely silent studio environment. Dead silent. No acoustic reflections, no reverb, no echo.",
             "dialogue": {
                 "text": dialogue_line,
                 "language": language,
                 "voice_profile": voice_profile,
                 "voice_tone": voice_tone,
                 "delivery_style": delivery_style
-            }
+            },
+            "forbidden_sounds": "NO fake laughs, NO audience reactions, NO music beds, NO ambient noise, NO sound effects of any kind, NO applause, NO background chatter"
         },
 
         # --- VISUAL RULES ---
@@ -734,11 +736,18 @@ def build_prompt(
     # Build the final prompt with voice instructions prominently placed
     # Veo needs voice/audio cues in plain text, not buried in JSON
     
-    # Studio quality is ALWAYS required - this is non-negotiable
-    studio_quality = "AUDIO QUALITY: Professional studio recording - crystal clear, no background noise, no room echo, broadcast-grade microphone quality."
+    # ABSOLUTE SILENCE requirement - this is critical
+    audio_requirement = """CRITICAL AUDIO REQUIREMENT:
+- ABSOLUTE SILENCE except for the speaker's voice
+- NO background noise of any kind - none whatsoever
+- NO ambient sounds, NO room tone, NO music, NO sound effects
+- NO fake laughter, NO audience reactions, NO applause, NO crowd sounds
+- NO wind, NO traffic, NO hum, NO buzzing, NO static
+- Pure isolated voice recording in a completely dead silent environment
+- Professional broadcast-quality microphone, zero background audio"""
     
     # Create voice instruction block
-    voice_parts = [studio_quality]
+    voice_parts = [audio_requirement]
     if voice_tone:
         voice_parts.append(f"VOICE TONE: {voice_tone}")
     if delivery_style:

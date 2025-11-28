@@ -203,6 +203,7 @@ async def upload_images(
     """
     Upload images for video generation.
     Creates a new job directory if job_id not provided.
+    Images are renamed sequentially to ensure correct ordering.
     """
     # Create or get job directory
     if job_id is None:
@@ -210,6 +211,10 @@ async def upload_images(
     
     job_dir = app_config.uploads_dir / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Count existing images to continue numbering
+    existing_images = [f for f in job_dir.iterdir() if f.suffix.lower() in SUPPORTED_IMAGE_FORMATS]
+    next_index = len(existing_images)
     
     uploaded = []
     errors = []
@@ -235,16 +240,21 @@ async def upload_images(
             })
             continue
         
-        # Save file
+        # Save file with sequential name to ensure correct ordering
         try:
-            filepath = job_dir / file.filename
+            # Use sequential naming: image_00.png, image_01.png, etc.
+            new_filename = f"image_{next_index:02d}{ext}"
+            filepath = job_dir / new_filename
             with open(filepath, "wb") as f:
                 f.write(content)
             uploaded.append({
-                "filename": file.filename,
+                "filename": new_filename,
+                "original_filename": file.filename,
                 "size": len(content),
                 "path": str(filepath),
+                "index": next_index,
             })
+            next_index += 1
         except Exception as e:
             errors.append({
                 "filename": file.filename,
