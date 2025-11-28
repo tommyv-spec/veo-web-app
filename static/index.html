@@ -777,13 +777,14 @@ Example: A realistic vertical video of a professional presenter speaking directl
             if(!cleanedText) return [];
             
             const words = cleanedText.split(/\s+/);
-            const resultLines = [];
+            let resultLines = [];
             let currentLine = [];
             let wordCount = 0;
             
-            // More flexible range: prefer sentence ends within a wider window
-            const earlyMin = Math.floor(minWords * 0.85); // Can split early at sentence end
-            const lateMax = targetWords + 3; // Slight extension allowed for sentence end
+            // Tight range: 6-7.5 seconds
+            // For English (2.5 wps): 6s=15 words, 7s=17-18 words, 7.5s=19 words
+            const absoluteMin = Math.round(targetWords * 0.85);  // ~6s (15 words)
+            const absoluteMax = Math.round(targetWords * 1.07);  // ~7.5s (19 words)
             
             for(let i = 0; i < words.length; i++){
                 const word = words[i];
@@ -798,27 +799,30 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 let shouldSplit = false;
                 
                 if(isLastWord){
+                    // Last word - must split
                     shouldSplit = true;
-                } else if(wordCount >= earlyMin && isHardStop){
-                    // Sentence end in acceptable range - take it
-                    shouldSplit = true;
-                } else if(wordCount >= targetWords && isSoftStop){
-                    // At target with soft stop - good enough
-                    shouldSplit = true;
-                } else if(wordCount >= lateMax){
-                    // Past comfortable max - check if sentence end coming soon
-                    let foundHardStop = false;
-                    for(let j = i + 1; j <= Math.min(i + 2, words.length - 1); j++){
-                        if(HARD_STOPS.includes(words[j].slice(-1))){
-                            foundHardStop = true;
-                            break;
-                        }
+                } else if(wordCount >= absoluteMin && wordCount <= absoluteMax){
+                    // In acceptable range (6-7.5s) - look for stops
+                    if(isHardStop){
+                        // Hard stop - definitely split
+                        shouldSplit = true;
+                    } else if(wordCount >= targetWords && isSoftStop){
+                        // At or past 7s with soft stop - split
+                        shouldSplit = true;
+                    } else if(wordCount >= absoluteMax){
+                        // At 7.5s max - force split
+                        shouldSplit = true;
                     }
-                    if(!foundHardStop) shouldSplit = true;
-                } else if(wordCount >= lateMax + 2){
-                    // Absolute max - force split
-                    shouldSplit = true;
+                } else if(wordCount > absoluteMax){
+                    // Past 7.5s - must split now at any opportunity
+                    if(isHardStop || isSoftStop){
+                        shouldSplit = true;
+                    } else {
+                        // Force split immediately
+                        shouldSplit = true;
+                    }
                 }
+                // Below absoluteMin (6s) - keep going, don't split yet
                 
                 if(shouldSplit && currentLine.length > 0){
                     resultLines.push(currentLine.join(' '));
@@ -831,41 +835,43 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 resultLines.push(currentLine.join(' '));
             }
             
-            // Balance last 3 lines if last one is too short
-            if(resultLines.length >= 3){
-                const last3 = resultLines.slice(-3);
-                const last3Words = last3.map(l => l.split(/\s+/));
-                const totalWords = last3Words.reduce((sum, w) => sum + w.length, 0);
-                const lastLineWords = last3Words[2].length;
-                
-                // If last line is less than 50% of average, rebalance
-                const avgWords = totalWords / 3;
-                if(lastLineWords < avgWords * 0.5){
-                    // Combine all words and redistribute into 3 balanced lines
-                    const allWords = last3Words.flat();
-                    const wordsPerLine = Math.ceil(allWords.length / 3);
+            // Balance last lines if needed
+            resultLines = balanceLastLines(resultLines, absoluteMin);
+            
+            return resultLines;
+        }
+        
+        function balanceLastLines(lines, minWords){
+            if(lines.length < 2) return lines;
+            
+            const result = [...lines];
+            const lastWords = result[result.length - 1].split(/\s+/).length;
+            
+            if(lastWords < minWords){
+                if(result.length >= 3){
+                    // Redistribute last 3 lines
+                    const last3 = result.slice(-3);
+                    const allWords = last3.flatMap(l => l.split(/\s+/));
+                    const perLine = Math.ceil(allWords.length / 3);
                     
-                    const newLine1 = allWords.slice(0, wordsPerLine).join(' ');
-                    const newLine2 = allWords.slice(wordsPerLine, wordsPerLine * 2).join(' ');
-                    const newLine3 = allWords.slice(wordsPerLine * 2).join(' ');
+                    result.splice(-3, 3,
+                        allWords.slice(0, perLine).join(' '),
+                        allWords.slice(perLine, perLine * 2).join(' '),
+                        allWords.slice(perLine * 2).join(' ')
+                    );
                     
-                    resultLines.splice(-3, 3, newLine1, newLine2, newLine3);
-                }
-            } else if(resultLines.length === 2){
-                // Check if last line is too short
-                const lastWords = resultLines[1].split(/\s+/).length;
-                const prevWords = resultLines[0].split(/\s+/).length;
-                
-                if(lastWords < minWords * 0.4){
-                    // Merge and re-split evenly
-                    const allWords = resultLines[0].split(/\s+/).concat(resultLines[1].split(/\s+/));
+                    // Remove empty last line if any
+                    if(!result[result.length - 1].trim()) result.pop();
+                } else {
+                    // Only 2 lines - redistribute evenly
+                    const allWords = result.flatMap(l => l.split(/\s+/));
                     const mid = Math.ceil(allWords.length / 2);
-                    resultLines[0] = allWords.slice(0, mid).join(' ');
-                    resultLines[1] = allWords.slice(mid).join(' ');
+                    result[0] = allWords.slice(0, mid).join(' ');
+                    result[1] = allWords.slice(mid).join(' ');
                 }
             }
             
-            return resultLines;
+            return result;
         }
         
         function renderStoryboard(){
