@@ -47,6 +47,8 @@
         .logo-icon { width: 40px; height: 40px; background: linear-gradient(135deg, var(--accent), var(--accent2)); border-radius: var(--radius-md); display: flex; align-items: center; justify-content: center; font-size: 20px; box-shadow: 0 4px 12px var(--accent-glow); }
         .logo h1 { font-size: 18px; font-weight: 600; }
         .header-actions { display: flex; gap: 12px; }
+        .btn-new-job { display: none; }
+        .state-active .btn-new-job { display: inline-flex; }
         
         .card { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 20px; margin-bottom: 16px; }
         .card:last-child { margin-bottom: 0; }
@@ -270,6 +272,7 @@
                 <h1>Veo 3.1 Studio</h1>
             </div>
             <div class="header-actions">
+                <button class="btn btn-secondary btn-sm btn-new-job" onclick="collapseResults()">➕ New Job</button>
                 <button class="btn btn-secondary btn-sm" onclick="refreshJobs()">🔄 Refresh</button>
             </div>
         </header>
@@ -487,7 +490,10 @@ Example: A realistic vertical video of a professional presenter speaking directl
                                 </div>
                             </span>
                         </span>
-                        <div id="jobActions"></div>
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <div id="jobActions"></div>
+                            <button class="btn btn-secondary btn-sm" onclick="collapseResults()" title="Collapse panel" style="padding:6px 10px;">✕</button>
+                        </div>
                     </div>
                     <div id="noJob" class="empty"><h3>Select a job to view details</h3><p>Jobs appear here after generation starts</p></div>
                     <div id="jobDetails" style="display:none;">
@@ -505,6 +511,21 @@ Example: A realistic vertical video of a professional presenter speaking directl
         const API='/api';
         
         function setActiveState(){ const c=document.getElementById('appContainer'); if(!c.classList.contains('state-active')){ c.classList.remove('state-initial'); c.classList.add('state-active'); } document.getElementById('jobsCard').style.display='block'; }
+        function collapseResults(){ 
+            const c=document.getElementById('appContainer'); 
+            c.classList.remove('state-active'); 
+            c.classList.add('state-initial'); 
+            selectedJobId=null;
+            document.querySelectorAll('.job-item').forEach(el=>el.classList.remove('selected'));
+            // Clear form for new job
+            uploadJobId=null;uploadedImages=[];uploadedFilesData=[];
+            document.getElementById('uploadedCount').textContent='';
+            document.getElementById('imageThumbnails').innerHTML='';
+            document.getElementById('dialogueInput').value='';
+            document.getElementById('contextInput').value='';
+            document.getElementById('lineValidation').style.display='none';
+            document.getElementById('splitStatus').style.display='none';
+        }
         function selectAspect(el){ document.querySelectorAll('.aspect-btn').forEach(b=>b.classList.remove('active')); el.classList.add('active'); }
         function getSelectedAspect(){ const a=document.querySelector('.aspect-btn.active'); return a?a.dataset.value:'9:16'; }
         function selectResolution(el){ document.querySelectorAll('.resolution-toggle button').forEach(b=>b.classList.remove('active')); el.classList.add('active'); }
@@ -601,8 +622,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 const r=await fetch(`${API}/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:cfg,dialogue_lines:lines,api_keys:{gemini_keys:[],openai_key:null},job_id:uploadJobId})});
                 if(!r.ok){const e=await r.json();throw new Error(e.detail?.errors?.join(', ')||e.detail||'Failed');}
                 const job=await r.json();
-                uploadJobId=null;uploadedImages=[];uploadedFilesData=[];
-                document.getElementById('uploadedCount').textContent='';document.getElementById('imageThumbnails').innerHTML='';
+                uploadJobId=null;uploadedImages=[];
                 document.getElementById('lineValidation').style.display='none';document.getElementById('splitStatus').style.display='none';
                 setActiveState();hasJobs=true;await refreshJobsList();selectedJobId=null;selectJob(job.id);
                 btn.innerHTML='✓ Started!';setTimeout(()=>{btn.innerHTML='🚀 Start Generation';},2000);
