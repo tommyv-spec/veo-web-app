@@ -435,10 +435,27 @@ def build_prompt(
         prompt_payload["scene"]["end_frame"] = "Transition smoothly to end frame"
 
     prompt_json = json.dumps(prompt_payload, ensure_ascii=False)
-    vlog(f"[ROUTING] Final JSON prompt ({len(prompt_json)} chars)")
-    vlog(f"[ROUTING] User context: '{user_context_raw}'")
-    vlog(f"[ROUTING] Enriched action: '{enriched_context.get('subject_action', 'none')}'")
-    vlog(f"[ROUTING] Enriched expression: '{enriched_context.get('facial_expression', 'none')}'")
+    
+    # Detailed logging for debugging
+    vlog(f"\n{'='*60}")
+    vlog(f"[ROUTING] PROMPT FOR CLIP {clip_index}")
+    vlog(f"{'='*60}")
+    vlog(f"User Context: '{user_context_raw}'")
+    vlog(f"")
+    vlog(f"ENRICHED DETAILS:")
+    vlog(f"  Action: {enriched_context.get('subject_action', 'none')}")
+    vlog(f"  Expression: {enriched_context.get('facial_expression', 'none')}")
+    vlog(f"  Voice Tone: {enriched_context.get('voice_tone', 'none')}")
+    vlog(f"  Delivery: {enriched_context.get('delivery_style', 'none')}")
+    vlog(f"  Body Language: {enriched_context.get('body_language', 'none')}")
+    vlog(f"  Atmosphere: {enriched_context.get('atmosphere', 'none')}")
+    vlog(f"")
+    vlog(f"VISUAL DESCRIPTION:")
+    vlog(f"  {visual_description[:300]}...")
+    vlog(f"")
+    vlog(f"FULL JSON PROMPT:")
+    vlog(json.dumps(prompt_payload, indent=2, ensure_ascii=False)[:1500])
+    vlog(f"{'='*60}\n")
     
     return prompt_json
 

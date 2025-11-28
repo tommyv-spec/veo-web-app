@@ -637,6 +637,16 @@ class JobWorker:
                     current_end_index=end_index,
                 )
                 
+                # Log the prompt that was sent to Veo
+                if result.get("prompt_text"):
+                    prompt_preview = result["prompt_text"][:500] + "..." if len(result.get("prompt_text", "")) > 500 else result.get("prompt_text", "")
+                    with get_db() as db:
+                        add_job_log(
+                            db, job_id,
+                            f"📝 Prompt for clip {clip_index + 1}: {prompt_preview}",
+                            "INFO", "prompt"
+                        )
+                
                 # Check if failed due to no keys
                 if not result["success"]:
                     error = result.get("error")
