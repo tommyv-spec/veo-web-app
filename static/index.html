@@ -229,6 +229,7 @@
         .line-check.line-ok .line-status { color: var(--success); }
         .line-check.line-short .line-status { color: var(--error); }
         .line-check.line-long .line-status { color: var(--warning); }
+        .line-check .line-images { background: var(--bg-input); padding: 2px 6px; border-radius: 4px; color: var(--accent); font-size: 10px; white-space: nowrap; }
         .line-check .line-info { color: var(--text-secondary); flex: 1; }
         .validation-summary { font-size: 12px; padding: 8px 12px; border-radius: var(--radius-sm); margin-bottom: 8px; }
         .validation-summary.all-ok { background: rgba(16, 185, 129, 0.15); color: var(--success); }
@@ -556,18 +557,22 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 reader.readAsDataURL(f);
             }
             document.getElementById('uploadedCount').textContent=uploadedImages.length?`✓ ${uploadedImages.length} image${uploadedImages.length>1?'s':''} uploaded`:'';
+            validateDialogueLines(); // Update image assignments
         }
         
         function renderThumbnails(){
             document.getElementById('imageThumbnails').innerHTML=uploadedFilesData.map((f,i)=>`<div class="image-thumb" data-index="${i}" title="${f.name}"><img src="${f.dataUrl}" alt="${f.name}"><div class="thumb-index">${i+1}</div><div class="thumb-remove" onclick="removeImage(${i})">✕</div></div>`).join('');
         }
-        function removeImage(i){uploadedFilesData.splice(i,1);uploadedImages.splice(i,1);uploadedFilesData.forEach((f,j)=>f.index=j);renderThumbnails();document.getElementById('uploadedCount').textContent=uploadedImages.length?`✓ ${uploadedImages.length} image${uploadedImages.length>1?'s':''} uploaded`:'';}
+        function removeImage(i){uploadedFilesData.splice(i,1);uploadedImages.splice(i,1);uploadedFilesData.forEach((f,j)=>f.index=j);renderThumbnails();document.getElementById('uploadedCount').textContent=uploadedImages.length?`✓ ${uploadedImages.length} image${uploadedImages.length>1?'s':''} uploaded`:'';validateDialogueLines();}
         
         document.querySelectorAll('.toggle').forEach(t=>t.onclick=()=>{t.classList.toggle('active');t.dataset.value=t.classList.contains('active')});
         document.getElementById('togAI').addEventListener('click',function(){
             const isAIEnabled = this.dataset.value==='true';
             document.getElementById('customPromptSection').style.display=isAIEnabled?'none':'block';
             document.getElementById('contextSection').style.display=isAIEnabled?'block':'none';
+        });
+        document.getElementById('togInterp').addEventListener('click',function(){
+            validateDialogueLines(); // Update image assignments when interpolation changes
         });
         
         async function autoSplitScript(){
@@ -596,15 +601,41 @@ Example: A realistic vertical video of a professional presenter speaking directl
             const lines=input.split('\n').filter(l=>l.trim()),formattedLines=lines.filter(l=>/^\d+\|/.test(l.trim()));
             if(!formattedLines.length){container.style.display='none';return;}
             const wps=SPEAKING_RATES[language]||2.5,targetWords=Math.round(wps*7),minWords=Math.max(8,targetWords-5),maxWords=targetWords+8;
+            
+            // Calculate image assignments
+            const numImages=uploadedImages.length;
+            const useInterpolation=document.getElementById('togInterp').dataset.value==='true';
+            const numPairs=useInterpolation?(numImages>1?numImages-1:1):numImages;
+            const singleImageMode=numImages===1;
+            
             let html='',issues=0,okCount=0;
-            formattedLines.forEach(line=>{
+            formattedLines.forEach((line,idx)=>{
                 const parts=line.split('|');if(parts.length<2)return;
                 const lineNum=parts[0].trim(),text=parts.slice(1).join('|').trim(),wordCount=text.split(/\s+/).filter(w=>w).length,duration=(wordCount/wps).toFixed(1);
                 let sc,st,si;
                 if(wordCount<minWords){sc='line-short';st='⚠️ Too short';si=`Need ${minWords-wordCount}+ more`;issues++;}
                 else if(wordCount>maxWords){sc='line-long';st='⚠️ Too long';si=`${wordCount-maxWords} over`;issues++;}
                 else{sc='line-ok';st='✓ OK';si='';okCount++;}
-                html+=`<div class="line-check ${sc}"><span class="line-num">#${lineNum}</span><span class="line-status">${st}</span><span class="line-info">${wordCount} words → ~${duration}s ${si?'('+si+')':''}</span></div>`;
+                
+                // Calculate which images this clip will use
+                let imageInfo='';
+                if(numImages>0){
+                    if(singleImageMode){
+                        imageInfo=`<span class="line-images" title="Using single image for all clips">🖼 Image 1</span>`;
+                    }else{
+                        const pairIdx=idx%numPairs;
+                        if(useInterpolation){
+                            const startImg=pairIdx+1;
+                            const endImg=pairIdx+2>numImages?1:pairIdx+2;
+                            imageInfo=`<span class="line-images" title="Start: Image ${startImg}, End: Image ${endImg}">🖼 ${startImg} → ${endImg}</span>`;
+                        }else{
+                            const imgNum=pairIdx+1;
+                            imageInfo=`<span class="line-images" title="Using Image ${imgNum}">🖼 Image ${imgNum}</span>`;
+                        }
+                    }
+                }
+                
+                html+=`<div class="line-check ${sc}"><span class="line-num">#${lineNum}</span><span class="line-status">${st}</span>${imageInfo}<span class="line-info">${wordCount} words → ~${duration}s ${si?'('+si+')':''}</span></div>`;
             });
             container.innerHTML=(issues===0?`<div class="validation-summary all-ok">✓ All ${okCount} lines are ~7s (${targetWords}±5 words)</div>`:`<div class="validation-summary has-issues">⚠️ ${issues} line${issues>1?'s':''} need adjustment</div>`)+'<div class="line-validation">'+html+'</div>';
             container.style.display='block';
