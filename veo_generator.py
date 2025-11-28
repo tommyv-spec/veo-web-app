@@ -1101,7 +1101,10 @@ class VeoGenerator:
             result["error"] = VeoError(
                 code=ErrorCode.UNKNOWN,
                 message="google-genai not installed",
-                recoverable=False
+                user_message="Video generation library not available",
+                details={},
+                recoverable=False,
+                suggestion="Contact administrator to install google-genai"
             )
             return result
         
@@ -1120,7 +1123,14 @@ class VeoGenerator:
         
         while attempts < self.config.max_retries_per_clip:
             if self.cancelled:
-                result["error"] = VeoError(code=ErrorCode.UNKNOWN, message="Cancelled", recoverable=False)
+                result["error"] = VeoError(
+                    code=ErrorCode.UNKNOWN, 
+                    message="Cancelled", 
+                    user_message="Generation was cancelled",
+                    details={},
+                    recoverable=False,
+                    suggestion="Start a new job"
+                )
                 return result
             
             while self.paused:
@@ -1241,7 +1251,14 @@ class VeoGenerator:
                         
                         available = self.api_keys.get_available_key_count()
                         if available == 0:
-                            error = VeoError(code=ErrorCode.RATE_LIMITED, message="All keys blocked", recoverable=False)
+                            error = VeoError(
+                                code=ErrorCode.RATE_LIMIT, 
+                                message="All keys blocked", 
+                                user_message="All API keys are temporarily blocked",
+                                details={"blocked_count": len(self.api_keys.blocked_keys)},
+                                recoverable=True,
+                                suggestion="Wait a few minutes for keys to unblock"
+                            )
                             self._emit_error(error)
                             break
                         
@@ -1320,7 +1337,10 @@ class VeoGenerator:
         result["error"] = VeoError(
             code=ErrorCode.VIDEO_GENERATION_FAILED,
             message=f"Failed after {self.config.max_retries_per_clip} attempts",
-            recoverable=False
+            user_message="Video generation failed after multiple attempts",
+            details={"attempts": self.config.max_retries_per_clip, "failed_frames": len(failed_end_frames)},
+            recoverable=True,
+            suggestion="Try regenerating the clip or use a different image"
         )
         
         return result

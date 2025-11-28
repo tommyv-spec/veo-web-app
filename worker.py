@@ -561,51 +561,50 @@ class JobWorker:
         print(f"[Worker] Raw dialogue_data: {json.dumps(dialogue_data, indent=2)}", flush=True)
         
         with get_db() as db:
-            # Create clip records with frame assignments
+            # First pass: determine start_image_idx for each clip
+            clip_assignments = []
+            is_storyboard = False
+            
             for i, line_data in enumerate(dialogue_data):
-                
-                # Check if frontend sent a specific image assignment (storyboard mode)
                 forced_idx = line_data.get("start_image_idx")
                 
-                print(f"[Worker] Clip {i} received: start_image_idx={forced_idx}, text='{line_data.get('text', '')[:40]}...'", flush=True)
-                
                 if single_image_mode:
-                    # All clips use the same image
                     start_idx = 0
-                    end_idx = 0
-                    start_frame_name = images[0].name
-                    end_frame_name = images[0].name if use_interpolation else None
-                    print(f"[Worker] Clip {i}: SINGLE IMAGE MODE → img[0]", flush=True)
                 elif forced_idx is not None:
-                    # === USE STORYBOARD MAPPING ===
-                    # UI specified which image this line belongs to
-                    # In storyboard mode, each clip uses its assigned image for BOTH start and end
-                    # This maintains visual consistency within each scene
+                    # Storyboard mode: use frontend assignment
                     start_idx = int(forced_idx) % num_images
-                    end_idx = start_idx  # Same image - no interpolation within storyboard scenes
-                    
-                    start_frame_name = images[start_idx].name
-                    end_frame_name = images[end_idx].name if use_interpolation else None
-                    print(f"[Worker] Clip {i}: STORYBOARD mapping forced_idx={forced_idx} → img[{start_idx}] ({start_frame_name}) to img[{end_idx}] ({end_frame_name})", flush=True)
+                    is_storyboard = True
                 else:
-                    # Fallback: Sequential pairing (old round-robin logic)
-                    pair_idx = i % num_pairs
-                    
-                    if use_interpolation:
-                        # Pair i = (image[pair_idx], image[pair_idx + 1])
-                        start_idx = pair_idx
-                        end_idx = pair_idx + 1
-                        # Handle edge case if we somehow go out of bounds
-                        if end_idx >= num_images:
-                            end_idx = 0  # Loop back to first image
+                    # Auto-cycle mode: round-robin through images
+                    start_idx = i % num_images
+                
+                clip_assignments.append(start_idx)
+                print(f"[Worker] Clip {i}: start_image_idx={start_idx} (forced={forced_idx})", flush=True)
+            
+            # Second pass: create clips with proper end frames
+            # RULE: End frame of clip N = Start frame of clip N+1
+            for i, line_data in enumerate(dialogue_data):
+                start_idx = clip_assignments[i]
+                
+                if use_interpolation:
+                    if i < len(clip_assignments) - 1:
+                        # Not the last clip: end frame is NEXT clip's start frame
+                        end_idx = clip_assignments[i + 1]
                     else:
-                        # No interpolation: just use image[pair_idx]
-                        start_idx = pair_idx
-                        end_idx = pair_idx
-                    
-                    start_frame_name = images[start_idx].name
-                    end_frame_name = images[end_idx].name if use_interpolation else None
-                    print(f"[Worker] Clip {i}: FALLBACK (no forced_idx) → img[{start_idx}] to img[{end_idx}]", flush=True)
+                        # Last clip behavior differs by mode:
+                        if is_storyboard:
+                            # Storyboard: stay on assigned image (no loop)
+                            end_idx = start_idx
+                        else:
+                            # Auto-cycle: loop back to first clip's image
+                            end_idx = clip_assignments[0]
+                else:
+                    end_idx = start_idx
+                
+                start_frame_name = images[start_idx].name
+                end_frame_name = images[end_idx].name if use_interpolation else None
+                
+                print(f"[Worker] Clip {i}: {start_frame_name} → {end_frame_name or 'N/A'}", flush=True)
                 
                 # Create clip with frame info stored
                 clip = Clip(
@@ -618,9 +617,6 @@ class JobWorker:
                     end_frame=end_frame_name,
                 )
                 db.add(clip)
-                
-                # Log the assignment
-                print(f"[Worker] Clip {i}: '{line_data['text'][:30]}...' → {start_frame_name} → {end_frame_name or 'N/A'}", flush=True)
             
             db.commit()
         
