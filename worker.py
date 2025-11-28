@@ -262,6 +262,10 @@ class JobWorker:
                     end_index = (start_index + 1) % len(images)
                     end_frame = images[end_index]
                 
+                # Initialize voice profile for consistency
+                voice_id = generator.initialize_voice_profile(start_frame)
+                add_job_log(db, job_id, f"Voice Profile for redo: {voice_id}", "INFO", "voice")
+                
                 # Determine prompt to use
                 prompt_text = None
                 if clip.use_logged_params and clip.prompt_text:
@@ -437,6 +441,10 @@ class JobWorker:
                 generator.on_progress = on_progress
                 generator.on_error = on_error
                 
+                # Initialize voice profile ONCE for entire job (use first image as reference)
+                voice_id = generator.initialize_voice_profile(images[0])
+                add_job_log(db, job_id, f"Voice Profile initialized: {voice_id}", "INFO", "voice")
+                
                 self.running_jobs[job_id] = generator
             
             # Process clips
@@ -503,36 +511,94 @@ class JobWorker:
         max_no_keys_retries = 3
         no_keys_wait_seconds = 300  # 5 minutes
         
+        # === CALCULATE IMAGE-TO-CLIP ASSIGNMENTS ===
+        # Logic:
+        # - With interpolation: each clip uses image[i] as start, image[i+1] as end
+        # - Without interpolation: each clip uses image[i] as start only
+        # - If more clips than image pairs, cycle through images
+        # - Single image mode: all clips use the same image
+        
+        num_images = len(images)
+        use_interpolation = getattr(generator.config, 'use_interpolation', True)
+        
+        # Calculate how many image pairs we have
+        if use_interpolation:
+            # For interpolation, we need pairs: (0,1), (1,2), (2,3), etc.
+            # With N images, we get N-1 pairs (or N if we want to loop back)
+            num_pairs = num_images - 1 if num_images > 1 else 1
+        else:
+            # Without interpolation, each image is standalone
+            num_pairs = num_images
+        
+        # Log the assignment strategy
+        print(f"[Worker] Image assignment: {num_images} images, {total_clips} clips, interpolation={use_interpolation}", flush=True)
+        print(f"[Worker] Available image pairs: {num_pairs}", flush=True)
+        
         with get_db() as db:
-            # Create clip records
+            # Create clip records with frame assignments
             for i, line_data in enumerate(dialogue_data):
+                if single_image_mode:
+                    # All clips use the same image
+                    start_idx = 0
+                    end_idx = 0
+                    start_frame_name = images[0].name
+                    end_frame_name = images[0].name if use_interpolation else None
+                else:
+                    # Sequential pairing: clip i uses pair i (cycling if needed)
+                    pair_idx = i % num_pairs
+                    
+                    if use_interpolation:
+                        # Pair i = (image[pair_idx], image[pair_idx + 1])
+                        start_idx = pair_idx
+                        end_idx = pair_idx + 1
+                        # Handle edge case if we somehow go out of bounds
+                        if end_idx >= num_images:
+                            end_idx = 0  # Loop back to first image
+                    else:
+                        # No interpolation: just use image[pair_idx]
+                        start_idx = pair_idx
+                        end_idx = pair_idx
+                    
+                    start_frame_name = images[start_idx].name
+                    end_frame_name = images[end_idx].name if use_interpolation else None
+                
+                # Create clip with frame info stored
                 clip = Clip(
                     job_id=job_id,
                     clip_index=i,
                     dialogue_id=line_data["id"],
                     dialogue_text=line_data["text"],
                     status=ClipStatus.PENDING.value,
+                    start_frame=start_frame_name,
+                    end_frame=end_frame_name,
                 )
                 db.add(clip)
+                
+                # Log the assignment
+                print(f"[Worker] Clip {i}: '{line_data['text'][:30]}...' → {start_frame_name} → {end_frame_name or 'N/A'}", flush=True)
+            
             db.commit()
         
-        # Pre-calculate frame assignments for all clips
+        # Pre-calculate frame assignments for processing (using stored values)
         clip_frames = []
         for i in range(total_clips):
             if single_image_mode:
-                # All clips use the same image
                 start_idx = 0
                 end_idx = 0
             else:
-                # Cycle through images
-                start_idx = i % len(images)
-                end_idx = (i + 1) % len(images)
+                pair_idx = i % num_pairs
+                if use_interpolation:
+                    start_idx = pair_idx
+                    end_idx = pair_idx + 1 if pair_idx + 1 < num_images else 0
+                else:
+                    start_idx = pair_idx
+                    end_idx = pair_idx
             
             clip_frames.append({
                 "start_index": start_idx,
                 "start_frame": images[start_idx],
                 "end_index": end_idx,
-                "end_frame": images[end_idx],
+                "end_frame": images[end_idx] if use_interpolation else None,
             })
         
         # Queue of pending clip indices
