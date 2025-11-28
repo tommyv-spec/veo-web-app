@@ -103,58 +103,53 @@
         
         .storyboard-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
         .storyboard-header h3 { font-size: 13px; font-weight: 600; color: var(--text-primary); display: flex; align-items: center; gap: 8px; }
-        .storyboard-actions { display: flex; gap: 8px; }
         
-        .storyboard-timeline { position: relative; }
+        .storyboard-main { display: flex; gap: 16px; min-height: 200px; }
         
-        .storyboard-item { display: flex; align-items: flex-start; margin-bottom: 0; }
-        .storyboard-item.dragging { opacity: 0.5; }
-        .storyboard-item.drag-over { border-top: 2px solid var(--accent); }
+        /* Left: Images column */
+        .storyboard-images-col { width: 90px; flex-shrink: 0; display: flex; flex-direction: column; }
         
-        .storyboard-image-col { display: flex; flex-direction: column; align-items: center; width: 90px; flex-shrink: 0; }
+        .storyboard-image-block { display: flex; flex-direction: column; align-items: center; }
+        .storyboard-image-block.dragging { opacity: 0.4; }
         
-        .storyboard-image-wrapper { position: relative; }
-        
-        .storyboard-image { width: 64px; height: 64px; border-radius: var(--radius-sm); overflow: hidden; border: 2px solid var(--border-color); position: relative; cursor: grab; transition: all 0.2s; background: var(--bg-input); }
+        .storyboard-image { width: 72px; height: 72px; border-radius: var(--radius-sm); overflow: hidden; border: 2px solid var(--border-color); position: relative; cursor: grab; transition: all 0.2s; background: var(--bg-input); }
         .storyboard-image:hover { border-color: var(--accent); }
         .storyboard-image:active { cursor: grabbing; }
         .storyboard-image img { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
-        .storyboard-image .img-index { position: absolute; bottom: 2px; left: 2px; background: rgba(0, 0, 0, 0.8); color: white; font-size: 9px; padding: 2px 6px; border-radius: 4px; font-weight: 600; }
-        .storyboard-image .img-actions { position: absolute; top: -8px; right: -8px; display: flex; gap: 2px; opacity: 0; transition: opacity 0.2s; }
-        .storyboard-image:hover .img-actions { opacity: 1; }
-        .storyboard-image .img-remove { width: 18px; height: 18px; background: var(--error); color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; cursor: pointer; border: 2px solid var(--bg-surface); }
-        .storyboard-image.cycle-back { border-style: dashed; opacity: 0.6; cursor: default; }
-        .storyboard-image.cycle-back:hover { opacity: 0.8; border-color: var(--border-color); }
+        .storyboard-image .img-index { position: absolute; bottom: 2px; left: 2px; background: rgba(0, 0, 0, 0.85); color: white; font-size: 10px; padding: 2px 6px; border-radius: 3px; font-weight: 600; }
+        .storyboard-image .img-remove { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; background: var(--error); color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; cursor: pointer; opacity: 0; transition: opacity 0.2s; border: 2px solid var(--bg-surface); z-index: 1; }
+        .storyboard-image:hover .img-remove { opacity: 1; }
+        .storyboard-image-name { font-size: 8px; color: var(--text-muted); margin-top: 3px; max-width: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
         
-        .storyboard-image-name { font-size: 9px; color: var(--text-muted); margin-top: 4px; max-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
+        .storyboard-image-spacer { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 6px 0; }
+        .storyboard-image-spacer::before { content: ''; position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; background: var(--accent); transform: translateX(-50%); }
         
-        .storyboard-connector { width: 2px; background: var(--border-color); min-height: 40px; margin: 4px 0; margin-left: 31px; }
-        .storyboard-connector.has-clip { background: var(--accent); }
+        .storyboard-transition-btn { font-size: 8px; color: var(--text-muted); background: var(--bg-surface); border: 1px dashed var(--border-color); padding: 2px 6px; border-radius: 3px; cursor: pointer; transition: all 0.2s; z-index: 1; white-space: nowrap; }
+        .storyboard-transition-btn:hover { border-color: var(--accent); color: var(--accent); border-style: solid; }
         
-        .storyboard-clip-row { display: flex; align-items: center; min-height: 40px; margin-left: 12px; padding: 8px 0; }
-        
-        .storyboard-arrow { color: var(--accent); font-size: 14px; margin-right: 10px; flex-shrink: 0; font-family: monospace; }
-        
-        .storyboard-dialogue { flex: 1; font-size: 12px; color: var(--text-secondary); line-height: 1.4; padding: 8px 12px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: var(--radius-sm); }
-        .storyboard-dialogue .clip-label { font-size: 9px; color: var(--accent); font-weight: 600; margin-bottom: 4px; }
-        .storyboard-dialogue.empty { border-style: dashed; color: var(--text-muted); font-style: italic; }
-        
-        .storyboard-cycle-indicator { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--text-muted); margin-left: 31px; padding: 4px 0; }
-        
-        .storyboard-script-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border-color); }
-        .storyboard-script-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
-        .storyboard-script-header label { margin-bottom: 0; }
-        
-        .storyboard-summary { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: var(--bg-input); border-radius: var(--radius-sm); margin-top: 16px; font-size: 11px; }
-        .storyboard-summary .summary-item { display: flex; align-items: center; gap: 6px; color: var(--text-secondary); }
-        .storyboard-summary .summary-item.ok { color: var(--success); }
-        .storyboard-summary .summary-item.warn { color: var(--warning); }
-        
-        .storyboard-add-image { display: flex; align-items: center; justify-content: center; width: 64px; height: 64px; border: 2px dashed var(--border-color); border-radius: var(--radius-sm); color: var(--text-muted); font-size: 20px; cursor: pointer; transition: all 0.2s; }
+        .storyboard-add-image { width: 72px; height: 72px; border: 2px dashed var(--border-color); border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 20px; cursor: pointer; transition: all 0.2s; margin-top: 8px; }
         .storyboard-add-image:hover { border-color: var(--accent); color: var(--accent); }
         
-        #dialogueInputStoryboard { width: 100%; padding: 10px 14px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); font-family: 'JetBrains Mono', monospace; font-size: 12px; min-height: 100px; resize: vertical; line-height: 1.6; }
-        #dialogueInputStoryboard:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+        /* Right: Dialogue column */
+        .storyboard-dialogue-col { flex: 1; display: flex; flex-direction: column; }
+        
+        .storyboard-dialogue-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .storyboard-dialogue-header label { font-size: 10px; font-weight: 500; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 0; }
+        
+        .storyboard-sections-wrapper { flex: 1; display: flex; flex-direction: column; border: 1px solid var(--border-color); border-radius: var(--radius-sm); overflow: hidden; }
+        
+        .storyboard-section { flex: 1; display: flex; flex-direction: column; position: relative; min-height: 60px; }
+        .storyboard-section:not(:last-child) { border-bottom: 2px solid var(--accent); }
+        .storyboard-section-label { position: absolute; top: 6px; right: 8px; font-size: 9px; color: var(--accent); font-weight: 500; opacity: 0.6; pointer-events: none; }
+        
+        .storyboard-section textarea { flex: 1; width: 100%; padding: 8px 10px; padding-right: 50px; background: var(--bg-input); border: none; color: var(--text-primary); font-family: 'JetBrains Mono', monospace; font-size: 11px; resize: none; line-height: 1.7; }
+        .storyboard-section textarea:focus { outline: none; background: rgba(99, 102, 241, 0.03); }
+        .storyboard-section textarea::placeholder { color: var(--text-muted); }
+        
+        .storyboard-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 10px 12px; background: var(--bg-input); border-radius: var(--radius-sm); margin-top: 12px; font-size: 11px; }
+        .storyboard-summary .summary-item { display: flex; align-items: center; gap: 4px; color: var(--text-secondary); }
+        .storyboard-summary .summary-item.ok { color: var(--success); }
+        .storyboard-summary .summary-item.warn { color: var(--warning); }
         
         .aspect-selector { display: flex; gap: 12px; }
         .aspect-btn { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px; background: var(--bg-input); border: 2px solid var(--border-color); border-radius: var(--radius-sm); cursor: pointer; transition: all 0.2s; }
@@ -689,101 +684,140 @@ Example: A realistic vertical video of a professional presenter speaking directl
         }
         
         let draggedImageIndex = null;
+        // Track transition points: array of clip indices where image changes
+        // Default: transitions after each clip matching image count
+        let transitionPoints = [];
         
         function renderStoryboard(){
-            const timeline = document.getElementById('storyboardTimeline');
+            const container = document.getElementById('storyboardTimeline');
             const summary = document.getElementById('storyboardSummary');
-            const dialogueLines = getDialogueLines();
             const numImages = uploadedFilesData.length;
+            const dialogueLines = getDialogueLines();
             const numClips = dialogueLines.length;
             
-            let html = '';
+            // Auto-calculate transition points if not set or invalid
+            if(transitionPoints.length === 0 || transitionPoints.length !== numImages - 1){
+                // Default: evenly distribute images across clips
+                transitionPoints = [];
+                if(numImages > 1 && numClips > 0){
+                    const clipsPerImage = Math.ceil(numClips / numImages);
+                    for(let i = 1; i < numImages; i++){
+                        const transitionAfter = Math.min(i * clipsPerImage, numClips) - 1;
+                        if(transitionAfter >= 0 && transitionAfter < numClips - 1){
+                            transitionPoints.push(transitionAfter);
+                        }
+                    }
+                }
+            }
             
-            // Render each image with its outgoing clip (dialogue)
-            for(let i = 0; i < numImages; i++){
-                const img = uploadedFilesData[i];
-                const clipIndex = i;
-                const hasClip = clipIndex < numClips;
-                const dialogue = hasClip ? dialogueLines[clipIndex] : null;
-                const isLastImage = i === numImages - 1;
-                const showConnector = hasClip || (!isLastImage);
+            // Build sections: each section is an image + its clips
+            const sections = [];
+            let currentClipStart = 0;
+            
+            for(let imgIdx = 0; imgIdx < numImages; imgIdx++){
+                const nextTransition = transitionPoints.find(t => t >= currentClipStart);
+                const clipEnd = (nextTransition !== undefined) ? nextTransition + 1 : numClips;
                 
-                html += `
-                    <div class="storyboard-item" data-index="${i}" draggable="true" 
-                         ondragstart="handleDragStart(event, ${i})" 
+                sections.push({
+                    imageIndex: imgIdx,
+                    image: uploadedFilesData[imgIdx],
+                    clipStart: currentClipStart,
+                    clipEnd: Math.min(clipEnd, numClips),
+                    clips: dialogueLines.slice(currentClipStart, clipEnd)
+                });
+                
+                currentClipStart = clipEnd;
+                if(currentClipStart >= numClips) break;
+            }
+            
+            // If more clips than covered, last image gets remaining
+            if(currentClipStart < numClips && sections.length > 0){
+                const lastSection = sections[sections.length - 1];
+                lastSection.clipEnd = numClips;
+                lastSection.clips = dialogueLines.slice(lastSection.clipStart, numClips);
+            }
+            
+            // Calculate heights for each section based on clip count
+            const lineHeight = 24; // px per line
+            const minSectionHeight = 80;
+            
+            // Build HTML
+            let imagesHtml = '';
+            let dialogueHtml = '';
+            
+            sections.forEach((section, idx) => {
+                const clipCount = section.clips.length;
+                const sectionHeight = Math.max(minSectionHeight, clipCount * lineHeight + 20);
+                const isLast = idx === sections.length - 1;
+                
+                // Image column
+                imagesHtml += `
+                    <div class="storyboard-image-block" style="height: ${sectionHeight}px;" 
+                         draggable="true" data-index="${section.imageIndex}"
+                         ondragstart="handleDragStart(event, ${section.imageIndex})" 
                          ondragover="handleDragOver(event)" 
-                         ondrop="handleDrop(event, ${i})"
+                         ondrop="handleDrop(event, ${section.imageIndex})"
                          ondragend="handleDragEnd(event)">
-                        <div class="storyboard-image-col">
-                            <div class="storyboard-image-wrapper">
-                                <div class="storyboard-image" title="Drag to reorder">
-                                    <img src="${img.dataUrl}" alt="${img.name}">
-                                    <div class="img-index">${i + 1}</div>
-                                    <div class="img-actions">
-                                        <div class="img-remove" onclick="event.stopPropagation();removeImage(${i})" title="Remove">✕</div>
-                                    </div>
-                                </div>
-                            </div>
-                            <div class="storyboard-image-name" title="${img.name}">${truncateName(img.name, 12)}</div>
-                            ${showConnector ? `<div class="storyboard-connector ${hasClip ? 'has-clip' : ''}"></div>` : ''}
+                        <div class="storyboard-image" title="Drag to reorder: ${section.image.name}">
+                            <img src="${section.image.dataUrl}" alt="${section.image.name}">
+                            <div class="img-index">${section.imageIndex + 1}</div>
+                            <div class="img-remove" onclick="event.stopPropagation();removeImage(${section.imageIndex})" title="Remove">✕</div>
                         </div>
-                        ${hasClip ? `
-                        <div class="storyboard-clip-row">
-                            <span class="storyboard-arrow">──►</span>
-                            <div class="storyboard-dialogue">
-                                <div class="clip-label">CLIP ${clipIndex + 1}</div>
-                                ${dialogue.text}
-                            </div>
-                        </div>
-                        ` : ''}
+                        <div class="storyboard-image-name" title="${section.image.name}">${truncateName(section.image.name, 10)}</div>
                     </div>
                 `;
-            }
-            
-            // Show cycle-back indicator if clips >= images
-            if(numClips >= numImages && numImages > 0){
-                html += `
-                    <div class="storyboard-item">
-                        <div class="storyboard-image-col">
-                            <div class="storyboard-image-wrapper">
-                                <div class="storyboard-image cycle-back" title="Cycles back to image 1">
-                                    <img src="${uploadedFilesData[0].dataUrl}" alt="Cycles back">
-                                    <div class="img-index">↩1</div>
-                                </div>
-                            </div>
-                            <div class="storyboard-cycle-indicator">↩ cycles back</div>
+                
+                // Spacer with transition button (between images)
+                if(!isLast){
+                    imagesHtml += `
+                        <div class="storyboard-image-spacer">
+                            <button class="storyboard-transition-btn" onclick="cycleTransitionPoint(${section.clipEnd - 1})" title="Change transition point">
+                                after #${section.clipEnd}
+                            </button>
                         </div>
+                    `;
+                }
+                
+                // Dialogue section
+                const sectionClipsText = section.clips.map((c, i) => `${section.clipStart + i + 1}|${c.text}`).join('\n');
+                const placeholder = section.clipStart === 0 ? '1|First line...\n2|Second line...' : '';
+                
+                dialogueHtml += `
+                    <div class="storyboard-section" style="height: ${sectionHeight}px;">
+                        <span class="storyboard-section-label">🖼${section.imageIndex + 1}</span>
+                        <textarea 
+                            data-section="${idx}"
+                            data-start="${section.clipStart}"
+                            placeholder="${placeholder}"
+                            oninput="handleSectionInput(${idx}, this)"
+                        >${sectionClipsText}</textarea>
                     </div>
                 `;
-            }
+            });
             
-            // Add image button
-            html += `
-                <div class="storyboard-item">
-                    <div class="storyboard-image-col">
-                        <div class="storyboard-add-image" onclick="document.getElementById('fileInput').click()" title="Add more images">+</div>
+            // Add "add image" button
+            imagesHtml += `
+                <div class="storyboard-add-image" onclick="document.getElementById('fileInput').click()" title="Add image">+</div>
+            `;
+            
+            container.innerHTML = `
+                <div class="storyboard-main">
+                    <div class="storyboard-images-col">
+                        ${imagesHtml}
+                    </div>
+                    <div class="storyboard-dialogue-col">
+                        <div class="storyboard-dialogue-header">
+                            <label>Dialogue Script</label>
+                            <button class="btn btn-secondary btn-sm" onclick="autoSplitScript()">✨ Auto-Split</button>
+                        </div>
+                        <div class="storyboard-sections-wrapper">
+                            ${dialogueHtml}
+                        </div>
                     </div>
                 </div>
             `;
-            
-            // Dialogue script section
-            html += `
-                <div class="storyboard-script-section">
-                    <div class="storyboard-script-header">
-                        <label>Dialogue Script</label>
-                        <button class="btn btn-secondary btn-sm" onclick="autoSplitScript()" id="splitBtnStoryboard">✨ Auto-Split</button>
-                    </div>
-                    <textarea id="dialogueInputStoryboard" placeholder="1|First line of dialogue here
-2|Second line goes here
-3|Third line..."
-                        oninput="syncDialogueFromStoryboard()">${document.getElementById('dialogueInput').value}</textarea>
-                </div>
-            `;
-            
-            timeline.innerHTML = html;
             
             // Summary
-            const needsCycling = numClips >= numImages;
             let summaryHtml = `
                 <div class="summary-item"><strong>${numImages}</strong> images</div>
                 <div class="summary-item"><strong>${numClips}</strong> clips</div>
@@ -791,13 +825,63 @@ Example: A realistic vertical video of a professional presenter speaking directl
             
             if(numClips === 0){
                 summaryHtml += `<div class="summary-item warn">⚠️ Add dialogue lines</div>`;
-            } else if(needsCycling){
-                summaryHtml += `<div class="summary-item ok">↩️ Cycling: ${getCyclePattern(numImages, numClips)}</div>`;
+            } else if(transitionPoints.length > 0){
+                summaryHtml += `<div class="summary-item ok">✓ Transitions: after ${transitionPoints.map(t => '#' + (t + 1)).join(', ')}</div>`;
             } else {
                 summaryHtml += `<div class="summary-item ok">✓ Ready</div>`;
             }
             
             summary.innerHTML = summaryHtml;
+        }
+        
+        function handleSectionInput(sectionIdx, textarea){
+            // Rebuild full dialogue from all sections
+            const allSections = document.querySelectorAll('.storyboard-section textarea');
+            let fullDialogue = [];
+            let lineNum = 1;
+            
+            allSections.forEach(ta => {
+                const lines = ta.value.split('\n').filter(l => l.trim());
+                lines.forEach(line => {
+                    // Extract text part (remove old line numbers)
+                    const text = line.replace(/^\d+\|/, '').trim();
+                    if(text){
+                        fullDialogue.push(`${lineNum}|${text}`);
+                        lineNum++;
+                    }
+                });
+            });
+            
+            // Update main dialogue input
+            document.getElementById('dialogueInput').value = fullDialogue.join('\n');
+            
+            // Debounced re-render
+            clearTimeout(window.storyboardUpdateTimeout);
+            window.storyboardUpdateTimeout = setTimeout(() => {
+                renderStoryboard();
+            }, 500);
+        }
+        
+        function cycleTransitionPoint(currentClipIdx){
+            // Move transition point: cycles through possible positions
+            const dialogueLines = getDialogueLines();
+            const numClips = dialogueLines.length;
+            
+            // Find this transition in the array
+            const tIdx = transitionPoints.indexOf(currentClipIdx);
+            if(tIdx >= 0){
+                // Move to next clip or remove if at end
+                const newPos = currentClipIdx + 1;
+                if(newPos < numClips - 1){
+                    transitionPoints[tIdx] = newPos;
+                } else {
+                    // Wrap around to earlier position
+                    const minPos = tIdx > 0 ? transitionPoints[tIdx - 1] + 1 : 0;
+                    transitionPoints[tIdx] = minPos;
+                }
+            }
+            
+            renderStoryboard();
         }
         
         function truncateName(name, maxLen){
@@ -808,45 +892,21 @@ Example: A realistic vertical video of a professional presenter speaking directl
             return base.substring(0, availableLen) + '...' + ext;
         }
         
-        function getCyclePattern(numImages, numClips){
-            let pattern = [];
-            for(let i = 0; i <= Math.min(numClips, numImages + 1); i++){
-                pattern.push((i % numImages) + 1);
-            }
-            if(numClips > numImages) pattern[pattern.length - 1] = '...';
-            return pattern.join('→');
-        }
-        
-        function syncDialogueFromStoryboard(){
-            const storyboardInput = document.getElementById('dialogueInputStoryboard');
-            const mainInput = document.getElementById('dialogueInput');
-            if(storyboardInput && mainInput){
-                mainInput.value = storyboardInput.value;
-                clearTimeout(window.storyboardUpdateTimeout);
-                window.storyboardUpdateTimeout = setTimeout(renderStoryboard, 300);
-            }
-        }
-        
         // Drag and drop handlers
         function handleDragStart(e, index){
             draggedImageIndex = index;
-            e.target.classList.add('dragging');
+            const block = e.target.closest('.storyboard-image-block');
+            if(block) block.classList.add('dragging');
             e.dataTransfer.effectAllowed = 'move';
         }
         
         function handleDragOver(e){
             e.preventDefault();
             e.dataTransfer.dropEffect = 'move';
-            const item = e.target.closest('.storyboard-item');
-            if(item && !item.querySelector('.storyboard-add-image') && !item.querySelector('.cycle-back')){
-                document.querySelectorAll('.storyboard-item').forEach(el => el.classList.remove('drag-over'));
-                item.classList.add('drag-over');
-            }
         }
         
         function handleDrop(e, targetIndex){
             e.preventDefault();
-            document.querySelectorAll('.storyboard-item').forEach(el => el.classList.remove('drag-over'));
             
             if(draggedImageIndex === null || draggedImageIndex === targetIndex) return;
             
@@ -860,13 +920,16 @@ Example: A realistic vertical video of a professional presenter speaking directl
             // Update indices
             uploadedFilesData.forEach((f, j) => f.index = j);
             
+            // Reset transitions when reordering
+            transitionPoints = [];
+            
             renderStoryboard();
             draggedImageIndex = null;
         }
         
         function handleDragEnd(e){
-            e.target.classList.remove('dragging');
-            document.querySelectorAll('.storyboard-item').forEach(el => el.classList.remove('drag-over'));
+            const block = e.target.closest('.storyboard-image-block');
+            if(block) block.classList.remove('dragging');
             draggedImageIndex = null;
         }
         
