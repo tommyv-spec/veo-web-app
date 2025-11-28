@@ -100,47 +100,44 @@
         .storyboard-container { display: none; }
         .storyboard-container.active { display: block; }
         
-        .storyboard-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+        .storyboard-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
         .storyboard-header h3 { font-size: 13px; font-weight: 600; color: var(--text-primary); display: flex; align-items: center; gap: 8px; }
+        .storyboard-header-hint { font-size: 10px; color: var(--text-muted); }
         
         .storyboard-main { display: flex; gap: 12px; }
         
-        /* Left: Images column */
-        .storyboard-images-col { width: 90px; flex-shrink: 0; display: flex; flex-direction: column; gap: 0; }
+        /* Sidebar: Image thumbnails for dragging */
+        .storyboard-sidebar { width: 70px; flex-shrink: 0; display: flex; flex-direction: column; gap: 8px; }
+        .storyboard-sidebar-image { width: 60px; height: 60px; border-radius: var(--radius-sm); overflow: hidden; border: 2px solid var(--border-color); cursor: grab; transition: all 0.2s; position: relative; }
+        .storyboard-sidebar-image:hover { border-color: var(--accent); }
+        .storyboard-sidebar-image:active { cursor: grabbing; }
+        .storyboard-sidebar-image img { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+        .storyboard-sidebar-image .img-index { position: absolute; bottom: 2px; left: 2px; background: rgba(0,0,0,0.85); color: white; font-size: 9px; padding: 1px 5px; border-radius: 3px; font-weight: 600; }
+        .storyboard-sidebar-add { width: 60px; height: 60px; border: 2px dashed var(--border-color); border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 18px; cursor: pointer; transition: all 0.2s; }
+        .storyboard-sidebar-add:hover { border-color: var(--accent); color: var(--accent); }
         
-        .storyboard-image-block { display: flex; flex-direction: column; align-items: center; padding: 8px 0; }
-        .storyboard-image-block.dragging { opacity: 0.4; }
+        /* Rich Editor */
+        .storyboard-editor-col { flex: 1; display: flex; flex-direction: column; }
+        .storyboard-editor-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+        .storyboard-editor-header label { font-size: 10px; font-weight: 500; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
         
-        .storyboard-image { width: 64px; height: 64px; border-radius: var(--radius-sm); overflow: hidden; border: 2px solid var(--border-color); position: relative; cursor: grab; transition: all 0.2s; background: var(--bg-input); }
-        .storyboard-image:hover { border-color: var(--accent); }
-        .storyboard-image:active { cursor: grabbing; }
-        .storyboard-image img { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
-        .storyboard-image .img-index { position: absolute; bottom: 2px; left: 2px; background: rgba(0, 0, 0, 0.85); color: white; font-size: 10px; padding: 2px 6px; border-radius: 3px; font-weight: 600; }
-        .storyboard-image .img-remove { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; background: var(--error); color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; cursor: pointer; opacity: 0; transition: opacity 0.2s; border: 2px solid var(--bg-surface); z-index: 1; }
-        .storyboard-image:hover .img-remove { opacity: 1; }
-        .storyboard-image-name { font-size: 8px; color: var(--text-muted); margin-top: 3px; max-width: 64px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
+        .storyboard-editor { width: 100%; min-height: 300px; max-height: 500px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 16px; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.8; color: var(--text-primary); overflow-y: auto; outline: none; white-space: pre-wrap; }
+        .storyboard-editor:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+        .storyboard-editor.drag-over { background: rgba(99, 102, 241, 0.05); border-color: var(--accent); }
         
-        .storyboard-transition-btn { font-size: 8px; color: var(--text-muted); background: var(--bg-surface); border: 1px dashed var(--border-color); padding: 2px 6px; border-radius: 3px; cursor: pointer; transition: all 0.2s; margin-top: 6px; }
-        .storyboard-transition-btn:hover { border-color: var(--accent); color: var(--accent); border-style: solid; }
+        /* Scene Divider - Physical block in text flow */
+        .scene-divider { display: flex; align-items: center; gap: 10px; background: var(--bg-elevated); border: 2px solid var(--accent); border-radius: var(--radius-sm); padding: 8px 12px; margin: 16px 0 8px 0; user-select: none; cursor: default; }
+        .scene-divider:first-child { margin-top: 0; }
+        .scene-divider img { width: 36px; height: 36px; border-radius: 4px; object-fit: cover; background: #000; flex-shrink: 0; }
+        .scene-divider-info { flex: 1; display: flex; flex-direction: column; gap: 1px; }
+        .scene-divider-label { font-size: 9px; font-weight: 700; color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px; }
+        .scene-divider-filename { font-size: 10px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px; }
+        .scene-divider-remove { background: transparent; border: 1px solid var(--border-color); color: var(--text-muted); width: 20px; height: 20px; border-radius: 3px; cursor: pointer; font-size: 10px; display: flex; align-items: center; justify-content: center; transition: all 0.2s; }
+        .scene-divider-remove:hover { border-color: var(--error); color: var(--error); }
         
-        .storyboard-add-image { width: 64px; height: 64px; border: 2px dashed var(--border-color); border-radius: var(--radius-sm); display: flex; align-items: center; justify-content: center; color: var(--text-muted); font-size: 20px; cursor: pointer; transition: all 0.2s; margin: 8px auto; }
-        .storyboard-add-image:hover { border-color: var(--accent); color: var(--accent); }
-        
-        /* Right: Dialogue column */
-        .storyboard-dialogue-col { flex: 1; display: flex; flex-direction: column; }
-        
-        .storyboard-dialogue-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-        .storyboard-dialogue-header label { font-size: 10px; font-weight: 500; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin: 0; }
-        
-        .storyboard-textarea-wrapper { position: relative; flex: 1; }
-        
-        .storyboard-textarea-wrapper textarea { width: 100%; height: 100%; min-height: 250px; padding: 10px 12px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.8; resize: vertical; }
-        .storyboard-textarea-wrapper textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
-        
-        /* Divider overlays */
-        .storyboard-dividers { position: absolute; top: 0; left: 0; right: 0; bottom: 0; pointer-events: none; overflow: hidden; border-radius: var(--radius-sm); }
-        .storyboard-divider { position: absolute; left: 0; right: 0; height: 2px; background: var(--accent); display: flex; align-items: center; justify-content: flex-end; }
-        .storyboard-divider::after { content: attr(data-label); position: absolute; right: 8px; top: -8px; font-size: 9px; color: var(--accent); background: var(--bg-input); padding: 0 4px; }
+        /* Text blocks between dividers */
+        .scene-text-block { min-height: 1.8em; }
+        .scene-text-block:empty::before { content: 'Type dialogue here...'; color: var(--text-muted); }
         
         .storyboard-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 10px 12px; background: var(--bg-input); border-radius: var(--radius-sm); margin-top: 12px; font-size: 11px; }
         .storyboard-summary .summary-item { display: flex; align-items: center; gap: 4px; color: var(--text-secondary); }
@@ -366,17 +363,32 @@
                     </div>
                 </div>
                 
-                <!-- Storyboard Mode: Combined images + dialogue timeline -->
+                <!-- Storyboard Mode: Rich Editor with image dividers -->
                 <div id="storyboardContainer" class="storyboard-container card">
                     <div class="storyboard-header">
                         <h3>🎬 Storyboard</h3>
-                        <div class="storyboard-actions">
-                            <button class="btn btn-secondary btn-sm" onclick="document.getElementById('fileInput').click()" title="Add image">+ Image</button>
-                        </div>
+                        <span class="storyboard-header-hint">Drag images from sidebar to insert scene breaks</span>
                     </div>
                     
-                    <div class="storyboard-timeline" id="storyboardTimeline">
-                        <!-- Generated dynamically -->
+                    <div class="storyboard-main">
+                        <div class="storyboard-sidebar" id="storyboardSidebar">
+                            <!-- Image thumbnails for dragging -->
+                        </div>
+                        
+                        <div class="storyboard-editor-col">
+                            <div class="storyboard-editor-header">
+                                <label>Dialogue Script</label>
+                                <button class="btn btn-secondary btn-sm" onclick="autoSplitScript()">✨ Auto-Split</button>
+                            </div>
+                            <div id="richEditor" 
+                                 class="storyboard-editor" 
+                                 contenteditable="true"
+                                 oninput="syncFromRichEditor()"
+                                 ondragover="handleEditorDragOver(event)"
+                                 ondragleave="handleEditorDragLeave(event)"
+                                 ondrop="handleEditorDrop(event)">
+                            </div>
+                        </div>
                     </div>
                     
                     <div class="storyboard-summary" id="storyboardSummary">
@@ -685,20 +697,21 @@ Example: A realistic vertical video of a professional presenter speaking directl
         let transitionPoints = [];
         
         function renderStoryboard(){
-            const container = document.getElementById('storyboardTimeline');
+            const editor = document.getElementById('richEditor');
+            const sidebar = document.getElementById('storyboardSidebar');
             const summary = document.getElementById('storyboardSummary');
+            const fullText = document.getElementById('dialogueInput').value;
+            const lines = fullText.split('\n');
             const numImages = uploadedFilesData.length;
-            const dialogueLines = getDialogueLines();
-            const numClips = dialogueLines.length;
             
-            // Auto-calculate transition points if not manually set
-            // Default: distribute clips evenly across images
-            if(transitionPoints.length !== numImages - 1 || !transitionPoints.every(t => t >= 0 && t < numClips)){
+            // Auto-calculate transition points if not set
+            if(transitionPoints.length !== numImages - 1){
                 transitionPoints = [];
-                if(numImages > 1 && numClips > 0){
-                    const clipsPerImage = Math.ceil(numClips / numImages);
+                const numLines = lines.filter(l => l.trim()).length;
+                if(numImages > 1 && numLines > 0){
+                    const linesPerImage = Math.ceil(numLines / numImages);
                     for(let i = 1; i < numImages; i++){
-                        const transitionAfter = Math.min(i * clipsPerImage - 1, numClips - 2);
+                        const transitionAfter = Math.min(i * linesPerImage - 1, numLines - 2);
                         if(transitionAfter >= 0){
                             transitionPoints.push(transitionAfter);
                         }
@@ -706,84 +719,63 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 }
             }
             
-            // Calculate which lines belong to which image
-            const imageLineRanges = [];
-            let lineStart = 0;
-            for(let i = 0; i < numImages; i++){
-                const transitionIdx = transitionPoints.findIndex(t => t >= lineStart);
-                const lineEnd = transitionIdx >= 0 ? transitionPoints[transitionIdx] + 1 : numClips;
-                imageLineRanges.push({ start: lineStart, end: lineEnd, count: lineEnd - lineStart });
-                lineStart = lineEnd;
-            }
-            
-            // Build images HTML
-            let imagesHtml = '';
-            const lineHeight = 22; // pixels per line in textarea
-            const basePadding = 10; // textarea padding
-            
-            imageLineRanges.forEach((range, imgIdx) => {
-                const img = uploadedFilesData[imgIdx];
-                const blockHeight = Math.max(80, range.count * lineHeight + 20);
-                const isLast = imgIdx === numImages - 1;
-                
-                imagesHtml += `
-                    <div class="storyboard-image-block" style="min-height: ${blockHeight}px;"
-                         draggable="true" data-index="${imgIdx}"
-                         ondragstart="handleDragStart(event, ${imgIdx})" 
-                         ondragover="handleDragOver(event)" 
-                         ondrop="handleDrop(event, ${imgIdx})"
-                         ondragend="handleDragEnd(event)">
-                        <div class="storyboard-image" title="Drag to reorder: ${img.name}">
-                            <img src="${img.dataUrl}" alt="${img.name}">
-                            <div class="img-index">${imgIdx + 1}</div>
-                            <div class="img-remove" onclick="event.stopPropagation();removeImage(${imgIdx})" title="Remove">✕</div>
-                        </div>
-                        <div class="storyboard-image-name" title="${img.name}">${truncateName(img.name, 10)}</div>
-                        ${!isLast ? `<button class="storyboard-transition-btn" onclick="adjustTransition(${imgIdx})" title="Click to adjust">after #${range.end}</button>` : ''}
+            // Render Sidebar (draggable image thumbnails)
+            let sidebarHtml = '';
+            uploadedFilesData.forEach((img, i) => {
+                sidebarHtml += `
+                    <div class="storyboard-sidebar-image" draggable="true" 
+                         ondragstart="handleImageDragStart(event, ${i})"
+                         title="${img.name}">
+                        <img src="${img.dataUrl}">
+                        <div class="img-index">${i + 1}</div>
                     </div>
                 `;
             });
+            sidebarHtml += `<div class="storyboard-sidebar-add" onclick="document.getElementById('fileInput').click()" title="Add image">+</div>`;
+            sidebar.innerHTML = sidebarHtml;
             
-            // Add image button
-            imagesHtml += `
-                <div class="storyboard-add-image" onclick="document.getElementById('fileInput').click()" title="Add image">+</div>
-            `;
+            // Build Editor Content with scene dividers
+            let htmlContent = '';
+            let currentLineIndex = 0;
             
-            // Build dividers HTML (overlays on textarea)
-            let dividersHtml = '';
-            transitionPoints.forEach((lineIdx, i) => {
-                const topPos = basePadding + (lineIdx + 1) * lineHeight;
-                dividersHtml += `<div class="storyboard-divider" style="top: ${topPos}px;" data-label="🖼${i + 2}"></div>`;
+            uploadedFilesData.forEach((img, imgIdx) => {
+                // Calculate which lines belong to this image
+                const endLineIndex = (imgIdx < transitionPoints.length) 
+                                     ? transitionPoints[imgIdx] + 1 
+                                     : lines.length;
+                
+                // Extract the text for this block
+                const blockLines = lines.slice(currentLineIndex, endLineIndex);
+                const blockText = blockLines.join('\n');
+                
+                // Scene Divider (contenteditable=false makes it a solid block)
+                htmlContent += `
+                    <div class="scene-divider" contenteditable="false" data-img-index="${imgIdx}">
+                        <img src="${img.dataUrl}">
+                        <div class="scene-divider-info">
+                            <span class="scene-divider-label">Scene ${imgIdx + 1}</span>
+                            <span class="scene-divider-filename">${truncateName(img.name, 20)}</span>
+                        </div>
+                        <button class="scene-divider-remove" onclick="removeImageFromEditor(${imgIdx})" title="Remove">✕</button>
+                    </div>
+                `;
+                
+                // Text block for this scene
+                htmlContent += `<div class="scene-text-block">${blockText || ''}</div>`;
+                
+                currentLineIndex = endLineIndex;
             });
             
-            // Get current dialogue text
-            const dialogueText = document.getElementById('dialogueInput').value;
+            // If no images, just show empty editor placeholder
+            if(numImages === 0){
+                htmlContent = `<div class="scene-text-block">${fullText || ''}</div>`;
+            }
             
-            container.innerHTML = `
-                <div class="storyboard-main">
-                    <div class="storyboard-images-col">
-                        ${imagesHtml}
-                    </div>
-                    <div class="storyboard-dialogue-col">
-                        <div class="storyboard-dialogue-header">
-                            <label>Dialogue Script</label>
-                            <button class="btn btn-secondary btn-sm" onclick="autoSplitScript()">✨ Auto-Split</button>
-                        </div>
-                        <div class="storyboard-textarea-wrapper">
-                            <textarea id="storyboardDialogue" 
-                                placeholder="1|First line of dialogue...
-2|Second line...
-3|Third line..."
-                                oninput="syncStoryboardDialogue()">${dialogueText}</textarea>
-                            <div class="storyboard-dividers">
-                                ${dividersHtml}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            `;
+            editor.innerHTML = htmlContent;
             
-            // Summary
+            // Update summary
+            const dialogueLines = getDialogueLines();
+            const numClips = dialogueLines.length;
             let summaryHtml = `
                 <div class="summary-item"><strong>${numImages}</strong> images</div>
                 <div class="summary-item"><strong>${numClips}</strong> clips</div>
@@ -791,8 +783,8 @@ Example: A realistic vertical video of a professional presenter speaking directl
             
             if(numClips === 0){
                 summaryHtml += `<div class="summary-item warn">⚠️ Add dialogue lines</div>`;
-            } else if(transitionPoints.length > 0){
-                summaryHtml += `<div class="summary-item ok">✓ Transitions: after ${transitionPoints.map(t => '#' + (t + 1)).join(', ')}</div>`;
+            } else if(numImages > 1 && transitionPoints.length > 0){
+                summaryHtml += `<div class="summary-item ok">✓ Scenes: ${transitionPoints.map(t => 'after #' + (t + 1)).join(', ')}</div>`;
             } else {
                 summaryHtml += `<div class="summary-item ok">✓ Ready</div>`;
             }
@@ -800,143 +792,171 @@ Example: A realistic vertical video of a professional presenter speaking directl
             summary.innerHTML = summaryHtml;
         }
         
-        function syncStoryboardDialogue(){
-            const storyboardTextarea = document.getElementById('storyboardDialogue');
-            const mainInput = document.getElementById('dialogueInput');
-            if(storyboardTextarea && mainInput){
-                mainInput.value = storyboardTextarea.value;
+        function syncFromRichEditor(){
+            const editor = document.getElementById('richEditor');
+            let masterScript = [];
+            let newTransitionPoints = [];
+            let lineCount = 0;
+            let currentImageOrder = [];
+            
+            // Iterate over all child nodes
+            for(let node of editor.childNodes){
+                // Is it a scene divider?
+                if(node.classList && node.classList.contains('scene-divider')){
+                    const imgIndex = parseInt(node.dataset.imgIndex);
+                    if(!isNaN(imgIndex) && uploadedFilesData[imgIndex]){
+                        currentImageOrder.push(imgIndex);
+                        // Mark transition point (end of previous section)
+                        if(lineCount > 0 && newTransitionPoints.length < currentImageOrder.length - 1){
+                            newTransitionPoints.push(lineCount - 1);
+                        }
+                    }
+                    continue;
+                }
+                
+                // Is it a text block?
+                const text = node.textContent || '';
+                if(text.trim()){
+                    const textLines = text.split('\n').filter(l => l.trim());
+                    textLines.forEach(line => {
+                        masterScript.push(line);
+                        lineCount++;
+                    });
+                }
             }
-            // Debounced re-render for dividers
+            
+            // Update main hidden input
+            document.getElementById('dialogueInput').value = masterScript.join('\n');
+            
+            // Update transition points
+            transitionPoints = newTransitionPoints;
+            
+            // Debounced summary update
             clearTimeout(window.storyboardUpdateTimeout);
-            window.storyboardUpdateTimeout = setTimeout(updateDividers, 300);
+            window.storyboardUpdateTimeout = setTimeout(updateStoryboardSummary, 300);
         }
         
-        function updateDividers(){
+        function updateStoryboardSummary(){
+            const summary = document.getElementById('storyboardSummary');
+            if(!summary) return;
+            
             const dialogueLines = getDialogueLines();
             const numClips = dialogueLines.length;
             const numImages = uploadedFilesData.length;
             
-            // Recalculate transitions if clip count changed significantly
-            if(numClips > 0 && numImages > 1){
-                // Keep existing transitions if valid, otherwise recalculate
-                const validTransitions = transitionPoints.filter(t => t >= 0 && t < numClips - 1);
-                if(validTransitions.length !== numImages - 1){
-                    transitionPoints = [];
-                    const clipsPerImage = Math.ceil(numClips / numImages);
-                    for(let i = 1; i < numImages; i++){
-                        const transitionAfter = Math.min(i * clipsPerImage - 1, numClips - 2);
-                        if(transitionAfter >= 0){
-                            transitionPoints.push(transitionAfter);
-                        }
-                    }
-                }
+            let summaryHtml = `
+                <div class="summary-item"><strong>${numImages}</strong> images</div>
+                <div class="summary-item"><strong>${numClips}</strong> clips</div>
+            `;
+            
+            if(numClips === 0){
+                summaryHtml += `<div class="summary-item warn">⚠️ Add dialogue lines</div>`;
+            } else if(numImages > 1 && transitionPoints.length > 0){
+                summaryHtml += `<div class="summary-item ok">✓ Scenes: ${transitionPoints.map(t => 'after #' + (t + 1)).join(', ')}</div>`;
+            } else {
+                summaryHtml += `<div class="summary-item ok">✓ Ready</div>`;
             }
             
-            // Update dividers
-            const lineHeight = 22;
-            const basePadding = 10;
-            const dividersContainer = document.querySelector('.storyboard-dividers');
-            if(dividersContainer){
-                let dividersHtml = '';
-                transitionPoints.forEach((lineIdx, i) => {
-                    const topPos = basePadding + (lineIdx + 1) * lineHeight;
-                    dividersHtml += `<div class="storyboard-divider" style="top: ${topPos}px;" data-label="🖼${i + 2}"></div>`;
-                });
-                dividersContainer.innerHTML = dividersHtml;
-            }
-            
-            // Update summary
-            const summary = document.getElementById('storyboardSummary');
-            if(summary){
-                let summaryHtml = `
-                    <div class="summary-item"><strong>${numImages}</strong> images</div>
-                    <div class="summary-item"><strong>${numClips}</strong> clips</div>
-                `;
-                if(numClips === 0){
-                    summaryHtml += `<div class="summary-item warn">⚠️ Add dialogue lines</div>`;
-                } else if(transitionPoints.length > 0){
-                    summaryHtml += `<div class="summary-item ok">✓ Transitions: after ${transitionPoints.map(t => '#' + (t + 1)).join(', ')}</div>`;
-                } else {
-                    summaryHtml += `<div class="summary-item ok">✓ Ready</div>`;
-                }
-                summary.innerHTML = summaryHtml;
-            }
+            summary.innerHTML = summaryHtml;
         }
         
-        function adjustTransition(imgIdx){
-            const dialogueLines = getDialogueLines();
-            const numClips = dialogueLines.length;
-            if(numClips < 2) return;
-            
-            // Current transition for this image
-            const currentTransition = transitionPoints[imgIdx] || 0;
-            
-            // Prompt for new transition point
-            const minLine = imgIdx > 0 ? (transitionPoints[imgIdx - 1] || 0) + 1 : 1;
-            const maxLine = imgIdx < transitionPoints.length - 1 ? transitionPoints[imgIdx + 1] : numClips - 1;
-            
-            const newValue = prompt(
-                `Image ${imgIdx + 1} ends after which line?\n(Enter a number between ${minLine} and ${maxLine})`,
-                currentTransition + 1
-            );
-            
-            if(newValue !== null){
-                const newTransition = parseInt(newValue) - 1;
-                if(newTransition >= minLine - 1 && newTransition <= maxLine - 1){
-                    transitionPoints[imgIdx] = newTransition;
+        function removeImageFromEditor(imgIdx){
+            if(imgIdx >= 0 && imgIdx < uploadedFilesData.length){
+                uploadedFilesData.splice(imgIdx, 1);
+                uploadedImages.splice(imgIdx, 1);
+                uploadedFilesData.forEach((f, j) => f.index = j);
+                transitionPoints = []; // Reset transitions
+                
+                if(uploadedFilesData.length < 2){
+                    updateUIMode();
+                } else {
                     renderStoryboard();
                 }
             }
+        }
+        
+        // Drag handlers for sidebar images
+        function handleImageDragStart(e, index){
+            draggedImageIndex = index;
+            e.dataTransfer.effectAllowed = 'copy';
+            e.dataTransfer.setData('text/plain', index.toString());
+        }
+        
+        function handleEditorDragOver(e){
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'copy';
+            document.getElementById('richEditor').classList.add('drag-over');
+        }
+        
+        function handleEditorDragLeave(e){
+            document.getElementById('richEditor').classList.remove('drag-over');
+        }
+        
+        function handleEditorDrop(e){
+            e.preventDefault();
+            document.getElementById('richEditor').classList.remove('drag-over');
+            
+            if(draggedImageIndex === null) return;
+            
+            const editor = document.getElementById('richEditor');
+            const img = uploadedFilesData[draggedImageIndex];
+            
+            // Create new divider element
+            const divider = document.createElement('div');
+            divider.className = 'scene-divider';
+            divider.contentEditable = 'false';
+            divider.dataset.imgIndex = draggedImageIndex;
+            divider.innerHTML = `
+                <img src="${img.dataUrl}">
+                <div class="scene-divider-info">
+                    <span class="scene-divider-label">Scene ${draggedImageIndex + 1}</span>
+                    <span class="scene-divider-filename">${truncateName(img.name, 20)}</span>
+                </div>
+                <button class="scene-divider-remove" onclick="removeImageFromEditor(${draggedImageIndex})" title="Remove">✕</button>
+            `;
+            
+            // Get drop position using caret
+            let range;
+            if(document.caretRangeFromPoint){
+                range = document.caretRangeFromPoint(e.clientX, e.clientY);
+            } else if(e.rangeParent){
+                range = document.createRange();
+                range.setStart(e.rangeParent, e.rangeOffset);
+            }
+            
+            if(range){
+                range.insertNode(divider);
+                // Add a text block after if needed
+                if(!divider.nextSibling || divider.nextSibling.classList?.contains('scene-divider')){
+                    const textBlock = document.createElement('div');
+                    textBlock.className = 'scene-text-block';
+                    textBlock.innerHTML = '<br>';
+                    divider.after(textBlock);
+                }
+            } else {
+                // Fallback: append at end
+                editor.appendChild(divider);
+            }
+            
+            // Sync back to master script
+            syncFromRichEditor();
+            draggedImageIndex = null;
         }
         
         function truncateName(name, maxLen){
             if(name.length <= maxLen) return name;
             const ext = name.split('.').pop();
             const base = name.substring(0, name.length - ext.length - 1);
-            const availableLen = maxLen - ext.length - 4; // 4 for "..." and "."
+            const availableLen = maxLen - ext.length - 4;
             return base.substring(0, availableLen) + '...' + ext;
         }
         
-        // Drag and drop handlers
-        function handleDragStart(e, index){
-            draggedImageIndex = index;
-            const block = e.target.closest('.storyboard-image-block');
-            if(block) block.classList.add('dragging');
-            e.dataTransfer.effectAllowed = 'move';
-        }
+        // Legacy drag handlers (for backwards compatibility)
+        function handleDragStart(e, index){ handleImageDragStart(e, index); }
+        function handleDragOver(e){ e.preventDefault(); }
+        function handleDrop(e, targetIndex){ e.preventDefault(); }
+        function handleDragEnd(e){ draggedImageIndex = null; }
         
-        function handleDragOver(e){
-            e.preventDefault();
-            e.dataTransfer.dropEffect = 'move';
-        }
-        
-        function handleDrop(e, targetIndex){
-            e.preventDefault();
-            
-            if(draggedImageIndex === null || draggedImageIndex === targetIndex) return;
-            
-            // Reorder arrays
-            const draggedFile = uploadedFilesData.splice(draggedImageIndex, 1)[0];
-            const draggedImage = uploadedImages.splice(draggedImageIndex, 1)[0];
-            
-            uploadedFilesData.splice(targetIndex, 0, draggedFile);
-            uploadedImages.splice(targetIndex, 0, draggedImage);
-            
-            // Update indices
-            uploadedFilesData.forEach((f, j) => f.index = j);
-            
-            // Reset transitions when reordering
-            transitionPoints = [];
-            
-            renderStoryboard();
-            draggedImageIndex = null;
-        }
-        
-        function handleDragEnd(e){
-            const block = e.target.closest('.storyboard-image-block');
-            if(block) block.classList.remove('dragging');
-            draggedImageIndex = null;
-        }
         
         function addImageToStoryboard(){
             document.getElementById('fileInput').click();
