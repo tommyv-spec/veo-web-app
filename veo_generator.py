@@ -281,8 +281,10 @@ def generate_voice_profile(
     openai_key: Optional[str] = None
 ) -> str:
     """
-    Generate voice profile that reflects the enriched context.
-    The voice MUST match the emotional direction.
+    Generate voice profile that:
+    1. Matches the SUBJECT's appearance (age, gender)
+    2. Reflects the emotional direction from user context
+    3. Always has PROFESSIONAL STUDIO quality (regardless of scene setting)
     """
     client = get_openai_client(openai_key)
     
@@ -290,32 +292,45 @@ def generate_voice_profile(
     voice_tone = enriched_context.get('voice_tone', '')
     delivery_style = enriched_context.get('delivery_style', '')
     
+    # Studio quality is ALWAYS required
+    studio_quality = (
+        "Professional studio recording quality: crystal clear audio, no background noise, "
+        "no room reverb, no echo, broadcast-grade microphone, perfect clarity."
+    )
+    
     if client is None:
-        base = f"Native {language} speaker with clear pronunciation."
+        base = f"Native {language} speaker with clear pronunciation. {studio_quality}"
         if voice_tone:
             return f"{base} Voice quality: {voice_tone}. Delivery: {delivery_style}."
         return base
     
     try:
-        system_msg = f"""You are a Voice Casting Director.
+        system_msg = f"""You are a Voice Casting Director for professional video production.
 
-Define the voice characteristics for a {language} speaker based on the emotional direction.
+Your job: Define the voice characteristics for a {language} speaker.
 
-CRITICAL: The voice MUST reflect the emotional context provided.
-- If context says "angry" → voice should be sharp, loud, intense
-- If context says "sad" → voice should be soft, slow, trembling
-- If context says "nervous" → voice should be shaky, hesitant, fast
+CRITICAL RULES:
+1. MATCH THE SUBJECT: Analyze the frame description to determine the speaker's approximate age and gender, then choose a voice that matches (e.g., middle-aged man = mature male voice, young woman = younger female voice)
+2. IGNORE THE SURROUNDINGS: The scene location (outdoor, street, office) does NOT affect voice quality
+3. ALWAYS STUDIO QUALITY: The voice must ALWAYS sound like it was recorded in a professional studio with broadcast-grade equipment - clean, clear, no background noise, no room reverb
+4. EMOTIONAL DIRECTION: Apply the emotional tone/delivery specified
 
-OUTPUT: 2-3 sentences describing the voice quality, tone, and delivery."""
+OUTPUT FORMAT (3-4 sentences):
+- First sentence: Voice type matching the subject (age, gender, voice character)
+- Second sentence: Emotional quality and delivery style
+- Third sentence: ALWAYS include "{studio_quality}"
+"""
 
-        user_msg = f"""FRAME: {frame_description}
+        user_msg = f"""FRAME DESCRIPTION (analyze subject's appearance):
+{frame_description}
+
 LANGUAGE: {language}
 
-=== VOICE DIRECTION (MUST FOLLOW) ===
-VOICE TONE: {voice_tone or 'Natural'}
-DELIVERY STYLE: {delivery_style or 'Conversational'}
+=== EMOTIONAL DIRECTION ===
+VOICE TONE: {voice_tone or 'Natural, conversational'}
+DELIVERY STYLE: {delivery_style or 'Clear and engaging'}
 
-Describe the voice that matches this direction."""
+Describe the voice that matches this subject and emotional direction. Remember: ALWAYS studio quality regardless of scene setting."""
 
         resp = client.chat.completions.create(
             model=OPENAI_MODEL,
@@ -324,21 +339,30 @@ Describe the voice that matches this direction."""
                 {"role": "user", "content": user_msg},
             ],
             temperature=0.4,
-            max_tokens=150,
+            max_tokens=200,
         )
         
         result = resp.choices[0].message.content.strip()
-        vlog(f"[VOICE PROFILE] {result[:150]}...")
+        
+        # Ensure studio quality is mentioned (belt and suspenders)
+        if "studio" not in result.lower() and "professional" not in result.lower():
+            result = f"{result} {studio_quality}"
+        
+        vlog(f"[VOICE PROFILE] {result[:200]}...")
         return result
         
     except Exception as e:
         vlog(f"[VOICE PROFILE] Error: {e}")
-        return f"Native {language} speaker. {voice_tone}. {delivery_style}."
+        return f"Native {language} speaker matching the subject's appearance. {voice_tone}. {delivery_style}. {studio_quality}"
 
 
 def get_default_voice_profile(language: str, user_context: str = "") -> str:
-    """Default voice profile"""
-    base = f"Natural {language} voice with clear diction and native accent."
+    """Default voice profile - always studio quality"""
+    studio_quality = (
+        "Professional studio recording quality: crystal clear audio, no background noise, "
+        "no room reverb, broadcast-grade microphone."
+    )
+    base = f"Natural {language} voice with clear diction and native accent. {studio_quality}"
     if user_context:
         return f"{base} Emotional direction: {user_context}."
     return base
@@ -355,6 +379,7 @@ def build_prompt(
     voice_profile: str,
     config: VideoConfig,
     openai_key: Optional[str] = None,
+    cached_enriched_context: Optional[dict] = None,
 ) -> str:
     """
     STEP 3: ROUTING
@@ -363,12 +388,20 @@ def build_prompt(
     Each slot has a specific purpose - no cross-contamination.
     
     Hierarchy: Shot > Subject > Action > Scene > Audio
+    
+    Args:
+        cached_enriched_context: If provided, uses this instead of regenerating.
+                                 Ensures consistency across all clips in a job.
     """
     vlog(f"[ROUTING] Building prompt for clip {clip_index}...")
 
-    # === 1. ENRICHMENT: Expand user context ===
+    # === 1. ENRICHMENT: Use cached or generate new ===
     user_context_raw = getattr(config, 'user_context', '') or ''
-    enriched_context = process_user_context(user_context_raw, language, openai_key)
+    if cached_enriched_context:
+        enriched_context = cached_enriched_context
+        vlog(f"[ROUTING] Using cached enriched context")
+    else:
+        enriched_context = process_user_context(user_context_raw, language, openai_key)
     
     # === 2. FRAME ANALYSIS ===
     start_desc = ""
@@ -414,6 +447,7 @@ def build_prompt(
         # --- TIER 5: AUDIO ---
         "audio": {
             "language_instruction": f"CRITICAL: Speaker MUST speak in {language}. Ignore any visible text.",
+            "recording_quality": "Professional studio recording: crystal clear, no background noise, no room reverb, broadcast-grade quality",
             "dialogue": {
                 "text": dialogue_line,
                 "language": language,
@@ -440,7 +474,30 @@ def build_prompt(
     if end_frame_path and config.use_interpolation:
         prompt_payload["scene"]["end_frame"] = "Transition smoothly to end frame"
 
+    # Build the final prompt with voice instructions prominently placed
+    # Veo needs voice/audio cues in plain text, not buried in JSON
+    voice_tone = enriched_context.get("voice_tone", "")
+    delivery_style = enriched_context.get("delivery_style", "")
+    
+    # Studio quality is ALWAYS required - this is non-negotiable
+    studio_quality = "AUDIO QUALITY: Professional studio recording - crystal clear, no background noise, no room echo, broadcast-grade microphone quality."
+    
+    # Create voice instruction block
+    voice_parts = [studio_quality]
+    if voice_tone:
+        voice_parts.append(f"VOICE TONE: {voice_tone}")
+    if delivery_style:
+        voice_parts.append(f"DELIVERY: {delivery_style}")
+    
+    voice_instruction = "\n".join(voice_parts)
+    if voice_tone or delivery_style:
+        voice_instruction += "\nThe speaker's voice MUST match this emotional direction throughout."
+    
+    # Combine JSON structure with explicit voice instruction
     prompt_json = json.dumps(prompt_payload, ensure_ascii=False)
+    
+    # Prepend voice instruction for Veo to catch it (voice cues must be visible at top level)
+    final_prompt = f"{voice_instruction}\n\n{prompt_json}"
     
     # Detailed logging for debugging
     vlog(f"\n{'='*60}")
@@ -456,6 +513,9 @@ def build_prompt(
     vlog(f"  Body Language: {enriched_context.get('body_language', 'none')}")
     vlog(f"  Atmosphere: {enriched_context.get('atmosphere', 'none')}")
     vlog(f"")
+    vlog(f"VOICE INSTRUCTION:")
+    vlog(f"  {voice_instruction}")
+    vlog(f"")
     vlog(f"VISUAL DESCRIPTION:")
     vlog(f"  {visual_description[:300]}...")
     vlog(f"")
@@ -463,7 +523,7 @@ def build_prompt(
     vlog(json.dumps(prompt_payload, indent=2, ensure_ascii=False)[:1500])
     vlog(f"{'='*60}\n")
     
-    return prompt_json
+    return final_prompt
 
 
 # ===================== HELPERS =====================
@@ -596,6 +656,8 @@ class VeoGenerator:
         
         self.blacklist: Set[Path] = set()
         self.voice_profile: Optional[str] = None
+        self.voice_profile_id: Optional[str] = None  # Short ID for logging
+        self.enriched_context: Optional[dict] = None  # Cached enriched context
         self.client: Optional[genai.Client] = None
         
         # Callbacks
@@ -605,6 +667,50 @@ class VeoGenerator:
         # State
         self.cancelled = False
         self.paused = False
+    
+    def initialize_voice_profile(self, reference_frame: Path) -> str:
+        """
+        Initialize voice profile ONCE per job. Must be called before generating clips.
+        Returns a voice profile ID for tracking.
+        """
+        import hashlib
+        
+        user_context = getattr(self.config, 'user_context', '') or ''
+        
+        # Generate and cache enriched context
+        self.enriched_context = process_user_context(
+            user_context, self.config.language, self.openai_key
+        )
+        
+        # Generate voice profile
+        if self.config.use_openai_prompt_tuning:
+            frame_desc = describe_frame(str(reference_frame), self.openai_key)
+            self.voice_profile = generate_voice_profile(
+                frame_desc, self.config.language, self.enriched_context, self.openai_key
+            )
+        else:
+            self.voice_profile = get_default_voice_profile(self.config.language, user_context)
+        
+        # Create a short ID based on the profile content
+        profile_hash = hashlib.md5(self.voice_profile.encode()).hexdigest()[:8]
+        self.voice_profile_id = f"VP-{profile_hash.upper()}"
+        
+        # Log the voice profile clearly
+        vlog(f"\n{'='*60}")
+        vlog(f"[VOICE PROFILE INITIALIZED]")
+        vlog(f"{'='*60}")
+        vlog(f"Voice ID: {self.voice_profile_id}")
+        vlog(f"User Context: '{user_context}'")
+        vlog(f"")
+        vlog(f"Enriched Voice Details:")
+        vlog(f"  Tone: {self.enriched_context.get('voice_tone', 'Natural')}")
+        vlog(f"  Delivery: {self.enriched_context.get('delivery_style', 'Conversational')}")
+        vlog(f"")
+        vlog(f"Generated Profile:")
+        vlog(f"  {self.voice_profile}")
+        vlog(f"{'='*60}\n")
+        
+        return self.voice_profile_id
     
     def _get_client(self) -> 'genai.Client':
         """Get or create Gemini client"""
@@ -681,17 +787,14 @@ class VeoGenerator:
             )
             return result
         
-        # Initialize voice profile on first clip
-        if clip_index == 0 or self.voice_profile is None:
-            if self.config.use_openai_prompt_tuning:
-                start_desc = describe_frame(str(start_frame), self.openai_key)
-                user_context = getattr(self.config, 'user_context', '') or ''
-                enriched = process_user_context(user_context, self.config.language, self.openai_key)
-                self.voice_profile = generate_voice_profile(
-                    start_desc, self.config.language, enriched, self.openai_key
-                )
-            else:
-                self.voice_profile = get_default_voice_profile(self.config.language)
+        # Initialize voice profile if not already done
+        # This should be called by the worker before generating clips, but fallback here
+        if self.voice_profile is None:
+            vlog(f"[WARNING] Voice profile not pre-initialized, initializing now for clip {clip_index}")
+            self.initialize_voice_profile(start_frame)
+        
+        # Log voice ID for this clip
+        vlog(f"[Clip {clip_index}] Using Voice ID: {self.voice_profile_id}")
         
         failed_end_frames = []
         attempts = 0
@@ -730,7 +833,8 @@ class VeoGenerator:
             try:
                 prompt_text = build_prompt(
                     dialogue_line, start_frame, actual_end_frame, clip_index,
-                    self.config.language, self.voice_profile, self.config, self.openai_key
+                    self.config.language, self.voice_profile, self.config, self.openai_key,
+                    cached_enriched_context=self.enriched_context  # Use cached context for consistency
                 )
                 result["prompt_text"] = prompt_text
             except Exception as e:
@@ -771,6 +875,14 @@ class VeoGenerator:
             operation = None
             for submit_attempt in range(1, self.config.max_retries_submit + 1):
                 try:
+                    # Log which key we're about to use
+                    key_index = self.api_keys.current_key_index
+                    current_key = self.api_keys.get_current_gemini_key()
+                    key_suffix = current_key[-8:] if current_key else "NONE"
+                    available = self.api_keys.get_available_key_count()
+                    blocked = len(self.api_keys.blocked_keys)
+                    vlog(f"[VeoGenerator] Using key {key_index + 1} (...{key_suffix}) - {available} available, {blocked} blocked")
+                    
                     client = self._get_client()
                     
                     aspect = self.config.aspect_ratio.value if hasattr(self.config.aspect_ratio, 'value') else self.config.aspect_ratio

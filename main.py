@@ -1383,6 +1383,7 @@ async def unblock_api_key(key_index: int):
         }
     
     del api_keys_config.blocked_keys[actual_index]
+    api_keys_config._save_blocked_keys()  # Persist to disk
     
     return {
         "success": True,
@@ -1400,6 +1401,7 @@ async def unblock_all_api_keys():
     """
     blocked_count = len(api_keys_config.blocked_keys)
     api_keys_config.blocked_keys.clear()
+    api_keys_config._save_blocked_keys()  # Persist to disk
     
     return {
         "success": True,

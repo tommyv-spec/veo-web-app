@@ -262,6 +262,49 @@ class APIKeysConfig:
     blocked_keys: dict = field(default_factory=dict)
     block_duration_hours: int = 12
     
+    # Persistence file path
+    _blocked_keys_file: Path = field(default=None, repr=False)
+    
+    def __post_init__(self):
+        """Load persisted blocked keys on init"""
+        if self._blocked_keys_file is None:
+            self._blocked_keys_file = Path(__file__).parent / "data" / "blocked_keys.json"
+        self._load_blocked_keys()
+    
+    def _load_blocked_keys(self):
+        """Load blocked keys from disk"""
+        try:
+            if self._blocked_keys_file and self._blocked_keys_file.exists():
+                import json
+                from datetime import datetime
+                with open(self._blocked_keys_file, 'r') as f:
+                    data = json.load(f)
+                # Convert ISO strings back to datetime
+                self.blocked_keys = {
+                    int(k): datetime.fromisoformat(v) 
+                    for k, v in data.items()
+                }
+                print(f"[APIKeys] Loaded {len(self.blocked_keys)} blocked keys from disk", flush=True)
+        except Exception as e:
+            print(f"[APIKeys] Could not load blocked keys: {e}", flush=True)
+            self.blocked_keys = {}
+    
+    def _save_blocked_keys(self):
+        """Save blocked keys to disk"""
+        try:
+            if self._blocked_keys_file:
+                import json
+                self._blocked_keys_file.parent.mkdir(parents=True, exist_ok=True)
+                # Convert datetime to ISO strings
+                data = {
+                    str(k): v.isoformat() 
+                    for k, v in self.blocked_keys.items()
+                }
+                with open(self._blocked_keys_file, 'w') as f:
+                    json.dump(data, f)
+        except Exception as e:
+            print(f"[APIKeys] Could not save blocked keys: {e}", flush=True)
+    
     def is_key_blocked(self, key_index: int) -> bool:
         """Check if a key is currently blocked"""
         from datetime import datetime, timedelta
@@ -276,6 +319,7 @@ class APIKeysConfig:
             # Block expired, remove it
             del self.blocked_keys[key_index]
             print(f"[APIKeys] ✅ Key {key_index + 1} unblocked (12h expired)", flush=True)
+            self._save_blocked_keys()  # Persist to disk
             return False
         
         return True
@@ -289,6 +333,7 @@ class APIKeysConfig:
         key_suffix = key[-8:] if key else "?"
         unblock_time = datetime.now().hour + self.block_duration_hours
         print(f"[APIKeys] 🚫 Key {key_index + 1} (...{key_suffix}) BLOCKED for {self.block_duration_hours}h (429 quota exhausted)", flush=True)
+        self._save_blocked_keys()  # Persist to disk
     
     def get_available_key_count(self) -> int:
         """Count how many keys are currently available (not blocked)"""
