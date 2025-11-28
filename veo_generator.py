@@ -181,61 +181,57 @@ Keep it REALISTIC and NATURAL. No dramatic or cinematic language."""
 
 # ===================== STEP 2: FRAME ANALYSIS =====================
 
-@lru_cache(maxsize=512)
-def describe_frame(image_path: str, openai_key: Optional[str] = None) -> str:
-    """Analyze frame for visual context (legacy - simple description)"""
-    client = get_openai_client(openai_key)
-    if client is None:
-        return ""
-    
-    path = Path(image_path)
-    if not path.exists():
-        return ""
-    
-    try:
-        with open(path, "rb") as f:
-            b64 = base64.b64encode(f.read()).decode("utf-8")
-        
-        resp = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": "Describe this video frame in 50 words. Focus on: camera angle, subject appearance, lighting, background. Ignore any text."},
-                {"role": "user", "content": [
-                    {"type": "text", "text": "Describe this frame."},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                ]},
-            ],
-            max_tokens=150,
-        )
-        return resp.choices[0].message.content.strip()
-    except Exception:
-        return ""
-
-
-def analyze_frame_for_voice(image_path: str, openai_key: Optional[str] = None) -> dict:
+def analyze_frame(image_path: str, openai_key: Optional[str] = None) -> dict:
     """
-    COMPREHENSIVE FRAME ANALYSIS FOR VOICE CASTING
+    COMPREHENSIVE FRAME ANALYSIS
     
-    Analyzes the frame to automatically detect:
-    1. Subject appearance (age, gender)
-    2. Apparent role/profession based on visual cues
-    3. Setting/context
-    4. Suggested voice characteristics
+    Extracts EVERYTHING needed from the image automatically:
+    - Subject: age, gender, appearance, clothing
+    - Role: detected profession/archetype based on visual cues
+    - Action: what they're doing, interacting with
+    - Objects: microphone, props, items they're holding/using
+    - Setting: location, environment, context
+    - Mood: apparent emotional state from expression/body language
+    - Voice suggestion: appropriate voice based on all of the above
     
-    This is the DEFAULT behavior - no user input needed.
-    User context can override these defaults when provided.
+    This is the DEFAULT - works without any user input.
+    User context can ADD to or OVERRIDE any of these.
     """
     client = get_openai_client(openai_key)
     
     # Default fallback
     default_result = {
+        # Subject
         "subject_age": "adult",
         "subject_gender": "neutral",
+        "subject_appearance": "person in frame",
+        "subject_clothing": "",
+        
+        # Role & Action
         "apparent_role": "natural speaker",
-        "setting": "indoor",
-        "visual_description": "",
+        "current_action": "speaking to camera",
+        "body_language": "neutral posture",
+        "facial_expression": "neutral expression",
+        
+        # Objects & Interaction
+        "objects_in_scene": "",
+        "objects_interacting_with": "",
+        "props": "",
+        
+        # Setting & Environment
+        "setting_location": "indoor",
+        "setting_type": "unknown",
+        "background_description": "",
+        "lighting": "natural lighting",
+        "atmosphere": "neutral",
+        
+        # Voice Suggestions (auto-generated)
         "suggested_voice_tone": "clear, natural, conversational",
         "suggested_delivery": "measured pace, professional",
+        "suggested_energy": "moderate",
+        
+        # Meta
+        "visual_description": "",
         "confidence": "low"
     }
     
@@ -250,60 +246,121 @@ def analyze_frame_for_voice(image_path: str, openai_key: Optional[str] = None) -
         with open(path, "rb") as f:
             b64 = base64.b64encode(f.read()).decode("utf-8")
         
-        system_msg = """You are a Voice Casting Director analyzing a video frame.
+        system_msg = """You are an expert Scene Analyst for video production.
 
-Your job: Look at this frame and determine the BEST voice to match this speaker.
+Analyze this frame and extract EVERYTHING needed for video generation.
 
-Analyze:
-1. SUBJECT APPEARANCE: Age range, gender
-2. APPARENT ROLE: Based on clothing, setting, posture, props - what role does this person appear to have?
-   - Business suit + office = corporate professional
-   - Scrubs + medical setting = doctor/nurse
-   - Workout clothes + gym = fitness instructor
-   - Casual + home setting = vlogger/influencer
-   - Formal dress + news desk = news anchor
-   - Casual + outdoor = street interview / man on street
-   - Professional attire + microphone = reporter/journalist
-   - etc.
-3. SETTING: Where are they? (studio, office, gym, outdoor, home, etc.)
-4. VOICE SUGGESTION: Based on appearance and role, what voice would fit?
+=== WHAT TO ANALYZE ===
 
-OUTPUT JSON:
+1. SUBJECT (the person):
+   - Age range (young adult, middle-aged, older adult, etc.)
+   - Gender
+   - Appearance (hair, facial features, build)
+   - Clothing (what they're wearing - this helps identify role)
+   - Facial expression (specific: furrowed brow, slight smile, etc.)
+   - Body language (posture, hand position, stance)
+
+2. ROLE DETECTION (based on visual cues):
+   Look at clothing + setting + props to determine role:
+   - Suit + office = corporate professional / business executive
+   - Suit + news desk = news anchor
+   - Scrubs + medical setting = doctor / nurse
+   - Workout clothes = fitness instructor / athlete
+   - Casual + ring light = influencer / vlogger
+   - Uniform = specific profession
+   - Outdoor + microphone = reporter / street interview
+   - Casual street clothes + being interviewed = man on street / interviewee
+   
+3. ACTION & OBJECTS:
+   - What are they doing right now?
+   - What objects are visible? (microphone, desk, equipment, props)
+   - What are they interacting with or holding?
+   - Any relevant props?
+
+4. SETTING & ENVIRONMENT:
+   - Where is this? (studio, office, gym, outdoor, home, street, etc.)
+   - What's in the background?
+   - Lighting quality and type
+   - Overall atmosphere/mood of the scene
+
+5. VOICE SUGGESTIONS:
+   Based on ALL of the above, suggest:
+   - Voice tone that would match this person and role
+   - Delivery style appropriate for the context
+   - Energy level (calm, moderate, high energy)
+
+=== OUTPUT JSON ===
 {
-  "subject_age": "young adult / middle-aged / older adult / etc.",
-  "subject_gender": "male / female / neutral",
-  "apparent_role": "the role they appear to have based on visual cues",
-  "setting": "where this appears to be filmed",
-  "visual_description": "brief description of what you see (50 words)",
-  "suggested_voice_tone": "voice quality that would match this person",
-  "suggested_delivery": "speaking style that would fit their apparent role",
-  "confidence": "high / medium / low - how confident are you in the role detection"
+  "subject_age": "specific age range",
+  "subject_gender": "male / female",
+  "subject_appearance": "brief description of how they look",
+  "subject_clothing": "what they're wearing",
+  "facial_expression": "specific expression details",
+  "body_language": "posture and stance",
+  
+  "apparent_role": "detected role/profession based on visual cues",
+  "current_action": "what they appear to be doing",
+  
+  "objects_in_scene": "list of visible objects",
+  "objects_interacting_with": "what they're holding or using",
+  "props": "any notable props",
+  
+  "setting_location": "indoor / outdoor / studio",
+  "setting_type": "specific type (office, gym, street, news studio, etc.)",
+  "background_description": "what's behind them",
+  "lighting": "lighting description",
+  "atmosphere": "mood/feel of the scene",
+  
+  "suggested_voice_tone": "voice quality that matches this person and role",
+  "suggested_delivery": "speaking style appropriate for context",
+  "suggested_energy": "low / moderate / high",
+  
+  "visual_description": "50-word summary of the entire scene",
+  "confidence": "high / medium / low - confidence in role detection"
 }
 
-Be SPECIFIC about the role. Don't just say "professional" - say "news anchor" or "corporate executive" or "fitness coach" based on what you actually see."""
+Be SPECIFIC. Don't say "professional" - say "news anchor" or "corporate executive".
+Don't say "nice clothes" - say "dark blue suit with red tie"."""
 
         resp = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": [
-                    {"type": "text", "text": "Analyze this frame for voice casting. What voice would best match this speaker?"},
+                    {"type": "text", "text": "Analyze this frame completely. Extract all details for video generation."},
                     {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
                 ]},
             ],
-            max_tokens=400,
+            max_tokens=800,
             response_format={"type": "json_object"}
         )
         
         result = json.loads(resp.choices[0].message.content)
-        vlog(f"[FRAME ANALYSIS] Auto-detected: {result.get('apparent_role', 'unknown')} ({result.get('confidence', 'unknown')} confidence)")
-        vlog(f"[FRAME ANALYSIS] Subject: {result.get('subject_age', '?')} {result.get('subject_gender', '?')}")
-        vlog(f"[FRAME ANALYSIS] Setting: {result.get('setting', '?')}")
+        
+        # Log the analysis
+        vlog(f"\n[FRAME ANALYSIS] === Auto-detected from image ===")
+        vlog(f"  Subject: {result.get('subject_age', '?')} {result.get('subject_gender', '?')}")
+        vlog(f"  Clothing: {result.get('subject_clothing', '?')}")
+        vlog(f"  Role: {result.get('apparent_role', '?')} (confidence: {result.get('confidence', '?')})")
+        vlog(f"  Action: {result.get('current_action', '?')}")
+        vlog(f"  Setting: {result.get('setting_type', '?')} ({result.get('setting_location', '?')})")
+        vlog(f"  Objects: {result.get('objects_in_scene', '?')}")
+        vlog(f"  Expression: {result.get('facial_expression', '?')}")
+        vlog(f"  Voice suggestion: {result.get('suggested_voice_tone', '?')}")
+        
         return result
         
     except Exception as e:
         vlog(f"[FRAME ANALYSIS] Error: {e}")
         return default_result
+
+
+# Legacy function for backward compatibility
+@lru_cache(maxsize=512)
+def describe_frame(image_path: str, openai_key: Optional[str] = None) -> str:
+    """Legacy: Simple frame description. Use analyze_frame() for full analysis."""
+    analysis = analyze_frame(image_path, openai_key)
+    return analysis.get('visual_description', '')
 
 
 # ===================== STEP 3: VISUAL TRANSLATION =====================
@@ -548,46 +605,75 @@ def build_prompt(
     voice_profile: str,
     config: VideoConfig,
     openai_key: Optional[str] = None,
-    cached_enriched_context: Optional[dict] = None,
+    frame_analysis: Optional[dict] = None,
+    user_context_override: Optional[dict] = None,
 ) -> str:
     """
-    STEP 3: ROUTING
+    PROMPT ASSEMBLY
     
-    Routes enriched details into specific Veo 3.1 JSON Blueprint slots.
-    Each slot has a specific purpose - no cross-contamination.
+    Builds the final prompt using:
+    1. FRAME ANALYSIS (default) - auto-detected from image
+    2. USER CONTEXT (override) - adds to or overrides frame analysis
     
-    Hierarchy: Shot > Subject > Action > Scene > Audio
-    
-    Args:
-        cached_enriched_context: If provided, uses this instead of regenerating.
-                                 Ensures consistency across all clips in a job.
+    Priority: User context > Frame analysis > Defaults
     """
     vlog(f"[ROUTING] Building prompt for clip {clip_index}...")
 
-    # === 1. ENRICHMENT: Use cached or generate new ===
-    user_context_raw = getattr(config, 'user_context', '') or ''
-    if cached_enriched_context:
-        enriched_context = cached_enriched_context
-        vlog(f"[ROUTING] Using cached enriched context")
-    else:
-        enriched_context = process_user_context(user_context_raw, language, openai_key)
+    # === 1. GET DEFAULTS FROM FRAME ANALYSIS ===
+    if frame_analysis is None:
+        frame_analysis = {}
     
-    # === 2. FRAME ANALYSIS ===
-    start_desc = ""
+    if user_context_override is None:
+        user_context_override = {}
+    
+    # === 2. MERGE: User context overrides frame analysis ===
+    def get_value(key, frame_key=None, default=""):
+        """Get value with priority: user_context > frame_analysis > default"""
+        if frame_key is None:
+            frame_key = key
+        user_val = user_context_override.get(key, "")
+        frame_val = frame_analysis.get(frame_key, "")
+        return user_val if user_val else (frame_val if frame_val else default)
+    
+    # Subject details
+    facial_expression = get_value("facial_expression", "facial_expression", "Natural expression")
+    body_language = get_value("body_language", "body_language", "Natural posture")
+    
+    # Action
+    current_action = get_value("subject_action", "current_action", "Speaking naturally to camera")
+    
+    # Scene/atmosphere
+    atmosphere = get_value("atmosphere", "atmosphere", "Natural lighting")
+    background = get_value("background_action", "background_description", "Static background")
+    setting = frame_analysis.get("setting_type", "indoor setting")
+    
+    # Voice
+    voice_tone = get_value("voice_tone", "suggested_voice_tone", "Natural speaking voice")
+    delivery_style = get_value("delivery_style", "suggested_delivery", "Natural conversation")
+    
+    # Camera
+    camera_motion = get_value("camera_motion", "camera_motion", "Static or minimal movement")
+    
+    # === 3. BUILD VISUAL DESCRIPTION ===
+    user_context_raw = getattr(config, 'user_context', '') or ''
+    
     if config.use_frame_vision and config.use_openai_prompt_tuning:
-        start_desc = describe_frame(str(start_frame_path), openai_key)
-
-    # === 3. TRANSLATION: Build visual description ===
+        start_desc = frame_analysis.get("visual_description", "")
+    else:
+        start_desc = ""
+    
     visual_description = build_visual_description(
-        BASE_PROMPT, start_desc, enriched_context, dialogue_line, language, openai_key
+        BASE_PROMPT, start_desc, 
+        {**frame_analysis, **user_context_override},  # Merged context
+        dialogue_line, language, openai_key
     ) if config.use_openai_prompt_tuning else f"{BASE_PROMPT}. {user_context_raw}"
 
     # === 4. ROUTING: Assemble JSON Blueprint ===
     prompt_payload = {
         # --- TIER 1: SHOT ---
         "shot": {
-            "description": visual_description,  # Primary anchor with context baked in
-            "camera_motion": enriched_context.get("camera_motion", "Static or minimal movement"),
+            "description": visual_description,
+            "camera_motion": camera_motion,
             "composition": "Medium shot, subject centered",
             "style": "Realistic, natural, authentic"
         },
@@ -595,22 +681,24 @@ def build_prompt(
         # --- TIER 2: SUBJECT ---
         "subject": {
             "description": "Match appearance in start frame exactly",
-            "facial_expression": enriched_context.get("facial_expression", "Natural expression"),
-            "body_language": enriched_context.get("body_language", "Natural posture"),
+            "facial_expression": facial_expression,
+            "body_language": body_language,
         },
 
         # --- TIER 3: ACTION ---
         "action": {
-            "primary_action": enriched_context.get("subject_action", "Speaking naturally to camera"),
+            "primary_action": current_action,
+            "objects_interacting_with": frame_analysis.get("objects_interacting_with", ""),
             "movement": "Realistic, natural movements only"
         },
 
         # --- TIER 4: SCENE ---
         "scene": {
+            "setting": setting,
             "start_frame_description": start_desc,
             "continuity": "Maintain exact visual continuity with start frame",
-            "lighting": enriched_context.get("atmosphere", "Natural lighting"),
-            "background": enriched_context.get("background_action", "Static background")
+            "lighting": atmosphere,
+            "background": background
         },
 
         # --- TIER 5: AUDIO ---
@@ -621,8 +709,8 @@ def build_prompt(
                 "text": dialogue_line,
                 "language": language,
                 "voice_profile": voice_profile,
-                "voice_tone": enriched_context.get("voice_tone", "Natural speaking voice"),
-                "delivery_style": enriched_context.get("delivery_style", "Natural conversation")
+                "voice_tone": voice_tone,
+                "delivery_style": delivery_style
             }
         },
 
@@ -645,8 +733,6 @@ def build_prompt(
 
     # Build the final prompt with voice instructions prominently placed
     # Veo needs voice/audio cues in plain text, not buried in JSON
-    voice_tone = enriched_context.get("voice_tone", "")
-    delivery_style = enriched_context.get("delivery_style", "")
     
     # Studio quality is ALWAYS required - this is non-negotiable
     studio_quality = "AUDIO QUALITY: Professional studio recording - crystal clear, no background noise, no room echo, broadcast-grade microphone quality."
@@ -672,16 +758,27 @@ def build_prompt(
     vlog(f"\n{'='*60}")
     vlog(f"[ROUTING] PROMPT FOR CLIP {clip_index}")
     vlog(f"{'='*60}")
-    vlog(f"User Context: '{user_context_raw}'")
     vlog(f"")
-    vlog(f"ENRICHED DETAILS:")
-    vlog(f"  Speaker Role: {enriched_context.get('speaker_role', 'Natural speaker')}")
-    vlog(f"  Action: {enriched_context.get('subject_action', 'none')}")
-    vlog(f"  Expression: {enriched_context.get('facial_expression', 'none')}")
-    vlog(f"  Voice Tone: {enriched_context.get('voice_tone', 'none')}")
-    vlog(f"  Delivery: {enriched_context.get('delivery_style', 'none')}")
-    vlog(f"  Body Language: {enriched_context.get('body_language', 'none')}")
-    vlog(f"  Atmosphere: {enriched_context.get('atmosphere', 'none')}")
+    vlog(f"=== FROM FRAME ANALYSIS (auto-detected) ===")
+    vlog(f"  Role: {frame_analysis.get('apparent_role', 'unknown')}")
+    vlog(f"  Setting: {frame_analysis.get('setting_type', 'unknown')}")
+    vlog(f"  Action: {frame_analysis.get('current_action', 'unknown')}")
+    vlog(f"  Expression: {frame_analysis.get('facial_expression', 'unknown')}")
+    vlog(f"  Objects: {frame_analysis.get('objects_interacting_with', 'none')}")
+    vlog(f"")
+    if user_context_raw:
+        vlog(f"=== FROM USER CONTEXT (override) ===")
+        vlog(f"  Raw: '{user_context_raw}'")
+        vlog(f"  Role override: {user_context_override.get('speaker_role', '(none)')}")
+        vlog(f"  Action override: {user_context_override.get('subject_action', '(none)')}")
+        vlog(f"  Voice override: {user_context_override.get('voice_tone', '(none)')}")
+        vlog(f"")
+    vlog(f"=== FINAL VALUES (merged) ===")
+    vlog(f"  Action: {current_action}")
+    vlog(f"  Expression: {facial_expression}")
+    vlog(f"  Body Language: {body_language}")
+    vlog(f"  Voice Tone: {voice_tone}")
+    vlog(f"  Delivery: {delivery_style}")
     vlog(f"")
     vlog(f"VOICE INSTRUCTION:")
     vlog(f"  {voice_instruction}")
@@ -851,7 +948,7 @@ class VeoGenerator:
         # === STEP 1: ANALYZE FRAME (auto-detect age, gender, role) ===
         # This is the DEFAULT - works even without user context
         if self.config.use_openai_prompt_tuning:
-            self.frame_analysis = analyze_frame_for_voice(str(reference_frame), self.openai_key)
+            self.frame_analysis = analyze_frame(str(reference_frame), self.openai_key)
         else:
             self.frame_analysis = {
                 "subject_age": "adult",
@@ -1038,12 +1135,13 @@ class VeoGenerator:
                 actual_end_index, actual_end_frame = next_result
                 current_attempt_end_index = actual_end_index
             
-            # Build prompt using Enrichment -> Translation -> Routing
+            # Build prompt using frame analysis + user context override
             try:
                 prompt_text = build_prompt(
                     dialogue_line, start_frame, actual_end_frame, clip_index,
                     self.config.language, self.voice_profile, self.config, self.openai_key,
-                    cached_enriched_context=self.enriched_context  # Use cached context for consistency
+                    frame_analysis=self.frame_analysis,  # Auto-detected defaults
+                    user_context_override=self.enriched_context  # User overrides (if any)
                 )
                 result["prompt_text"] = prompt_text
             except Exception as e:
