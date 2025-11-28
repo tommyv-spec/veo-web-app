@@ -554,23 +554,22 @@
                             <div class="tooltip">
                                 <h5>✍️ Add Dialogue Lines</h5>
                                 <p>Enter lines in format: <code style="background:var(--bg-input);padding:2px 6px;border-radius:4px;">1|First line here</code></p>
-                                <p>OR paste your full script and click <strong>✨ Auto-Split</strong> to split into ~7 second clips.</p>
-                                <p style="color:var(--success);">💡 Auto-Split adapts word count based on language!</p>
+                                <p>OR paste your full script - it will be automatically split into ~7 second clips.</p>
+                                <p style="color:var(--success);">💡 Auto-split adapts word count based on language!</p>
                             </div>
                         </span>
                     </div>
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
                         <span style="font-size:11px;color:var(--text-muted);">Format: ID|Text (one per line)</span>
-                        <button class="btn btn-secondary btn-sm" onclick="autoSplitScript()" id="splitBtn">✨ Auto-Split</button>
                     </div>
                     <textarea id="dialogueInput" placeholder="1|First line of dialogue here
 2|Second line goes here
 3|Third line...
 
-OR paste your full script and click Auto-Split ✨"></textarea>
+OR just paste your full script - it will auto-split!"></textarea>
                     <div id="splitStatus" style="font-size:11px;color:var(--text-muted);margin-top:8px;display:none;"></div>
                     <div id="lineValidation" style="margin-top:10px;display:none;"></div>
-                    <p class="tip-text">💡 <strong>Tip:</strong> Paste your full script and click <strong>✨ Auto-Split</strong> to automatically split into ~7 second clips.</p>
+                    <p class="tip-text">💡 <strong>Tip:</strong> Just paste your script and it will automatically split into ~7 second clips.</p>
                 </div>
                 
                 <div class="card" id="customPromptSection" style="display:none;">
@@ -777,13 +776,14 @@ Example: A realistic vertical video of a professional presenter speaking directl
             
             if(!cleanedText) return [];
             
-            // Strict max: target + 2 words only (~7.5s max)
-            const strictMax = targetWords + 2;
-            
             const words = cleanedText.split(/\s+/);
             const resultLines = [];
             let currentLine = [];
             let wordCount = 0;
+            
+            // More flexible range: prefer sentence ends within a wider window
+            const earlyMin = Math.floor(minWords * 0.85); // Can split early at sentence end
+            const lateMax = targetWords + 3; // Slight extension allowed for sentence end
             
             for(let i = 0; i < words.length; i++){
                 const word = words[i];
@@ -799,25 +799,24 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 
                 if(isLastWord){
                     shouldSplit = true;
-                } else if(wordCount >= minWords && isHardStop){
-                    // Good natural break point
-                    shouldSplit = true;
-                } else if(wordCount >= targetWords - 2 && isHardStop){
-                    // Slightly early but at sentence end - take it
+                } else if(wordCount >= earlyMin && isHardStop){
+                    // Sentence end in acceptable range - take it
                     shouldSplit = true;
                 } else if(wordCount >= targetWords && isSoftStop){
-                    // At target with soft stop
+                    // At target with soft stop - good enough
                     shouldSplit = true;
-                } else if(wordCount >= strictMax){
-                    // At strict max - look for stop in next 1 word only
-                    const nextWord = words[i + 1];
-                    if(nextWord){
-                        const nextLastChar = nextWord.slice(-1);
-                        if(HARD_STOPS.includes(nextLastChar) || SOFT_STOPS.includes(nextLastChar)){
-                            // Wait one more word
-                            continue;
+                } else if(wordCount >= lateMax){
+                    // Past comfortable max - check if sentence end coming soon
+                    let foundHardStop = false;
+                    for(let j = i + 1; j <= Math.min(i + 2, words.length - 1); j++){
+                        if(HARD_STOPS.includes(words[j].slice(-1))){
+                            foundHardStop = true;
+                            break;
                         }
                     }
+                    if(!foundHardStop) shouldSplit = true;
+                } else if(wordCount >= lateMax + 2){
+                    // Absolute max - force split
                     shouldSplit = true;
                 }
                 
@@ -832,17 +831,37 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 resultLines.push(currentLine.join(' '));
             }
             
-            // Merge short last line into previous if too short (< 40% of min)
-            const tooShortThreshold = Math.floor(minWords * 0.4);
-            if(resultLines.length >= 2){
-                const lastLine = resultLines[resultLines.length - 1];
-                const lastWordCount = lastLine.split(/\s+/).length;
+            // Balance last 3 lines if last one is too short
+            if(resultLines.length >= 3){
+                const last3 = resultLines.slice(-3);
+                const last3Words = last3.map(l => l.split(/\s+/));
+                const totalWords = last3Words.reduce((sum, w) => sum + w.length, 0);
+                const lastLineWords = last3Words[2].length;
                 
-                if(lastWordCount < tooShortThreshold){
-                    // Merge with previous line
-                    const prevLine = resultLines[resultLines.length - 2];
-                    resultLines[resultLines.length - 2] = prevLine + ' ' + lastLine;
-                    resultLines.pop();
+                // If last line is less than 50% of average, rebalance
+                const avgWords = totalWords / 3;
+                if(lastLineWords < avgWords * 0.5){
+                    // Combine all words and redistribute into 3 balanced lines
+                    const allWords = last3Words.flat();
+                    const wordsPerLine = Math.ceil(allWords.length / 3);
+                    
+                    const newLine1 = allWords.slice(0, wordsPerLine).join(' ');
+                    const newLine2 = allWords.slice(wordsPerLine, wordsPerLine * 2).join(' ');
+                    const newLine3 = allWords.slice(wordsPerLine * 2).join(' ');
+                    
+                    resultLines.splice(-3, 3, newLine1, newLine2, newLine3);
+                }
+            } else if(resultLines.length === 2){
+                // Check if last line is too short
+                const lastWords = resultLines[1].split(/\s+/).length;
+                const prevWords = resultLines[0].split(/\s+/).length;
+                
+                if(lastWords < minWords * 0.4){
+                    // Merge and re-split evenly
+                    const allWords = resultLines[0].split(/\s+/).concat(resultLines[1].split(/\s+/));
+                    const mid = Math.ceil(allWords.length / 2);
+                    resultLines[0] = allWords.slice(0, mid).join(' ');
+                    resultLines[1] = allWords.slice(mid).join(' ');
                 }
             }
             
@@ -865,6 +884,9 @@ Example: A realistic vertical video of a professional presenter speaking directl
             // Auto-split the text
             const lines = smartSplitText(fullText, minWords, targetWords, maxWords);
             const numLines = lines.length;
+            
+            // Track line count for proportional scaling
+            previousLineCount = numLines;
             
             // Update dialogueInput with properly formatted lines
             const formattedLines = lines.map((line, i) => `${i + 1}|${line}`);
@@ -1037,6 +1059,9 @@ Example: A realistic vertical video of a professional presenter speaking directl
             }
         }
         
+        // Track previous line count to scale scene breaks
+        let previousLineCount = 0;
+        
         function syncFromRichEditor(){
             const editor = document.getElementById('richEditor');
             
@@ -1061,7 +1086,37 @@ Example: A realistic vertical video of a professional presenter speaking directl
             const fullText = allText.join(' ');
             document.getElementById('dialogueInput').value = fullText;
             
-            // Debounced re-render to re-split
+            // Get new line count after splitting
+            const language = document.getElementById('language').value;
+            const wps = SPEAKING_RATES[language] || 2.5;
+            const targetWords = Math.round(wps * 7);
+            const minWords = Math.round(targetWords * 0.7);
+            const maxWords = Math.round(targetWords * 1.3);
+            const newLines = smartSplitText(fullText, minWords, targetWords, maxWords);
+            const newLineCount = newLines.length;
+            
+            // Scale scene breaks proportionally if line count changed
+            if(editorMode === 'storyboard' && previousLineCount > 0 && newLineCount !== previousLineCount && sceneBreaks.length > 1){
+                const scale = newLineCount / previousLineCount;
+                sceneBreaks.forEach((sb, idx) => {
+                    if(idx > 0){ // Don't move first scene (always at 0)
+                        sb.lineIndex = Math.min(Math.round(sb.lineIndex * scale), newLineCount - 1);
+                    }
+                });
+                
+                // Remove duplicate positions
+                const seen = new Set([0]);
+                sceneBreaks = sceneBreaks.filter((sb, idx) => {
+                    if(idx === 0) return true;
+                    if(seen.has(sb.lineIndex)) return false;
+                    seen.add(sb.lineIndex);
+                    return true;
+                });
+            }
+            
+            previousLineCount = newLineCount;
+            
+            // Debounced re-render
             clearTimeout(window.storyboardUpdateTimeout);
             window.storyboardUpdateTimeout = setTimeout(() => {
                 renderStoryboard();
@@ -1223,88 +1278,61 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 clearTimeout(window.storyboardUpdateTimeout);
                 window.storyboardUpdateTimeout = setTimeout(renderStoryboard, 300);
             } else {
+                // In simple mode, auto-split if text doesn't have line numbers
                 clearTimeout(window.validateTimeout);
-                window.validateTimeout = setTimeout(validateDialogueLines, 500);
+                window.validateTimeout = setTimeout(() => {
+                    autoSplitIfNeeded();
+                    validateDialogueLines();
+                }, 500);
             }
         });
         
-        function autoSplitScript(){
-            const input = document.getElementById('dialogueInput');
-            const btn = document.getElementById('splitBtn') || document.querySelector('[onclick*="autoSplitScript"]');
-            const status = document.getElementById('splitStatus');
-            const script = input.value.trim();
-            
-            if(!script){
-                alert('Paste your full script first');
-                return;
-            }
-            
-            const language = document.getElementById('language').value;
-            const wps = SPEAKING_RATES[language] || 2.5;
-            const targetWords = Math.round(wps * 7);
-            const minWords = Math.round(targetWords * 0.7);
-            const maxWords = Math.round(targetWords * 1.3);
-            
-            if(btn){
-                btn.disabled = true;
-                btn.textContent = '⏳ Splitting...';
-            }
-            if(status){
-                status.style.display = 'block';
-                status.textContent = `Splitting for ${language} (~${targetWords} words/line)...`;
-                status.style.color = 'var(--accent)';
-            }
-            
-            try {
-                // Use the shared smartSplitText function
-                const resultLines = smartSplitText(script, minWords, targetWords, maxWords);
-                
-                if(resultLines.length === 0){
-                    throw new Error('No text to split');
-                }
-                
-                // Format with line numbers
-                const formattedLines = resultLines.map((line, i) => `${i + 1}|${line}`);
-                input.value = formattedLines.join('\n');
-                
-                // Calculate stats
-                const durations = resultLines.map(line => {
-                    const wc = line.split(/\s+/).filter(w => w).length;
-                    return parseFloat((wc / wps).toFixed(1));
-                });
-                const minDur = Math.min(...durations);
-                const maxDur = Math.max(...durations);
-                const avgDur = (durations.reduce((a, b) => a + b, 0) / durations.length).toFixed(1);
-                
-                if(status){
-                    if(minDur === maxDur || resultLines.length === 1){
-                        status.textContent = `✓ ${resultLines.length} clip${resultLines.length > 1 ? 's' : ''} × ~${avgDur}s`;
-                    } else {
-                        status.textContent = `✓ ${resultLines.length} clips (${minDur}s - ${maxDur}s, avg ${avgDur}s)`;
-                    }
-                    status.style.color = 'var(--success)';
-                }
-                
-                // Update UI - reset transitions so they get recalculated
-                transitionPoints = [];
-                if(isStoryboardMode()){
-                    renderStoryboard();
-                } else {
+        // Auto-split on paste in simple mode
+        document.getElementById('dialogueInput').addEventListener('paste', function(){
+            if(!isStoryboardMode()){
+                setTimeout(() => {
+                    autoSplitIfNeeded();
                     validateDialogueLines();
-                }
+                }, 100);
+            }
+        });
+        
+        function autoSplitIfNeeded(){
+            const input = document.getElementById('dialogueInput');
+            const text = input.value.trim();
+            if(!text) return;
+            
+            // Check if text already has line numbers (1|, 2|, etc.)
+            const lines = text.split('\n').filter(l => l.trim());
+            const hasLineNumbers = lines.every(l => /^\d+\|/.test(l.trim()));
+            
+            if(!hasLineNumbers && text.length > 50){
+                // Auto-split the raw text
+                const language = document.getElementById('language').value;
+                const wps = SPEAKING_RATES[language] || 2.5;
+                const targetWords = Math.round(wps * 7);
+                const minWords = Math.round(targetWords * 0.7);
+                const maxWords = Math.round(targetWords * 1.3);
                 
-            } catch(e){
-                console.error('Auto-split error:', e);
+                const splitLines = smartSplitText(text, minWords, targetWords, maxWords);
+                const formatted = splitLines.map((line, i) => `${i + 1}|${line}`).join('\n');
+                input.value = formatted;
+                
+                // Show brief status
+                const status = document.getElementById('splitStatus');
                 if(status){
-                    status.textContent = '❌ ' + e.message;
-                    status.style.color = 'var(--error)';
-                }
-            } finally {
-                if(btn){
-                    btn.disabled = false;
-                    btn.textContent = '✨ Auto-Split';
+                    status.style.display = 'block';
+                    status.textContent = `✓ Auto-split into ${splitLines.length} clips`;
+                    status.style.color = 'var(--success)';
+                    setTimeout(() => { status.style.display = 'none'; }, 3000);
                 }
             }
+        }
+        
+        // Legacy function kept for compatibility
+        function autoSplitScript(){
+            autoSplitIfNeeded();
+            validateDialogueLines();
         }
         
         function validateDialogueLines(){
