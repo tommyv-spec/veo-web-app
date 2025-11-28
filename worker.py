@@ -258,9 +258,27 @@ class JobWorker:
                     start_frame = images[0]
                     start_index = 0
                 
-                if not end_frame and len(images) > 1:
-                    end_index = (start_index + 1) % len(images)
-                    end_frame = images[end_index]
+                # For interpolation: use the stored end_frame, or same image if not set
+                if config.use_interpolation:
+                    if end_frame:
+                        # Use the stored end frame
+                        pass
+                    elif clip.end_frame:
+                        # end_frame name is stored but file not found - try to find it
+                        for i, img in enumerate(images):
+                            if img.name == clip.end_frame:
+                                end_frame = img
+                                end_index = i
+                                break
+                    
+                    if not end_frame:
+                        # No specific end frame - use same image for interpolation
+                        end_frame = start_frame
+                        end_index = start_index
+                else:
+                    # No interpolation - no end frame needed
+                    end_frame = None
+                    end_index = start_index
                 
                 # Initialize voice profile for consistency
                 voice_id = generator.initialize_voice_profile(start_frame)
@@ -558,16 +576,10 @@ class JobWorker:
                 elif forced_idx is not None:
                     # === USE STORYBOARD MAPPING ===
                     # UI specified which image this line belongs to
+                    # In storyboard mode, each clip uses its assigned image for BOTH start and end
+                    # This maintains visual consistency within each scene
                     start_idx = int(forced_idx) % num_images
-                    
-                    if use_interpolation:
-                        # Transition to the NEXT image in the list
-                        if start_idx + 1 < num_images:
-                            end_idx = start_idx + 1
-                        else:
-                            end_idx = 0  # Loop back to first image
-                    else:
-                        end_idx = start_idx
+                    end_idx = start_idx  # Same image - no interpolation within storyboard scenes
                     
                     start_frame_name = images[start_idx].name
                     end_frame_name = images[end_idx].name if use_interpolation else None
