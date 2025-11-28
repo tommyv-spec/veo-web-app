@@ -213,6 +213,9 @@ class VideoConfig:
     max_retries_submit: int = 15  # Try up to 15 times to cycle through all API keys
     poll_interval_sec: int = 10
     
+    # Parallel clip generation
+    parallel_clips: int = 3  # Number of clips to generate simultaneously
+    
     # Regeneration
     reuse_logged_params: bool = True
     

@@ -475,19 +475,21 @@ class JobWorker:
         images: List[Path],
         output_dir: Path,
     ):
-        """Process all clips for a job"""
+        """Process all clips for a job - with parallel generation support"""
+        from concurrent.futures import ThreadPoolExecutor, as_completed
         
         # Check for single image mode
         single_image_mode = getattr(generator.config, 'single_image_mode', False) or len(images) == 1
         
-        current_start_index = 0
-        current_start_frame = images[current_start_index]
         images_dir_str = str(images[0].parent)
         
         total_clips = len(dialogue_data)
         completed = 0
         failed = 0
         skipped = 0
+        
+        # Get parallel clip count from config (default 3)
+        parallel_clips = getattr(generator.config, 'parallel_clips', 3)
         
         with get_db() as db:
             # Create clip records
@@ -502,108 +504,95 @@ class JobWorker:
                 db.add(clip)
             db.commit()
         
-        for i, line_data in enumerate(dialogue_data):
-            if generator.cancelled:
-                break
+        # Pre-calculate frame assignments for all clips
+        clip_frames = []
+        for i in range(total_clips):
+            if single_image_mode:
+                # All clips use the same image
+                start_idx = 0
+                end_idx = 0
+            else:
+                # Cycle through images
+                start_idx = i % len(images)
+                end_idx = (i + 1) % len(images)
             
+            clip_frames.append({
+                "start_index": start_idx,
+                "start_frame": images[start_idx],
+                "end_index": end_idx,
+                "end_frame": images[end_idx],
+            })
+        
+        # Process clips in parallel batches
+        def process_single_clip(clip_index: int):
+            """Process a single clip - runs in thread"""
+            if generator.cancelled:
+                return {"clip_index": clip_index, "success": False, "skipped": True}
+            
+            line_data = dialogue_data[clip_index]
             dialogue_id = line_data["id"]
             dialogue_text = line_data["text"]
+            frames = clip_frames[clip_index]
             
+            start_frame = frames["start_frame"]
+            end_frame = frames["end_frame"]
+            start_index = frames["start_index"]
+            end_index = frames["end_index"]
+            
+            # Update clip status to generating
             with get_db() as db:
                 clip = db.query(Clip).filter(
                     Clip.job_id == job_id,
-                    Clip.clip_index == i
+                    Clip.clip_index == clip_index
                 ).first()
                 
                 if clip:
                     clip.status = ClipStatus.GENERATING.value
                     clip.started_at = datetime.utcnow()
-                    clip.start_frame = current_start_frame.name
+                    clip.start_frame = start_frame.name
+                    clip.end_frame = end_frame.name
                     db.commit()
             
             self._broadcast_event(job_id, {
                 "type": "clip_started",
-                "clip_index": i,
+                "clip_index": clip_index,
                 "dialogue_id": dialogue_id,
-                "start_frame": current_start_frame.name,
+                "start_frame": start_frame.name,
             })
             
-            # Check if current start is blacklisted
-            if current_start_frame in generator.blacklist:
-                result = self._get_next_clean_start(
-                    generator, images, current_start_index
-                )
+            # Check if start frame is blacklisted
+            if start_frame in generator.blacklist:
+                result = self._get_next_clean_start(generator, images, start_index)
                 if result:
-                    current_start_index, current_start_frame = result
+                    start_index, start_frame = result
                 else:
-                    # No clean images left
                     with get_db() as db:
                         clip = db.query(Clip).filter(
                             Clip.job_id == job_id,
-                            Clip.clip_index == i
+                            Clip.clip_index == clip_index
                         ).first()
                         if clip:
                             clip.status = ClipStatus.FAILED.value
                             clip.error_code = "ALL_IMAGES_BLACKLISTED"
                             clip.error_message = "No clean images available"
                             db.commit()
-                    
-                    failed += 1
-                    continue
+                    return {"clip_index": clip_index, "success": False, "failed": True}
             
-            # Find end frame
-            if single_image_mode:
-                # Use same image for start and end
-                end_index = current_start_index
-                end_frame = current_start_frame
-            else:
-                end_result = self._get_next_clean_image(
-                    generator, images, current_start_index
-                )
-                
-                if not end_result:
-                    with get_db() as db:
-                        clip = db.query(Clip).filter(
-                            Clip.job_id == job_id,
-                            Clip.clip_index == i
-                        ).first()
-                        if clip:
-                            clip.status = ClipStatus.FAILED.value
-                            clip.error_code = "NO_END_FRAME"
-                            clip.error_message = "Could not find end frame"
-                            db.commit()
-                    
-                    failed += 1
-                    continue
-                
-                end_index, end_frame = end_result
-            
-            with get_db() as db:
-                clip = db.query(Clip).filter(
-                    Clip.job_id == job_id,
-                    Clip.clip_index == i
-                ).first()
-                if clip:
-                    clip.end_frame = end_frame.name
-                    db.commit()
-            
-            # Generate clip with error handling
+            # Generate clip
             try:
-                print(f"[Worker] Calling generate_single_clip for clip {i}...", flush=True)
+                print(f"[Worker] Generating clip {clip_index + 1}/{total_clips} in parallel...", flush=True)
                 result = generator.generate_single_clip(
-                    start_frame=current_start_frame,
+                    start_frame=start_frame,
                     end_frame=end_frame,
                     dialogue_line=dialogue_text,
                     dialogue_id=dialogue_id,
-                    clip_index=i,
+                    clip_index=clip_index,
                     output_dir=output_dir,
                     images_list=images,
                     current_end_index=end_index,
                 )
-                print(f"[Worker] generate_single_clip returned: success={result.get('success')}, error={result.get('error')}", flush=True)
             except Exception as gen_error:
-                print(f"[Worker] generate_single_clip CRASHED: {type(gen_error).__name__}: {str(gen_error)[:200]}", flush=True)
-                # Clip generation crashed - mark as failed but continue
+                print(f"[Worker] Clip {clip_index} CRASHED: {type(gen_error).__name__}: {str(gen_error)[:200]}", flush=True)
                 result = {
                     "success": False,
                     "error": gen_error,
@@ -611,18 +600,13 @@ class JobWorker:
                     "end_frame_used": None,
                     "end_index": end_index,
                 }
-                try:
-                    with get_db() as err_db:
-                        add_job_log(err_db, job_id, f"Clip {i} error: {str(gen_error)[:200]}", "ERROR", "generator")
-                except:
-                    pass
             
             # Update clip record
             try:
                 with get_db() as db:
                     clip = db.query(Clip).filter(
                         Clip.job_id == job_id,
-                        Clip.clip_index == i
+                        Clip.clip_index == clip_index
                     ).first()
                     
                     if clip:
@@ -636,7 +620,6 @@ class JobWorker:
                         if result["success"]:
                             new_filename = result["output_path"].name if result.get("output_path") else None
                             
-                            # Save first version to versions_json
                             versions = [{
                                 "attempt": 1,
                                 "filename": new_filename,
@@ -649,28 +632,13 @@ class JobWorker:
                             clip.approval_status = "pending_review"
                             clip.output_filename = new_filename
                             clip.prompt_text = result.get("prompt_text")
-                            completed += 1
-                            
-                            # Update start frame for next clip (continuity)
-                            if result.get("end_frame_used"):
-                                current_start_frame = result["end_frame_used"]
-                                current_start_index = result.get("end_index", end_index)
                         else:
                             clip.status = ClipStatus.FAILED.value
                             error_obj = result.get("error")
                             if error_obj:
                                 clip.error_code = error_obj.code.value if hasattr(error_obj, 'code') else "UNKNOWN"
                                 clip.error_message = str(error_obj.message if hasattr(error_obj, 'message') else error_obj)[:500]
-                            failed += 1
                         
-                        db.commit()
-                    
-                    # Update job progress immediately
-                    job = db.query(Job).filter(Job.id == job_id).first()
-                    if job:
-                        job.completed_clips = completed
-                        job.failed_clips = failed
-                        job.progress_percent = ((completed + failed) / total_clips) * 100 if total_clips > 0 else 0
                         db.commit()
                     
                     # Save generation log if successful
@@ -679,8 +647,8 @@ class JobWorker:
                             job_id=job_id,
                             video_id=dialogue_id,
                             images_dir=images_dir_str,
-                            start_frame=current_start_frame.name,
-                            end_frame=result["end_frame_used"].name if result.get("end_frame_used") else None,
+                            start_frame=start_frame.name,
+                            end_frame=result["end_frame_used"].name if result.get("end_frame_used") else end_frame.name,
                             dialogue_line=dialogue_text,
                             language=generator.config.language,
                             prompt_text=result.get("prompt_text", ""),
@@ -692,18 +660,54 @@ class JobWorker:
                         db.add(gen_log)
                         db.commit()
             except Exception as db_error:
-                # Database error - log but continue
-                print(f"[Worker] DB error updating clip {i}: {db_error}")
+                print(f"[Worker] DB error updating clip {clip_index}: {db_error}")
             
             self._broadcast_event(job_id, {
                 "type": "clip_completed",
-                "clip_index": i,
+                "clip_index": clip_index,
                 "success": result["success"],
                 "output": result["output_path"].name if result.get("output_path") else None,
             })
             
-            # Small delay between clips
-            time.sleep(3)
+            return {
+                "clip_index": clip_index,
+                "success": result["success"],
+                "result": result,
+            }
+        
+        # Use ThreadPoolExecutor for parallel clip generation
+        with ThreadPoolExecutor(max_workers=parallel_clips) as clip_executor:
+            # Submit all clips
+            futures = {
+                clip_executor.submit(process_single_clip, i): i 
+                for i in range(total_clips)
+            }
+            
+            # Process results as they complete
+            for future in as_completed(futures):
+                clip_index = futures[future]
+                try:
+                    result = future.result()
+                    if result.get("success"):
+                        completed += 1
+                    elif result.get("skipped"):
+                        skipped += 1
+                    else:
+                        failed += 1
+                    
+                    # Update job progress
+                    with get_db() as db:
+                        job = db.query(Job).filter(Job.id == job_id).first()
+                        if job:
+                            job.completed_clips = completed
+                            job.failed_clips = failed
+                            job.skipped_clips = skipped
+                            job.progress_percent = ((completed + failed + skipped) / total_clips) * 100 if total_clips > 0 else 0
+                            db.commit()
+                    
+                except Exception as e:
+                    print(f"[Worker] Future error for clip {clip_index}: {e}")
+                    failed += 1
         
         # Job completed - calculate status from actual clip data
         actual_completed = 0
