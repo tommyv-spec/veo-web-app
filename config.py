@@ -201,6 +201,9 @@ class VideoConfig:
     # Custom prompt (used when use_openai_prompt_tuning is False)
     custom_prompt: str = ""
     
+    # User context (additional info for AI prompt generation)
+    user_context: str = ""
+    
     # Single image mode (use same image for start/end frames)
     single_image_mode: bool = False
     

@@ -135,7 +135,8 @@ def describe_frame(image_path: str, openai_key: Optional[str] = None) -> str:
 def generate_voice_profile(
     frame_description: str, 
     language: str,
-    openai_key: Optional[str] = None
+    openai_key: Optional[str] = None,
+    user_context: str = ""
 ) -> str:
     """Generate voice profile from frame description"""
     vlog(f"[generate_voice_profile] Generating voice profile for language: {language}")
@@ -155,11 +156,17 @@ def generate_voice_profile(
             f"OUTPUT FORMAT:\nVOICE_PROFILE:\n<2-3 sentences describing the voice as a native {language} speaker>\n"
         )
         
+        user_msg = f"FRAME: {frame_description}\nSPOKEN LANGUAGE (not text in image): {language}\nThe speaker must sound like a native {language} speaker. Any text visible in the scene does NOT affect the spoken language."
+        
+        # Add user context if provided
+        if user_context:
+            user_msg += f"\n\nADDITIONAL CONTEXT ABOUT THE SPEAKER: {user_context}"
+        
         resp = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system_msg},
-                {"role": "user", "content": f"FRAME: {frame_description}\nSPOKEN LANGUAGE (not text in image): {language}\nThe speaker must sound like a native {language} speaker. Any text visible in the scene does NOT affect the spoken language."},
+                {"role": "user", "content": user_msg},
             ],
             temperature=0.3,
             max_tokens=250,
@@ -237,7 +244,8 @@ def optimize_visual_prompt(
     start_frame_desc: str,
     end_frame_desc: str,
     language: str,
-    openai_key: Optional[str] = None
+    openai_key: Optional[str] = None,
+    user_context: str = ""
 ) -> Tuple[str, str]:
     """Generate optimized visual prompt and gesture notes"""
     client = get_openai_client(openai_key)
@@ -259,6 +267,10 @@ def optimize_visual_prompt(
             f"END FRAME: {end_frame_desc or '[none]'}\n"
             f"DIALOGUE ({language}): \"{dialogue_line}\"\n"
         )
+        
+        # Add user context if provided
+        if user_context:
+            user_msg += f"\nADDITIONAL CONTEXT: {user_context}\n"
         
         resp = client.chat.completions.create(
             model=OPENAI_MODEL,
@@ -322,8 +334,9 @@ def build_prompt(
         performance = ""
     elif config.use_openai_prompt_tuning:
         # AI-generated prompt
+        user_context = getattr(config, 'user_context', '') or ''
         visual_prompt, gesture_notes = optimize_visual_prompt(
-            BASE_PROMPT, dialogue_line, start_desc, end_desc, language, openai_key
+            BASE_PROMPT, dialogue_line, start_desc, end_desc, language, openai_key, user_context
         )
         performance = generate_performance_modifiers(dialogue_line, language, openai_key)
     else:
@@ -636,8 +649,9 @@ class VeoGenerator:
         if clip_index == 0 or self.voice_profile is None:
             if self.config.use_openai_prompt_tuning:
                 start_desc = describe_frame(str(start_frame), self.openai_key)
+                user_context = getattr(self.config, 'user_context', '') or ''
                 self.voice_profile = generate_voice_profile(
-                    start_desc, self.config.language, self.openai_key
+                    start_desc, self.config.language, self.openai_key, user_context
                 )
             else:
                 self.voice_profile = get_default_voice_profile(self.config.language)
