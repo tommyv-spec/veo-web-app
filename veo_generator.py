@@ -91,11 +91,13 @@ def process_user_context(
     """
     STEP 1: ENRICHMENT
     
-    Takes brief user input (e.g., "he is very angry") and EXPANDS it into
-    forensic details for each Expert Network (Visual, Audio, Motion).
+    Takes brief user input (e.g., "he is very angry" or "news anchor reporting") 
+    and EXPANDS it into forensic details for each Expert Network (Visual, Audio, Motion).
     
     This is the KEY function - it transforms simple directions into
     specific, actionable instructions that Veo can follow.
+    
+    Now also extracts SPEAKER ROLE for voice casting.
     """
     if not user_context or not user_context.strip():
         return {}
@@ -112,6 +114,7 @@ def process_user_context(
             "body_language": user_context,
             "background_action": "",
             "camera_motion": "",
+            "speaker_role": "",
         }
 
     try:
@@ -119,19 +122,30 @@ def process_user_context(
 
 Your job is to EXPAND brief user directions into SPECIFIC, REALISTIC details.
 
-The user might say something simple like "he is angry" or "nervous interview".
+The user might say something simple like "he is angry" or "nervous interview" or "fitness coach explaining".
 You must expand this into detailed instructions for EACH aspect of the video.
 
 CRITICAL: Be SPECIFIC and REALISTIC. Describe what you would actually SEE in real life.
 - Don't say "intense cinematic gaze" - say "narrowed eyes, looking directly at camera"
 - Don't say "dramatic tension" - say "shoulders raised, jaw tight"
 
+SPEAKER ROLE EXTRACTION:
+Look for any profession, role, or archetype in the user's description:
+- "news anchor" → formal, authoritative delivery
+- "fitness influencer" → energetic, motivational, upbeat
+- "doctor explaining" → calm, reassuring, professional
+- "teacher" → clear, patient, educational
+- "salesperson" → enthusiastic, persuasive
+- "meditation guide" → soft, calm, soothing
+If no specific role mentioned, use "natural speaker"
+
 OUTPUT JSON with these fields:
 {
+  "speaker_role": "The role/profession/archetype (e.g., 'news anchor', 'fitness coach', 'doctor', 'natural speaker')",
   "subject_action": "What the person physically does (e.g., 'leaning forward, pointing finger', 'sitting still, hands folded')",
   "facial_expression": "Realistic facial details (e.g., 'furrowed brow, tight lips, narrowed eyes')",
-  "voice_tone": "How the voice sounds (e.g., 'loud, sharp, fast-paced' or 'quiet, slow, hesitant')",
-  "delivery_style": "How they speak (e.g., 'speaking quickly with emphasis' or 'pausing between words')",
+  "voice_tone": "How the voice sounds - MUST match the speaker_role (e.g., news anchor = 'clear, authoritative, measured', fitness coach = 'energetic, loud, motivational')",
+  "delivery_style": "How they speak - MUST match the speaker_role (e.g., news anchor = 'formal pacing, clear enunciation', fitness coach = 'fast-paced, encouraging, punchy')",
   "body_language": "Posture and gestures (e.g., 'arms crossed, leaning back' or 'hands gesturing while talking')",
   "background_action": "What happens in background (e.g., 'nothing, static background')",
   "camera_motion": "Camera movement (e.g., 'static, no movement' or 'slight zoom')",
@@ -144,7 +158,7 @@ Keep it REALISTIC and NATURAL. No dramatic or cinematic language."""
             model=OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system_msg},
-                {"role": "user", "content": f"USER DIRECTION: {user_context}\nLANGUAGE: {language}\n\nExpand this into detailed video production instructions."}
+                {"role": "user", "content": f"USER DIRECTION: {user_context}\nLANGUAGE: {language}\n\nExpand this into detailed video production instructions. Be sure to identify the speaker_role."}
             ],
             temperature=0.7,  # Higher temp for creative expansion
             response_format={"type": "json_object"}
@@ -160,7 +174,8 @@ Keep it REALISTIC and NATURAL. No dramatic or cinematic language."""
             "subject_action": user_context,
             "facial_expression": user_context,
             "voice_tone": user_context,
-            "atmosphere": user_context
+            "atmosphere": user_context,
+            "speaker_role": "",
         }
 
 
@@ -168,7 +183,7 @@ Keep it REALISTIC and NATURAL. No dramatic or cinematic language."""
 
 @lru_cache(maxsize=512)
 def describe_frame(image_path: str, openai_key: Optional[str] = None) -> str:
-    """Analyze frame for visual context"""
+    """Analyze frame for visual context (legacy - simple description)"""
     client = get_openai_client(openai_key)
     if client is None:
         return ""
@@ -195,6 +210,100 @@ def describe_frame(image_path: str, openai_key: Optional[str] = None) -> str:
         return resp.choices[0].message.content.strip()
     except Exception:
         return ""
+
+
+def analyze_frame_for_voice(image_path: str, openai_key: Optional[str] = None) -> dict:
+    """
+    COMPREHENSIVE FRAME ANALYSIS FOR VOICE CASTING
+    
+    Analyzes the frame to automatically detect:
+    1. Subject appearance (age, gender)
+    2. Apparent role/profession based on visual cues
+    3. Setting/context
+    4. Suggested voice characteristics
+    
+    This is the DEFAULT behavior - no user input needed.
+    User context can override these defaults when provided.
+    """
+    client = get_openai_client(openai_key)
+    
+    # Default fallback
+    default_result = {
+        "subject_age": "adult",
+        "subject_gender": "neutral",
+        "apparent_role": "natural speaker",
+        "setting": "indoor",
+        "visual_description": "",
+        "suggested_voice_tone": "clear, natural, conversational",
+        "suggested_delivery": "measured pace, professional",
+        "confidence": "low"
+    }
+    
+    if client is None:
+        return default_result
+    
+    path = Path(image_path)
+    if not path.exists():
+        return default_result
+    
+    try:
+        with open(path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("utf-8")
+        
+        system_msg = """You are a Voice Casting Director analyzing a video frame.
+
+Your job: Look at this frame and determine the BEST voice to match this speaker.
+
+Analyze:
+1. SUBJECT APPEARANCE: Age range, gender
+2. APPARENT ROLE: Based on clothing, setting, posture, props - what role does this person appear to have?
+   - Business suit + office = corporate professional
+   - Scrubs + medical setting = doctor/nurse
+   - Workout clothes + gym = fitness instructor
+   - Casual + home setting = vlogger/influencer
+   - Formal dress + news desk = news anchor
+   - Casual + outdoor = street interview / man on street
+   - Professional attire + microphone = reporter/journalist
+   - etc.
+3. SETTING: Where are they? (studio, office, gym, outdoor, home, etc.)
+4. VOICE SUGGESTION: Based on appearance and role, what voice would fit?
+
+OUTPUT JSON:
+{
+  "subject_age": "young adult / middle-aged / older adult / etc.",
+  "subject_gender": "male / female / neutral",
+  "apparent_role": "the role they appear to have based on visual cues",
+  "setting": "where this appears to be filmed",
+  "visual_description": "brief description of what you see (50 words)",
+  "suggested_voice_tone": "voice quality that would match this person",
+  "suggested_delivery": "speaking style that would fit their apparent role",
+  "confidence": "high / medium / low - how confident are you in the role detection"
+}
+
+Be SPECIFIC about the role. Don't just say "professional" - say "news anchor" or "corporate executive" or "fitness coach" based on what you actually see."""
+
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "Analyze this frame for voice casting. What voice would best match this speaker?"},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                ]},
+            ],
+            max_tokens=400,
+            response_format={"type": "json_object"}
+        )
+        
+        result = json.loads(resp.choices[0].message.content)
+        vlog(f"[FRAME ANALYSIS] Auto-detected: {result.get('apparent_role', 'unknown')} ({result.get('confidence', 'unknown')} confidence)")
+        vlog(f"[FRAME ANALYSIS] Subject: {result.get('subject_age', '?')} {result.get('subject_gender', '?')}")
+        vlog(f"[FRAME ANALYSIS] Setting: {result.get('setting', '?')}")
+        return result
+        
+    except Exception as e:
+        vlog(f"[FRAME ANALYSIS] Error: {e}")
+        return default_result
 
 
 # ===================== STEP 3: VISUAL TRANSLATION =====================
@@ -275,62 +384,123 @@ Write a realistic, natural description. No cinematic language."""
 # ===================== STEP 4: VOICE PROFILE =====================
 
 def generate_voice_profile(
-    frame_description: str, 
+    frame_analysis: dict,
     language: str,
-    enriched_context: dict,
+    user_context_enriched: dict,
     openai_key: Optional[str] = None
 ) -> str:
     """
-    Generate voice profile that:
-    1. Matches the SUBJECT's appearance (age, gender)
-    2. Reflects the emotional direction from user context
-    3. Always has PROFESSIONAL STUDIO quality (regardless of scene setting)
+    Generate voice profile using:
+    1. FRAME ANALYSIS (DEFAULT) - auto-detected from image: age, gender, apparent role
+    2. USER CONTEXT (OVERRIDE) - when provided, takes priority over auto-detected
+    3. Always PROFESSIONAL STUDIO quality
+    
+    Priority: User context > Frame analysis > Defaults
     """
     client = get_openai_client(openai_key)
     
-    # Get voice directions from enriched context
-    voice_tone = enriched_context.get('voice_tone', '')
-    delivery_style = enriched_context.get('delivery_style', '')
+    # === EXTRACT FROM FRAME ANALYSIS (defaults) ===
+    auto_age = frame_analysis.get('subject_age', 'adult')
+    auto_gender = frame_analysis.get('subject_gender', 'neutral')
+    auto_role = frame_analysis.get('apparent_role', 'natural speaker')
+    auto_voice_tone = frame_analysis.get('suggested_voice_tone', 'clear, natural')
+    auto_delivery = frame_analysis.get('suggested_delivery', 'measured pace')
+    visual_desc = frame_analysis.get('visual_description', '')
+    detection_confidence = frame_analysis.get('confidence', 'low')
     
-    # Studio quality is ALWAYS required
+    # === EXTRACT FROM USER CONTEXT (overrides) ===
+    user_role = user_context_enriched.get('speaker_role', '')
+    user_voice_tone = user_context_enriched.get('voice_tone', '')
+    user_delivery = user_context_enriched.get('delivery_style', '')
+    
+    # === MERGE: User context overrides auto-detected ===
+    final_role = user_role if user_role else auto_role
+    final_voice_tone = user_voice_tone if user_voice_tone else auto_voice_tone
+    final_delivery = user_delivery if user_delivery else auto_delivery
+    
+    # Studio quality is ALWAYS required - non-negotiable
     studio_quality = (
         "Professional studio recording quality: crystal clear audio, no background noise, "
         "no room reverb, no echo, broadcast-grade microphone, perfect clarity."
     )
     
+    # Log the merge decision
+    vlog(f"[VOICE CASTING] Auto-detected role: {auto_role} (confidence: {detection_confidence})")
+    if user_role:
+        vlog(f"[VOICE CASTING] User override role: {user_role} (USING THIS)")
+    vlog(f"[VOICE CASTING] Final role: {final_role}")
+    
     if client is None:
-        base = f"Native {language} speaker with clear pronunciation. {studio_quality}"
-        if voice_tone:
-            return f"{base} Voice quality: {voice_tone}. Delivery: {delivery_style}."
-        return base
+        base = f"{auto_age} {auto_gender} {language} speaker. {final_role} style. {studio_quality}"
+        return f"{base} Voice: {final_voice_tone}. Delivery: {final_delivery}."
     
     try:
         system_msg = f"""You are a Voice Casting Director for professional video production.
 
-Your job: Define the voice characteristics for a {language} speaker.
+Your job: Cast the PERFECT voice for a {language} speaker.
 
-CRITICAL RULES:
-1. MATCH THE SUBJECT: Analyze the frame description to determine the speaker's approximate age and gender, then choose a voice that matches (e.g., middle-aged man = mature male voice, young woman = younger female voice)
-2. IGNORE THE SURROUNDINGS: The scene location (outdoor, street, office) does NOT affect voice quality
-3. ALWAYS STUDIO QUALITY: The voice must ALWAYS sound like it was recorded in a professional studio with broadcast-grade equipment - clean, clear, no background noise, no room reverb
-4. EMOTIONAL DIRECTION: Apply the emotional tone/delivery specified
+=== ROLE-BASED VOICE PROFILES ===
 
-OUTPUT FORMAT (3-4 sentences):
-- First sentence: Voice type matching the subject (age, gender, voice character)
-- Second sentence: Emotional quality and delivery style
-- Third sentence: ALWAYS include "{studio_quality}"
-"""
+NEWS ANCHOR / REPORTER:
+- Authoritative, measured pace, clear enunciation
+- Formal tone, confident, trustworthy, even-paced
 
-        user_msg = f"""FRAME DESCRIPTION (analyze subject's appearance):
-{frame_description}
+FITNESS COACH / INFLUENCER:
+- High energy, enthusiastic, loud, motivational
+- Fast-paced, punchy, encouraging, upbeat
 
-LANGUAGE: {language}
+DOCTOR / MEDICAL PROFESSIONAL:
+- Calm, reassuring, clear, precise
+- Patient, measured, professional but warm
 
-=== EMOTIONAL DIRECTION ===
-VOICE TONE: {voice_tone or 'Natural, conversational'}
-DELIVERY STYLE: {delivery_style or 'Clear and engaging'}
+TEACHER / EDUCATOR:
+- Clear, patient, engaging, educational
+- Slightly varied pace, encouraging
 
-Describe the voice that matches this subject and emotional direction. Remember: ALWAYS studio quality regardless of scene setting."""
+SALESPERSON / MARKETER:
+- Enthusiastic, persuasive, dynamic
+- Friendly, approachable, confident
+
+MEDITATION / WELLNESS GUIDE:
+- Soft, calm, soothing, slow
+- Gentle, peaceful, warm, nurturing
+
+CORPORATE / BUSINESS EXECUTIVE:
+- Professional, polished, clear, confident
+- Measured pace, authoritative but approachable
+
+VLOGGER / INFLUENCER (CASUAL):
+- Natural, conversational, relaxed
+- Friendly, authentic, personable
+
+STREET INTERVIEW / MAN ON STREET:
+- Natural, unrehearsed quality
+- Conversational, authentic, varied pace
+
+=== CRITICAL RULES ===
+1. Voice MUST match the subject's age and gender
+2. Voice MUST sound like the specified role
+3. Scene location does NOT affect voice quality (ignore surroundings)
+4. Voice MUST be professional studio quality - ALWAYS
+5. Apply any emotional overlay specified
+
+OUTPUT: 4-5 sentences describing the exact voice to use."""
+
+        user_msg = f"""=== SUBJECT FROM FRAME ===
+Age: {auto_age}
+Gender: {auto_gender}
+Visual: {visual_desc}
+
+=== FINAL VOICE CASTING ===
+Role: {final_role}
+Voice Tone: {final_voice_tone}
+Delivery Style: {final_delivery}
+Language: {language}
+
+Cast this voice. Remember:
+- Match the age/gender exactly
+- Sound like a {final_role} would sound
+- {studio_quality}"""
 
         resp = client.chat.completions.create(
             model=OPENAI_MODEL,
@@ -339,21 +509,20 @@ Describe the voice that matches this subject and emotional direction. Remember: 
                 {"role": "user", "content": user_msg},
             ],
             temperature=0.4,
-            max_tokens=200,
+            max_tokens=300,
         )
         
         result = resp.choices[0].message.content.strip()
         
-        # Ensure studio quality is mentioned (belt and suspenders)
+        # Ensure studio quality is mentioned
         if "studio" not in result.lower() and "professional" not in result.lower():
             result = f"{result} {studio_quality}"
         
-        vlog(f"[VOICE PROFILE] {result[:200]}...")
         return result
         
     except Exception as e:
         vlog(f"[VOICE PROFILE] Error: {e}")
-        return f"Native {language} speaker matching the subject's appearance. {voice_tone}. {delivery_style}. {studio_quality}"
+        return f"{auto_age} {auto_gender} {language} speaker in {final_role} style. {final_voice_tone}. {final_delivery}. {studio_quality}"
 
 
 def get_default_voice_profile(language: str, user_context: str = "") -> str:
@@ -364,7 +533,7 @@ def get_default_voice_profile(language: str, user_context: str = "") -> str:
     )
     base = f"Natural {language} voice with clear diction and native accent. {studio_quality}"
     if user_context:
-        return f"{base} Emotional direction: {user_context}."
+        return f"{base} Context: {user_context}."
     return base
 
 
@@ -506,6 +675,7 @@ def build_prompt(
     vlog(f"User Context: '{user_context_raw}'")
     vlog(f"")
     vlog(f"ENRICHED DETAILS:")
+    vlog(f"  Speaker Role: {enriched_context.get('speaker_role', 'Natural speaker')}")
     vlog(f"  Action: {enriched_context.get('subject_action', 'none')}")
     vlog(f"  Expression: {enriched_context.get('facial_expression', 'none')}")
     vlog(f"  Voice Tone: {enriched_context.get('voice_tone', 'none')}")
@@ -657,7 +827,8 @@ class VeoGenerator:
         self.blacklist: Set[Path] = set()
         self.voice_profile: Optional[str] = None
         self.voice_profile_id: Optional[str] = None  # Short ID for logging
-        self.enriched_context: Optional[dict] = None  # Cached enriched context
+        self.frame_analysis: Optional[dict] = None  # Auto-detected from frame (age, gender, role)
+        self.enriched_context: Optional[dict] = None  # From user context (override)
         self.client: Optional[genai.Client] = None
         
         # Callbacks
@@ -677,16 +848,36 @@ class VeoGenerator:
         
         user_context = getattr(self.config, 'user_context', '') or ''
         
-        # Generate and cache enriched context
-        self.enriched_context = process_user_context(
-            user_context, self.config.language, self.openai_key
-        )
-        
-        # Generate voice profile
+        # === STEP 1: ANALYZE FRAME (auto-detect age, gender, role) ===
+        # This is the DEFAULT - works even without user context
         if self.config.use_openai_prompt_tuning:
-            frame_desc = describe_frame(str(reference_frame), self.openai_key)
+            self.frame_analysis = analyze_frame_for_voice(str(reference_frame), self.openai_key)
+        else:
+            self.frame_analysis = {
+                "subject_age": "adult",
+                "subject_gender": "neutral", 
+                "apparent_role": "natural speaker",
+                "suggested_voice_tone": "natural, conversational",
+                "suggested_delivery": "clear, measured",
+                "visual_description": "",
+                "confidence": "low"
+            }
+        
+        # === STEP 2: ENRICH USER CONTEXT (if provided - this is the OVERRIDE) ===
+        if user_context:
+            self.enriched_context = process_user_context(
+                user_context, self.config.language, self.openai_key
+            )
+        else:
+            self.enriched_context = {}
+        
+        # === STEP 3: GENERATE VOICE PROFILE (frame analysis + user override) ===
+        if self.config.use_openai_prompt_tuning:
             self.voice_profile = generate_voice_profile(
-                frame_desc, self.config.language, self.enriched_context, self.openai_key
+                self.frame_analysis,  # Auto-detected defaults
+                self.config.language,
+                self.enriched_context,  # User overrides (if any)
+                self.openai_key
             )
         else:
             self.voice_profile = get_default_voice_profile(self.config.language, user_context)
@@ -695,16 +886,34 @@ class VeoGenerator:
         profile_hash = hashlib.md5(self.voice_profile.encode()).hexdigest()[:8]
         self.voice_profile_id = f"VP-{profile_hash.upper()}"
         
-        # Log the voice profile clearly
+        # === LOG EVERYTHING ===
+        auto_role = self.frame_analysis.get('apparent_role', 'unknown')
+        user_role = self.enriched_context.get('speaker_role', '')
+        final_role = user_role if user_role else auto_role
+        
         vlog(f"\n{'='*60}")
         vlog(f"[VOICE PROFILE INITIALIZED]")
         vlog(f"{'='*60}")
         vlog(f"Voice ID: {self.voice_profile_id}")
-        vlog(f"User Context: '{user_context}'")
         vlog(f"")
-        vlog(f"Enriched Voice Details:")
-        vlog(f"  Tone: {self.enriched_context.get('voice_tone', 'Natural')}")
-        vlog(f"  Delivery: {self.enriched_context.get('delivery_style', 'Conversational')}")
+        vlog(f"=== FRAME ANALYSIS (auto-detected) ===")
+        vlog(f"  Subject: {self.frame_analysis.get('subject_age', '?')} {self.frame_analysis.get('subject_gender', '?')}")
+        vlog(f"  Auto Role: {auto_role} (confidence: {self.frame_analysis.get('confidence', '?')})")
+        vlog(f"  Auto Voice: {self.frame_analysis.get('suggested_voice_tone', '?')}")
+        vlog(f"  Auto Delivery: {self.frame_analysis.get('suggested_delivery', '?')}")
+        vlog(f"")
+        if user_context:
+            vlog(f"=== USER CONTEXT (override) ===")
+            vlog(f"  Raw: '{user_context}'")
+            vlog(f"  User Role: {user_role or '(not specified)'}")
+            vlog(f"  User Voice: {self.enriched_context.get('voice_tone', '(not specified)')}")
+            vlog(f"  User Delivery: {self.enriched_context.get('delivery_style', '(not specified)')}")
+            vlog(f"")
+        else:
+            vlog(f"=== USER CONTEXT: None (using auto-detected) ===")
+            vlog(f"")
+        vlog(f"=== FINAL VOICE CASTING ===")
+        vlog(f"  Final Role: {final_role}")
         vlog(f"")
         vlog(f"Generated Profile:")
         vlog(f"  {self.voice_profile}")
