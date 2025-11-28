@@ -696,30 +696,128 @@ Example: A realistic vertical video of a professional presenter speaking directl
         // Default: transitions after each clip matching image count
         let transitionPoints = [];
         
+        // Speaking rates (words per second) by language
+        const SPEAKING_RATES = {
+            "English": 2.5, "Italian": 2.8, "Spanish": 2.8, "French": 2.5, "German": 2.2,
+            "Portuguese": 2.7, "Dutch": 2.4, "Polish": 2.3, "Russian": 2.2,
+            "Japanese": 3.0, "Korean": 3.0, "Chinese": 3.2, "Arabic": 2.3, "Hindi": 2.6, "Turkish": 2.5
+        };
+        
+        // Punctuation for natural breaks
+        const HARD_STOPS = ['.', '!', '?', '。', '！', '？', '।'];
+        const SOFT_STOPS = [',', ';', ':', '—', '–', '-', '،', '、'];
+        
+        function smartSplitText(text, minWords, targetWords, maxWords){
+            // Clean the text - remove existing line numbers
+            const cleanedText = text
+                .split('\n')
+                .map(line => line.replace(/^\d+\|/, '').trim())
+                .filter(line => line)
+                .join(' ')
+                .replace(/\s+/g, ' ')
+                .trim();
+            
+            if(!cleanedText) return [];
+            
+            const words = cleanedText.split(/\s+/);
+            const resultLines = [];
+            let currentLine = [];
+            let wordCount = 0;
+            
+            for(let i = 0; i < words.length; i++){
+                const word = words[i];
+                currentLine.push(word);
+                wordCount++;
+                
+                const lastChar = word.slice(-1);
+                const isHardStop = HARD_STOPS.includes(lastChar);
+                const isSoftStop = SOFT_STOPS.includes(lastChar);
+                const isLastWord = i === words.length - 1;
+                
+                let shouldSplit = false;
+                
+                if(isLastWord){
+                    shouldSplit = true;
+                } else if(wordCount >= minWords && isHardStop){
+                    shouldSplit = true;
+                } else if(wordCount >= targetWords && isSoftStop){
+                    shouldSplit = true;
+                } else if(wordCount >= maxWords){
+                    let foundStop = false;
+                    for(let j = i + 1; j <= Math.min(i + 3, words.length - 1); j++){
+                        const nextLastChar = words[j].slice(-1);
+                        if(HARD_STOPS.includes(nextLastChar) || SOFT_STOPS.includes(nextLastChar)){
+                            foundStop = true;
+                            break;
+                        }
+                    }
+                    if(!foundStop) shouldSplit = true;
+                } else if(wordCount >= maxWords + 3){
+                    shouldSplit = true;
+                }
+                
+                if(shouldSplit && currentLine.length > 0){
+                    resultLines.push(currentLine.join(' '));
+                    currentLine = [];
+                    wordCount = 0;
+                }
+            }
+            
+            if(currentLine.length > 0){
+                resultLines.push(currentLine.join(' '));
+            }
+            
+            return resultLines;
+        }
+        
         function renderStoryboard(){
             const editor = document.getElementById('richEditor');
             const sidebar = document.getElementById('storyboardSidebar');
             const summary = document.getElementById('storyboardSummary');
             const fullText = document.getElementById('dialogueInput').value;
-            const lines = fullText.split('\n');
             const numImages = uploadedFilesData.length;
             
-            // Auto-calculate transition points if not set
-            if(transitionPoints.length !== numImages - 1){
-                transitionPoints = [];
-                const numLines = lines.filter(l => l.trim()).length;
-                if(numImages > 1 && numLines > 0){
-                    const linesPerImage = Math.ceil(numLines / numImages);
-                    for(let i = 1; i < numImages; i++){
-                        const transitionAfter = Math.min(i * linesPerImage - 1, numLines - 2);
-                        if(transitionAfter >= 0){
-                            transitionPoints.push(transitionAfter);
-                        }
+            // Get language settings for splitting
+            const language = document.getElementById('language').value;
+            const wps = SPEAKING_RATES[language] || 2.5;
+            const targetWords = Math.round(wps * 7);
+            const minWords = Math.round(targetWords * 0.7);
+            const maxWords = Math.round(targetWords * 1.3);
+            
+            // Auto-split the text
+            const lines = smartSplitText(fullText, minWords, targetWords, maxWords);
+            const numLines = lines.length;
+            
+            // Update dialogueInput with properly formatted lines
+            const formattedLines = lines.map((line, i) => `${i + 1}|${line}`);
+            document.getElementById('dialogueInput').value = formattedLines.join('\n');
+            
+            // Calculate image bindings - distribute images evenly across lines
+            let imageBindings = {};
+            if(numImages > 0 && numLines > 0){
+                const linesPerImage = Math.ceil(numLines / numImages);
+                for(let i = 0; i < numImages; i++){
+                    const startLine = i * linesPerImage;
+                    if(startLine < numLines){
+                        imageBindings[startLine] = i;
                     }
+                }
+            } else if(numImages > 0){
+                // No lines yet, just bind first image to line 0
+                imageBindings[0] = 0;
+            }
+            
+            // Calculate transition points from bindings
+            transitionPoints = [];
+            const sortedBindings = Object.keys(imageBindings).map(k => parseInt(k)).sort((a,b) => a - b);
+            for(let i = 1; i < sortedBindings.length; i++){
+                const sceneStartLine = sortedBindings[i];
+                if(sceneStartLine > 0){
+                    transitionPoints.push(sceneStartLine - 1);
                 }
             }
             
-            // Render Sidebar (draggable image thumbnails)
+            // Render Sidebar
             let sidebarHtml = '';
             uploadedFilesData.forEach((img, i) => {
                 sidebarHtml += `
@@ -734,41 +832,38 @@ Example: A realistic vertical video of a professional presenter speaking directl
             sidebarHtml += `<div class="storyboard-sidebar-add" onclick="document.getElementById('fileInput').click()" title="Add image">+</div>`;
             sidebar.innerHTML = sidebarHtml;
             
-            // Build Editor Content with scene dividers
+            // Build editor content
             let htmlContent = '';
-            let currentLineIndex = 0;
+            const imagePositions = Object.keys(imageBindings).map(k => parseInt(k)).sort((a,b) => a - b);
             
-            uploadedFilesData.forEach((img, imgIdx) => {
-                // Calculate which lines belong to this image
-                const endLineIndex = (imgIdx < transitionPoints.length) 
-                                     ? transitionPoints[imgIdx] + 1 
-                                     : lines.length;
-                
-                // Extract the text for this block
-                const blockLines = lines.slice(currentLineIndex, endLineIndex);
-                const blockText = blockLines.join('\n');
-                
-                // Scene Divider (contenteditable=false makes it a solid block)
-                htmlContent += `
-                    <div class="scene-divider" contenteditable="false" data-img-index="${imgIdx}">
-                        <img src="${img.dataUrl}">
-                        <div class="scene-divider-info">
-                            <span class="scene-divider-label">Scene ${imgIdx + 1}</span>
-                            <span class="scene-divider-filename">${truncateName(img.name, 20)}</span>
+            if(imagePositions.length > 0){
+                imagePositions.forEach((startLine, idx) => {
+                    const imgIndex = imageBindings[startLine];
+                    const img = uploadedFilesData[imgIndex];
+                    if(!img) return;
+                    
+                    const nextImageLine = imagePositions[idx + 1];
+                    const endLine = nextImageLine !== undefined ? nextImageLine : numLines;
+                    
+                    // Scene divider
+                    htmlContent += `
+                        <div class="scene-divider" contenteditable="false" data-img-index="${imgIndex}" data-start-line="${startLine}">
+                            <img src="${img.dataUrl}">
+                            <div class="scene-divider-info">
+                                <span class="scene-divider-label">Scene ${idx + 1}</span>
+                                <span class="scene-divider-filename">${truncateName(img.name, 20)}</span>
+                            </div>
+                            <button class="scene-divider-remove" onclick="removeImageFromEditor(${imgIndex})" title="Remove">✕</button>
                         </div>
-                        <button class="scene-divider-remove" onclick="removeImageFromEditor(${imgIdx})" title="Remove">✕</button>
-                    </div>
-                `;
-                
-                // Text block for this scene
-                htmlContent += `<div class="scene-text-block">${blockText || ''}</div>`;
-                
-                currentLineIndex = endLineIndex;
-            });
-            
-            // If no images, just show empty editor placeholder
-            if(numImages === 0){
-                htmlContent = `<div class="scene-text-block">${fullText || ''}</div>`;
+                    `;
+                    
+                    // Text for this section
+                    const sectionLines = lines.slice(startLine, endLine);
+                    htmlContent += `<div class="scene-text-block">${sectionLines.join('\n')}</div>`;
+                });
+            } else {
+                // No images - just show text
+                htmlContent = `<div class="scene-text-block">${lines.join('\n')}</div>`;
             }
             
             editor.innerHTML = htmlContent;
@@ -782,7 +877,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
             `;
             
             if(numClips === 0){
-                summaryHtml += `<div class="summary-item warn">⚠️ Add dialogue lines</div>`;
+                summaryHtml += `<div class="summary-item warn">⚠️ Add dialogue</div>`;
             } else if(numImages > 1 && transitionPoints.length > 0){
                 summaryHtml += `<div class="summary-item ok">✓ Scenes: ${transitionPoints.map(t => 'after #' + (t + 1)).join(', ')}</div>`;
             } else {
@@ -794,46 +889,147 @@ Example: A realistic vertical video of a professional presenter speaking directl
         
         function syncFromRichEditor(){
             const editor = document.getElementById('richEditor');
-            let masterScript = [];
-            let newTransitionPoints = [];
-            let lineCount = 0;
-            let currentImageOrder = [];
             
-            // Iterate over all child nodes
+            // 1. Collect all content with image markers
+            let segments = []; // {type: 'text' | 'image', content: string | imgIndex}
+            
             for(let node of editor.childNodes){
-                // Is it a scene divider?
                 if(node.classList && node.classList.contains('scene-divider')){
                     const imgIndex = parseInt(node.dataset.imgIndex);
-                    if(!isNaN(imgIndex) && uploadedFilesData[imgIndex]){
-                        currentImageOrder.push(imgIndex);
-                        // Mark transition point (end of previous section)
-                        if(lineCount > 0 && newTransitionPoints.length < currentImageOrder.length - 1){
-                            newTransitionPoints.push(lineCount - 1);
-                        }
+                    if(!isNaN(imgIndex)){
+                        segments.push({ type: 'image', imgIndex: imgIndex });
                     }
-                    continue;
-                }
-                
-                // Is it a text block?
-                const text = node.textContent || '';
-                if(text.trim()){
-                    const textLines = text.split('\n').filter(l => l.trim());
-                    textLines.forEach(line => {
-                        masterScript.push(line);
-                        lineCount++;
-                    });
+                } else {
+                    const text = node.textContent || '';
+                    if(text.trim()){
+                        segments.push({ type: 'text', content: text });
+                    }
                 }
             }
             
-            // Update main hidden input
-            document.getElementById('dialogueInput').value = masterScript.join('\n');
+            // 2. Auto-split all text segments
+            const language = document.getElementById('language').value;
+            const wps = SPEAKING_RATES[language] || 2.5;
+            const targetWords = Math.round(wps * 7);
+            const minWords = Math.round(targetWords * 0.7);
+            const maxWords = Math.round(targetWords * 1.3);
             
-            // Update transition points
-            transitionPoints = newTransitionPoints;
+            let allLines = [];
+            let imageBindings = {}; // lineIndex -> imgIndex
             
-            // Debounced summary update
+            segments.forEach(seg => {
+                if(seg.type === 'image'){
+                    // Bind this image to the NEXT line that will be added
+                    imageBindings[allLines.length] = seg.imgIndex;
+                } else {
+                    // Split this text into ~7s chunks
+                    const splitLines = smartSplitText(seg.content, minWords, targetWords, maxWords);
+                    allLines.push(...splitLines);
+                }
+            });
+            
+            // 3. Format with line numbers
+            const formattedLines = allLines.map((line, i) => `${i + 1}|${line}`);
+            document.getElementById('dialogueInput').value = formattedLines.join('\n');
+            
+            // 4. Calculate transition points from image bindings
+            transitionPoints = [];
+            const sortedBindings = Object.keys(imageBindings).map(k => parseInt(k)).sort((a,b) => a - b);
+            
+            // Each image binding marks where a new scene starts
+            // Transition point = line BEFORE the new scene starts
+            for(let i = 1; i < sortedBindings.length; i++){
+                const sceneStartLine = sortedBindings[i];
+                if(sceneStartLine > 0){
+                    transitionPoints.push(sceneStartLine - 1);
+                }
+            }
+            
+            // 5. Debounced re-render to update UI
             clearTimeout(window.storyboardUpdateTimeout);
-            window.storyboardUpdateTimeout = setTimeout(updateStoryboardSummary, 300);
+            window.storyboardUpdateTimeout = setTimeout(() => {
+                renderStoryboardFromBindings(imageBindings, allLines);
+            }, 500);
+        }
+        
+        function renderStoryboardFromBindings(imageBindings, lines){
+            const editor = document.getElementById('richEditor');
+            const sidebar = document.getElementById('storyboardSidebar');
+            const summary = document.getElementById('storyboardSummary');
+            const numImages = uploadedFilesData.length;
+            
+            // Render Sidebar
+            let sidebarHtml = '';
+            uploadedFilesData.forEach((img, i) => {
+                sidebarHtml += `
+                    <div class="storyboard-sidebar-image" draggable="true" 
+                         ondragstart="handleImageDragStart(event, ${i})"
+                         title="${img.name}">
+                        <img src="${img.dataUrl}">
+                        <div class="img-index">${i + 1}</div>
+                    </div>
+                `;
+            });
+            sidebarHtml += `<div class="storyboard-sidebar-add" onclick="document.getElementById('fileInput').click()" title="Add image">+</div>`;
+            sidebar.innerHTML = sidebarHtml;
+            
+            // Build editor content
+            let htmlContent = '';
+            let currentLineIndex = 0;
+            
+            // Get sorted image positions
+            const imagePositions = Object.keys(imageBindings).map(k => parseInt(k)).sort((a,b) => a - b);
+            
+            if(imagePositions.length > 0){
+                imagePositions.forEach((startLine, idx) => {
+                    const imgIndex = imageBindings[startLine];
+                    const img = uploadedFilesData[imgIndex];
+                    if(!img) return;
+                    
+                    // Find end of this section
+                    const nextImageLine = imagePositions[idx + 1];
+                    const endLine = nextImageLine !== undefined ? nextImageLine : lines.length;
+                    
+                    // Scene divider
+                    htmlContent += `
+                        <div class="scene-divider" contenteditable="false" data-img-index="${imgIndex}" data-start-line="${startLine}">
+                            <img src="${img.dataUrl}">
+                            <div class="scene-divider-info">
+                                <span class="scene-divider-label">Scene ${idx + 1}</span>
+                                <span class="scene-divider-filename">${truncateName(img.name, 20)}</span>
+                            </div>
+                            <button class="scene-divider-remove" onclick="removeImageFromEditor(${imgIndex})" title="Remove">✕</button>
+                        </div>
+                    `;
+                    
+                    // Text for this section (without line numbers for editing)
+                    const sectionLines = lines.slice(startLine, endLine);
+                    const sectionText = sectionLines.join('\n');
+                    htmlContent += `<div class="scene-text-block">${sectionText}</div>`;
+                });
+            } else if(numImages > 0){
+                // No bindings yet - show first image with all text
+                const img = uploadedFilesData[0];
+                htmlContent += `
+                    <div class="scene-divider" contenteditable="false" data-img-index="0" data-start-line="0">
+                        <img src="${img.dataUrl}">
+                        <div class="scene-divider-info">
+                            <span class="scene-divider-label">Scene 1</span>
+                            <span class="scene-divider-filename">${truncateName(img.name, 20)}</span>
+                        </div>
+                        <button class="scene-divider-remove" onclick="removeImageFromEditor(0)" title="Remove">✕</button>
+                    </div>
+                `;
+                htmlContent += `<div class="scene-text-block">${lines.join('\n')}</div>`;
+            } else {
+                // No images
+                htmlContent = `<div class="scene-text-block">${lines.join('\n')}</div>`;
+            }
+            
+            editor.innerHTML = htmlContent;
+            
+            // Update summary
+            updateStoryboardSummary();
         }
         
         function updateStoryboardSummary(){
@@ -901,6 +1097,60 @@ Example: A realistic vertical video of a professional presenter speaking directl
             const editor = document.getElementById('richEditor');
             const img = uploadedFilesData[draggedImageIndex];
             
+            // Get drop position using caret
+            let range;
+            if(document.caretRangeFromPoint){
+                range = document.caretRangeFromPoint(e.clientX, e.clientY);
+            } else if(e.rangeParent){
+                range = document.createRange();
+                range.setStart(e.rangeParent, e.rangeOffset);
+            }
+            
+            if(!range) {
+                draggedImageIndex = null;
+                return;
+            }
+            
+            // Find the text block we're dropping into
+            let targetNode = range.startContainer;
+            let textBlock = null;
+            
+            // Walk up to find the scene-text-block
+            while(targetNode && targetNode !== editor){
+                if(targetNode.classList && targetNode.classList.contains('scene-text-block')){
+                    textBlock = targetNode;
+                    break;
+                }
+                if(targetNode.classList && targetNode.classList.contains('scene-divider')){
+                    // Dropped on a divider - insert after it
+                    textBlock = targetNode.nextElementSibling;
+                    break;
+                }
+                targetNode = targetNode.parentNode;
+            }
+            
+            if(!textBlock){
+                draggedImageIndex = null;
+                return;
+            }
+            
+            // Get the text content and find nearest line break
+            const text = textBlock.textContent || '';
+            const lines = text.split('\n');
+            
+            // Calculate which line we're closest to based on drop position
+            const blockRect = textBlock.getBoundingClientRect();
+            const relativeY = e.clientY - blockRect.top;
+            const lineHeight = 22; // Approximate line height
+            const lineIndex = Math.round(relativeY / lineHeight);
+            
+            // Clamp to valid range
+            const insertAfterLine = Math.max(0, Math.min(lineIndex, lines.length));
+            
+            // Split the text at the line boundary
+            const textBefore = lines.slice(0, insertAfterLine).join('\n');
+            const textAfter = lines.slice(insertAfterLine).join('\n');
+            
             // Create new divider element
             const divider = document.createElement('div');
             divider.className = 'scene-divider';
@@ -915,28 +1165,17 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 <button class="scene-divider-remove" onclick="removeImageFromEditor(${draggedImageIndex})" title="Remove">✕</button>
             `;
             
-            // Get drop position using caret
-            let range;
-            if(document.caretRangeFromPoint){
-                range = document.caretRangeFromPoint(e.clientX, e.clientY);
-            } else if(e.rangeParent){
-                range = document.createRange();
-                range.setStart(e.rangeParent, e.rangeOffset);
-            }
+            // Create new text block for text after divider
+            const newTextBlock = document.createElement('div');
+            newTextBlock.className = 'scene-text-block';
+            newTextBlock.textContent = textAfter;
             
-            if(range){
-                range.insertNode(divider);
-                // Add a text block after if needed
-                if(!divider.nextSibling || divider.nextSibling.classList?.contains('scene-divider')){
-                    const textBlock = document.createElement('div');
-                    textBlock.className = 'scene-text-block';
-                    textBlock.innerHTML = '<br>';
-                    divider.after(textBlock);
-                }
-            } else {
-                // Fallback: append at end
-                editor.appendChild(divider);
-            }
+            // Update current text block with text before
+            textBlock.textContent = textBefore;
+            
+            // Insert divider and new text block after current text block
+            textBlock.after(divider);
+            divider.after(newTextBlock);
             
             // Sync back to master script
             syncFromRichEditor();
@@ -956,7 +1195,6 @@ Example: A realistic vertical video of a professional presenter speaking directl
         function handleDragOver(e){ e.preventDefault(); }
         function handleDrop(e, targetIndex){ e.preventDefault(); }
         function handleDragEnd(e){ draggedImageIndex = null; }
-        
         
         function addImageToStoryboard(){
             document.getElementById('fileInput').click();
@@ -984,29 +1222,6 @@ Example: A realistic vertical video of a professional presenter speaking directl
             }
         });
         
-        // Speaking rates (words per second) by language
-        const SPEAKING_RATES = {
-            "English": 2.5,
-            "Italian": 2.8,
-            "Spanish": 2.8,
-            "French": 2.5,
-            "German": 2.2,
-            "Portuguese": 2.7,
-            "Dutch": 2.4,
-            "Polish": 2.3,
-            "Russian": 2.2,
-            "Japanese": 3.0,
-            "Korean": 3.0,
-            "Chinese": 3.2,
-            "Arabic": 2.3,
-            "Hindi": 2.6,
-            "Turkish": 2.5
-        };
-        
-        // Hard stops for natural sentence breaks
-        const HARD_STOPS = ['.', '!', '?', '。', '！', '？', '।'];
-        const SOFT_STOPS = [',', ';', ':', '—', '–', '-', '،', '、'];
-        
         function autoSplitScript(){
             const input = document.getElementById('dialogueInput');
             const btn = document.getElementById('splitBtn') || document.querySelector('[onclick*="autoSplitScript"]');
@@ -1018,19 +1233,9 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 return;
             }
             
-            // Check if already formatted
-            const lines = script.split('\n').filter(l => l.trim());
-            if(lines.every(l => /^\d+\|/.test(l.trim()))){
-                alert('Script is already in ID|Text format!');
-                return;
-            }
-            
             const language = document.getElementById('language').value;
             const wps = SPEAKING_RATES[language] || 2.5;
-            const targetDuration = 7; // seconds
-            const targetWords = Math.round(wps * targetDuration);
-            
-            // Tolerance range: allow ±20% flexibility for natural breaks
+            const targetWords = Math.round(wps * 7);
             const minWords = Math.round(targetWords * 0.7);
             const maxWords = Math.round(targetWords * 1.3);
             
@@ -1045,72 +1250,11 @@ Example: A realistic vertical video of a professional presenter speaking directl
             }
             
             try {
-                // Clean and normalize the script
-                const cleanedScript = script
-                    .replace(/\r\n/g, '\n')
-                    .replace(/\n{3,}/g, '\n\n')  // Collapse multiple newlines
-                    .replace(/\s+/g, ' ')         // Normalize spaces
-                    .trim();
+                // Use the shared smartSplitText function
+                const resultLines = smartSplitText(script, minWords, targetWords, maxWords);
                 
-                // Split into words
-                const words = cleanedScript.split(/\s+/).filter(w => w);
-                const resultLines = [];
-                let currentLine = [];
-                let wordCount = 0;
-                
-                for(let i = 0; i < words.length; i++){
-                    const word = words[i];
-                    currentLine.push(word);
-                    wordCount++;
-                    
-                    const lastChar = word.slice(-1);
-                    const isHardStop = HARD_STOPS.includes(lastChar);
-                    const isSoftStop = SOFT_STOPS.includes(lastChar);
-                    const isLastWord = i === words.length - 1;
-                    
-                    // Decision logic for when to split
-                    let shouldSplit = false;
-                    
-                    if(isLastWord){
-                        // Always include last word
-                        shouldSplit = true;
-                    } else if(wordCount >= minWords && isHardStop){
-                        // In acceptable range and hit a hard stop - perfect split
-                        shouldSplit = true;
-                    } else if(wordCount >= targetWords && isSoftStop){
-                        // At target and hit a soft stop - good enough
-                        shouldSplit = true;
-                    } else if(wordCount >= maxWords){
-                        // Exceeded max - force split at next opportunity
-                        // Look ahead for any stop within next 3 words
-                        let foundStop = false;
-                        for(let j = i + 1; j <= Math.min(i + 3, words.length - 1); j++){
-                            const nextLastChar = words[j].slice(-1);
-                            if(HARD_STOPS.includes(nextLastChar) || SOFT_STOPS.includes(nextLastChar)){
-                                // Don't split yet, wait for the stop
-                                foundStop = true;
-                                break;
-                            }
-                        }
-                        if(!foundStop){
-                            // No stop nearby, force split now
-                            shouldSplit = true;
-                        }
-                    } else if(wordCount >= maxWords + 3){
-                        // Way over - force split regardless
-                        shouldSplit = true;
-                    }
-                    
-                    if(shouldSplit && currentLine.length > 0){
-                        resultLines.push(currentLine.join(' '));
-                        currentLine = [];
-                        wordCount = 0;
-                    }
-                }
-                
-                // Add any remaining words
-                if(currentLine.length > 0){
-                    resultLines.push(currentLine.join(' '));
+                if(resultLines.length === 0){
+                    throw new Error('No text to split');
                 }
                 
                 // Format with line numbers
@@ -1135,7 +1279,8 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     status.style.color = 'var(--success)';
                 }
                 
-                // Update UI
+                // Update UI - reset transitions so they get recalculated
+                transitionPoints = [];
                 if(isStoryboardMode()){
                     renderStoryboard();
                 } else {
