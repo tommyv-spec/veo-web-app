@@ -138,14 +138,21 @@
         .storyboard-editor.drag-over::after { content: 'Drop image here to create scene break'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: var(--accent); color: white; padding: 8px 16px; border-radius: var(--radius-sm); font-size: 11px; pointer-events: none; }
         
         /* Scene Divider - for Storyboard mode */
-        .scene-divider { display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin: 12px 0 6px -28px; background: var(--bg-elevated); border: 1px solid var(--accent); border-radius: var(--radius-sm); user-select: none; }
+        .scene-divider { display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin: 12px 0 6px -28px; background: var(--bg-elevated); border: 1px solid var(--accent); border-radius: var(--radius-sm); user-select: none; cursor: grab; transition: all 0.2s; }
+        .scene-divider:active { cursor: grabbing; }
+        .scene-divider:hover { border-color: var(--accent); background: rgba(99, 102, 241, 0.1); }
+        .scene-divider.dragging { opacity: 0.5; border-style: dashed; }
         .scene-divider:first-child { margin-top: 0; }
-        .scene-divider img { width: 28px; height: 28px; border-radius: 3px; object-fit: cover; }
-        .scene-divider-info { flex: 1; }
+        .scene-divider img { width: 28px; height: 28px; border-radius: 3px; object-fit: cover; pointer-events: none; }
+        .scene-divider-info { flex: 1; pointer-events: none; }
         .scene-divider-label { font-size: 10px; font-weight: 700; color: var(--accent); }
         .scene-divider-hint { font-size: 9px; color: var(--text-muted); }
         .scene-divider-remove { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 12px; padding: 2px 6px; border-radius: 3px; }
         .scene-divider-remove:hover { color: var(--error); background: rgba(239, 68, 68, 0.1); }
+        
+        /* Drop zone indicator between lines */
+        .drop-indicator { height: 3px; background: var(--accent); margin: 4px 0; border-radius: 2px; display: none; }
+        .drop-indicator.active { display: block; }
         
         /* Lines with gutter numbers */
         .scene-line { position: relative; padding: 2px 0; min-height: 1.5em; }
@@ -770,8 +777,8 @@ Example: A realistic vertical video of a professional presenter speaking directl
             
             if(!cleanedText) return [];
             
-            // Enforce strict max (8 seconds = ~20 words for English)
-            const strictMax = Math.min(maxWords, targetWords + 4);
+            // Strict max: target + 2 words only (~7.5s max)
+            const strictMax = targetWords + 2;
             
             const words = cleanedText.split(/\s+/);
             const resultLines = [];
@@ -793,22 +800,24 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 if(isLastWord){
                     shouldSplit = true;
                 } else if(wordCount >= minWords && isHardStop){
+                    // Good natural break point
                     shouldSplit = true;
-                } else if(wordCount >= targetWords && (isHardStop || isSoftStop)){
+                } else if(wordCount >= targetWords - 2 && isHardStop){
+                    // Slightly early but at sentence end - take it
+                    shouldSplit = true;
+                } else if(wordCount >= targetWords && isSoftStop){
+                    // At target with soft stop
                     shouldSplit = true;
                 } else if(wordCount >= strictMax){
-                    // Force split - look for any punctuation in next 2 words only
-                    let foundStop = false;
-                    for(let j = i + 1; j <= Math.min(i + 2, words.length - 1); j++){
-                        const nextLastChar = words[j].slice(-1);
+                    // At strict max - look for stop in next 1 word only
+                    const nextWord = words[i + 1];
+                    if(nextWord){
+                        const nextLastChar = nextWord.slice(-1);
                         if(HARD_STOPS.includes(nextLastChar) || SOFT_STOPS.includes(nextLastChar)){
-                            foundStop = true;
-                            break;
+                            // Wait one more word
+                            continue;
                         }
                     }
-                    if(!foundStop) shouldSplit = true;
-                } else if(wordCount >= strictMax + 2){
-                    // Absolute force split
                     shouldSplit = true;
                 }
                 
@@ -821,6 +830,20 @@ Example: A realistic vertical video of a professional presenter speaking directl
             
             if(currentLine.length > 0){
                 resultLines.push(currentLine.join(' '));
+            }
+            
+            // Merge short last line into previous if too short (< 40% of min)
+            const tooShortThreshold = Math.floor(minWords * 0.4);
+            if(resultLines.length >= 2){
+                const lastLine = resultLines[resultLines.length - 1];
+                const lastWordCount = lastLine.split(/\s+/).length;
+                
+                if(lastWordCount < tooShortThreshold){
+                    // Merge with previous line
+                    const prevLine = resultLines[resultLines.length - 2];
+                    resultLines[resultLines.length - 2] = prevLine + ' ' + lastLine;
+                    resultLines.pop();
+                }
             }
             
             return resultLines;
@@ -911,7 +934,10 @@ Example: A realistic vertical video of a professional presenter speaking directl
             const numLines = lines.length;
             
             // Validate scene breaks
-            sceneBreaks = sceneBreaks.filter(sb => sb.imgIndex < numImages && sb.lineIndex < numLines);
+            sceneBreaks = sceneBreaks.filter(sb => sb.imgIndex < numImages);
+            if(numLines > 0){
+                sceneBreaks = sceneBreaks.filter(sb => sb.lineIndex < numLines);
+            }
             if(sceneBreaks.length === 0 && numImages > 0){
                 sceneBreaks = [{ lineIndex: 0, imgIndex: 0 }];
             }
@@ -919,10 +945,14 @@ Example: A realistic vertical video of a professional presenter speaking directl
             // Sort scene breaks by line index
             sceneBreaks.sort((a, b) => a.lineIndex - b.lineIndex);
             
+            // Ensure first scene starts at line 0
+            if(sceneBreaks.length > 0 && sceneBreaks[0].lineIndex !== 0){
+                sceneBreaks[0].lineIndex = 0;
+            }
+            
             // Sidebar: Draggable images
             let sidebarHtml = '';
             uploadedFilesData.forEach((img, i) => {
-                // Check if this image is used in any scene break
                 const usedInScenes = sceneBreaks.filter(sb => sb.imgIndex === i);
                 const usageText = usedInScenes.length > 0 
                     ? usedInScenes.map(sb => `from #${sb.lineIndex + 1}`).join(', ')
@@ -943,7 +973,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
             sidebarHtml += `<div class="storyboard-sidebar-add" onclick="document.getElementById('fileInput').click()" title="Add image">+</div>`;
             sidebar.innerHTML = sidebarHtml;
             
-            // Editor: Scene dividers with text sections
+            // Editor: Scene dividers (draggable) with text sections
             let htmlContent = '';
             
             if(numLines > 0){
@@ -955,26 +985,30 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     const endLine = nextScene ? nextScene.lineIndex : numLines;
                     const sceneLines = lines.slice(scene.lineIndex, endLine);
                     
-                    // Scene divider
+                    // Scene divider - draggable (except first one which stays at top)
+                    const isDraggable = sceneIdx > 0;
                     htmlContent += `
-                        <div class="scene-divider" contenteditable="false" data-scene-idx="${sceneIdx}">
+                        <div class="scene-divider ${isDraggable ? '' : ''}" 
+                             contenteditable="false" 
+                             data-scene-idx="${sceneIdx}"
+                             ${isDraggable ? `draggable="true" ondragstart="handleSceneDragStart(event, ${sceneIdx})"` : ''}>
                             <img src="${img.dataUrl}">
                             <div class="scene-divider-info">
                                 <span class="scene-divider-label">Scene ${sceneIdx + 1} (Image ${scene.imgIndex + 1})</span>
                                 <span class="scene-divider-hint">Clips #${scene.lineIndex + 1}${endLine > scene.lineIndex + 1 ? '-' + endLine : ''}</span>
                             </div>
-                            ${sceneIdx > 0 ? `<button class="scene-divider-remove" onclick="removeSceneBreak(${sceneIdx})">✕</button>` : ''}
+                            ${isDraggable ? `<button class="scene-divider-remove" onclick="event.stopPropagation();removeSceneBreak(${sceneIdx})">✕</button>` : ''}
                         </div>
                     `;
                     
                     // Lines for this scene
                     sceneLines.forEach((line, i) => {
                         const lineNum = scene.lineIndex + i + 1;
-                        htmlContent += `<div class="scene-line" data-line="${lineNum}">${line}</div>`;
+                        htmlContent += `<div class="scene-line" data-line="${lineNum}" data-line-idx="${scene.lineIndex + i}">${line}</div>`;
                     });
                 });
             } else {
-                // No text yet - show first scene divider with placeholder
+                // No text yet
                 if(numImages > 0){
                     const img = uploadedFilesData[0];
                     htmlContent += `
@@ -1035,55 +1069,96 @@ Example: A realistic vertical video of a professional presenter speaking directl
         }
         
         // Drag and drop handlers for storyboard mode
+        let draggedSceneIdx = null;
+        
         function handleImageDragStart(e, imgIndex){
             if(editorMode !== 'storyboard') return;
             draggedImageIndex = imgIndex;
+            draggedSceneIdx = null;
             e.dataTransfer.effectAllowed = 'copy';
-            e.dataTransfer.setData('text/plain', imgIndex.toString());
+            e.dataTransfer.setData('text/plain', 'image:' + imgIndex);
+        }
+        
+        function handleSceneDragStart(e, sceneIdx){
+            if(editorMode !== 'storyboard') return;
+            draggedSceneIdx = sceneIdx;
+            draggedImageIndex = null;
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', 'scene:' + sceneIdx);
+            e.target.classList.add('dragging');
         }
         
         function handleEditorDragOver(e){
             if(editorMode !== 'storyboard') return;
             e.preventDefault();
-            e.dataTransfer.dropEffect = 'copy';
+            e.dataTransfer.dropEffect = draggedSceneIdx !== null ? 'move' : 'copy';
             document.getElementById('richEditor').classList.add('drag-over');
+            
+            // Highlight the target line
+            const lines = document.querySelectorAll('.scene-line');
+            const dropY = e.clientY;
+            lines.forEach(line => {
+                const rect = line.getBoundingClientRect();
+                const isTarget = dropY >= rect.top && dropY <= rect.bottom;
+                line.style.background = isTarget ? 'rgba(99, 102, 241, 0.2)' : '';
+            });
         }
         
         function handleEditorDragLeave(e){
             document.getElementById('richEditor').classList.remove('drag-over');
+            // Clear line highlights
+            document.querySelectorAll('.scene-line').forEach(line => {
+                line.style.background = '';
+            });
         }
         
         function handleEditorDrop(e){
             e.preventDefault();
             document.getElementById('richEditor').classList.remove('drag-over');
+            document.querySelectorAll('.scene-line').forEach(line => line.style.background = '');
+            document.querySelectorAll('.scene-divider.dragging').forEach(el => el.classList.remove('dragging'));
             
-            if(editorMode !== 'storyboard' || draggedImageIndex === null) return;
+            if(editorMode !== 'storyboard') return;
             
             // Find which line we're dropping on
             const editor = document.getElementById('richEditor');
             const lines = editor.querySelectorAll('.scene-line');
             let targetLineIndex = 0;
             
-            // Find the line closest to drop position
             const dropY = e.clientY;
-            lines.forEach((line, idx) => {
+            lines.forEach((line) => {
                 const rect = line.getBoundingClientRect();
-                if(dropY > rect.top){
-                    targetLineIndex = idx;
+                const lineIdx = parseInt(line.dataset.lineIdx);
+                if(!isNaN(lineIdx) && dropY > rect.top){
+                    targetLineIndex = lineIdx;
                 }
             });
             
-            // Check if there's already a scene break at this line
-            const existingBreak = sceneBreaks.find(sb => sb.lineIndex === targetLineIndex);
-            if(existingBreak){
-                // Update the image for existing break
-                existingBreak.imgIndex = draggedImageIndex;
-            } else {
-                // Add new scene break
-                sceneBreaks.push({ lineIndex: targetLineIndex, imgIndex: draggedImageIndex });
+            if(draggedSceneIdx !== null){
+                // Moving an existing scene divider
+                if(draggedSceneIdx > 0 && draggedSceneIdx < sceneBreaks.length){
+                    // Can't move to line 0 (that's always first scene)
+                    // Can't move to same position
+                    if(targetLineIndex > 0 && targetLineIndex !== sceneBreaks[draggedSceneIdx].lineIndex){
+                        sceneBreaks[draggedSceneIdx].lineIndex = targetLineIndex;
+                    }
+                }
+                draggedSceneIdx = null;
+            } else if(draggedImageIndex !== null){
+                // Dropping a new image from sidebar
+                const existingBreak = sceneBreaks.find(sb => sb.lineIndex === targetLineIndex);
+                if(existingBreak){
+                    existingBreak.imgIndex = draggedImageIndex;
+                } else if(targetLineIndex > 0){
+                    // Only add new breaks after line 0
+                    sceneBreaks.push({ lineIndex: targetLineIndex, imgIndex: draggedImageIndex });
+                } else if(targetLineIndex === 0 && sceneBreaks.length > 0){
+                    // Update first scene's image
+                    sceneBreaks[0].imgIndex = draggedImageIndex;
+                }
+                draggedImageIndex = null;
             }
             
-            draggedImageIndex = null;
             renderStoryboard();
         }
         
