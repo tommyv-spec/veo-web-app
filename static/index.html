@@ -340,7 +340,7 @@
         <div class="main-content">
             <div class="config-panel">
                 <div class="config-top-row">
-                <div class="card">
+                <div class="card" id="simpleImagesCard">
                     <div class="card-title">
                         <span class="section-step">1</span>
                         Images
@@ -375,7 +375,7 @@
                     <div class="storyboard-header">
                         <h3>🎬 Storyboard</h3>
                         <div class="storyboard-actions">
-                            <button class="btn btn-secondary btn-sm" onclick="addImageToStoryboard()" title="Add image">+ Image</button>
+                            <button class="btn btn-secondary btn-sm" onclick="document.getElementById('fileInput').click()" title="Add image">+ Image</button>
                         </div>
                     </div>
                     
@@ -656,17 +656,17 @@ Example: A realistic vertical video of a professional presenter speaking directl
         
         function updateUIMode(){
             const storyboardMode = isStoryboardMode();
-            const simpleContainer = document.getElementById('simpleModeContainer');
+            const simpleImagesCard = document.getElementById('simpleImagesCard');
             const storyboardContainer = document.getElementById('storyboardContainer');
             const simpleDialogue = document.getElementById('simpleDialogueSection');
             
             if(storyboardMode){
-                simpleContainer.classList.add('hidden');
+                simpleImagesCard.style.display = 'none';
                 storyboardContainer.classList.add('active');
                 simpleDialogue.style.display = 'none';
                 renderStoryboard();
             } else {
-                simpleContainer.classList.remove('hidden');
+                simpleImagesCard.style.display = 'block';
                 storyboardContainer.classList.remove('active');
                 simpleDialogue.style.display = 'block';
                 renderThumbnails();
@@ -727,7 +727,21 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 });
                 
                 currentClipStart = clipEnd;
-                if(currentClipStart >= numClips) break;
+                if(currentClipStart >= numClips && numClips > 0) break;
+            }
+            
+            // If no clips yet, still show all images with empty sections
+            if(numClips === 0){
+                sections.length = 0; // Clear
+                for(let imgIdx = 0; imgIdx < numImages; imgIdx++){
+                    sections.push({
+                        imageIndex: imgIdx,
+                        image: uploadedFilesData[imgIdx],
+                        clipStart: 0,
+                        clipEnd: 0,
+                        clips: []
+                    });
+                }
             }
             
             // If more clips than covered, last image gets remaining
