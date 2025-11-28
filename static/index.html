@@ -885,9 +885,6 @@ Example: A realistic vertical video of a professional presenter speaking directl
             const lines = smartSplitText(fullText, minWords, targetWords, maxWords);
             const numLines = lines.length;
             
-            // Track line count for proportional scaling
-            previousLineCount = numLines;
-            
             // Update dialogueInput with properly formatted lines
             const formattedLines = lines.map((line, i) => `${i + 1}|${line}`);
             document.getElementById('dialogueInput').value = formattedLines.join('\n');
@@ -1059,13 +1056,20 @@ Example: A realistic vertical video of a professional presenter speaking directl
             }
         }
         
-        // Track previous line count to scale scene breaks
-        let previousLineCount = 0;
-        
         function syncFromRichEditor(){
             const editor = document.getElementById('richEditor');
             
-            // Collect all text from scene-line elements
+            if(editorMode === 'storyboard'){
+                // In storyboard mode, read scene structure from DOM
+                syncStoryboardFromDOM();
+            } else {
+                // In auto-cycle mode, just collect text
+                syncAutoCycleFromDOM();
+            }
+        }
+        
+        function syncAutoCycleFromDOM(){
+            const editor = document.getElementById('richEditor');
             const lineElements = editor.querySelectorAll('.scene-line');
             let allText = [];
             
@@ -1074,7 +1078,6 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 if(text && text !== 'Paste your script here...') allText.push(text);
             });
             
-            // Also check for any raw text nodes (from pasting)
             if(allText.length === 0){
                 const rawText = editor.textContent.trim();
                 if(rawText && rawText !== 'Paste your script here...'){
@@ -1082,41 +1085,98 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 }
             }
             
-            // Update the main dialogue input
-            const fullText = allText.join(' ');
+            document.getElementById('dialogueInput').value = allText.join(' ');
+            
+            clearTimeout(window.storyboardUpdateTimeout);
+            window.storyboardUpdateTimeout = setTimeout(() => {
+                renderStoryboard();
+            }, 600);
+        }
+        
+        function syncStoryboardFromDOM(){
+            const editor = document.getElementById('richEditor');
+            
+            // Walk through DOM and collect scenes with their text
+            // Structure: [scene-divider, scene-line, scene-line, scene-divider, scene-line, ...]
+            let newSceneBreaks = [];
+            let allTextSegments = [];
+            let currentSceneImgIndex = 0;
+            let textBeforeFirstDivider = [];
+            let foundFirstDivider = false;
+            
+            const textBlock = editor.querySelector('.scene-text-block');
+            if(!textBlock) return;
+            
+            for(const node of textBlock.childNodes){
+                if(node.classList && node.classList.contains('scene-divider')){
+                    // This is a scene divider
+                    const sceneIdx = parseInt(node.dataset.sceneIdx);
+                    if(!isNaN(sceneIdx) && sceneIdx < sceneBreaks.length){
+                        currentSceneImgIndex = sceneBreaks[sceneIdx].imgIndex;
+                    }
+                    
+                    // Mark where this scene starts (will be set after we count lines)
+                    newSceneBreaks.push({
+                        imgIndex: currentSceneImgIndex,
+                        textStartIdx: allTextSegments.length
+                    });
+                    foundFirstDivider = true;
+                    
+                } else if(node.classList && node.classList.contains('scene-line')){
+                    const text = node.textContent.trim();
+                    if(text && text !== 'Paste your script here...'){
+                        allTextSegments.push(text);
+                    }
+                }
+            }
+            
+            // Combine all text
+            const fullText = allTextSegments.join(' ');
             document.getElementById('dialogueInput').value = fullText;
             
-            // Get new line count after splitting
+            // Re-split the text
             const language = document.getElementById('language').value;
             const wps = SPEAKING_RATES[language] || 2.5;
             const targetWords = Math.round(wps * 7);
             const minWords = Math.round(targetWords * 0.7);
             const maxWords = Math.round(targetWords * 1.3);
             const newLines = smartSplitText(fullText, minWords, targetWords, maxWords);
-            const newLineCount = newLines.length;
             
-            // Scale scene breaks proportionally if line count changed
-            if(editorMode === 'storyboard' && previousLineCount > 0 && newLineCount !== previousLineCount && sceneBreaks.length > 1){
-                const scale = newLineCount / previousLineCount;
-                sceneBreaks.forEach((sb, idx) => {
-                    if(idx > 0){ // Don't move first scene (always at 0)
-                        sb.lineIndex = Math.min(Math.round(sb.lineIndex * scale), newLineCount - 1);
+            // Now we need to figure out which new line each scene break corresponds to
+            // The textStartIdx tells us how many text segments were before this divider
+            // But after re-splitting, the line count may be different
+            
+            // Simple approach: distribute scene breaks proportionally based on text position
+            if(newSceneBreaks.length > 0 && allTextSegments.length > 0 && newLines.length > 0){
+                const totalOldSegments = allTextSegments.length;
+                
+                sceneBreaks = newSceneBreaks.map((sb, idx) => {
+                    if(idx === 0){
+                        return { lineIndex: 0, imgIndex: sb.imgIndex };
                     }
+                    // Calculate proportional position
+                    const proportion = sb.textStartIdx / totalOldSegments;
+                    const newLineIdx = Math.min(Math.floor(proportion * newLines.length), newLines.length - 1);
+                    return { lineIndex: Math.max(1, newLineIdx), imgIndex: sb.imgIndex };
                 });
                 
-                // Remove duplicate positions
+                // Remove duplicates and ensure first is at 0
+                sceneBreaks[0].lineIndex = 0;
                 const seen = new Set([0]);
                 sceneBreaks = sceneBreaks.filter((sb, idx) => {
                     if(idx === 0) return true;
-                    if(seen.has(sb.lineIndex)) return false;
+                    if(seen.has(sb.lineIndex)){
+                        // Try next line
+                        while(seen.has(sb.lineIndex) && sb.lineIndex < newLines.length - 1){
+                            sb.lineIndex++;
+                        }
+                        if(seen.has(sb.lineIndex)) return false;
+                    }
                     seen.add(sb.lineIndex);
                     return true;
                 });
             }
             
-            previousLineCount = newLineCount;
-            
-            // Debounced re-render
             clearTimeout(window.storyboardUpdateTimeout);
             window.storyboardUpdateTimeout = setTimeout(() => {
                 renderStoryboard();
