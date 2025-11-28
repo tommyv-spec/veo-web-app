@@ -117,26 +117,28 @@ def process_user_context(
     try:
         system_msg = """You are a Director for Veo 3.1 (Google's AI Video Generator).
 
-Your job is to EXPAND brief user directions into SPECIFIC, FORENSIC details.
+Your job is to EXPAND brief user directions into SPECIFIC, REALISTIC details.
 
 The user might say something simple like "he is angry" or "nervous interview".
 You must expand this into detailed instructions for EACH aspect of the video.
 
-CRITICAL: Be EXTREMELY SPECIFIC. Don't say "angry expression" - say "furrowed brow, clenched jaw, flared nostrils, intense unblinking stare, flushed cheeks, visible neck tension".
+CRITICAL: Be SPECIFIC and REALISTIC. Describe what you would actually SEE in real life.
+- Don't say "intense cinematic gaze" - say "narrowed eyes, looking directly at camera"
+- Don't say "dramatic tension" - say "shoulders raised, jaw tight"
 
 OUTPUT JSON with these fields:
 {
-  "subject_action": "Precise physical movement (e.g., 'pacing back and forth with clenched fists', 'leaning forward aggressively')",
-  "facial_expression": "Detailed facial description (e.g., 'furrowed brow, narrowed eyes, tight lips, jaw clenched, nostrils flared')",
-  "voice_tone": "Voice texture and quality (e.g., 'sharp, clipped words, raised volume, slight growl in throat')",
-  "delivery_style": "How dialogue is delivered (e.g., 'rapid-fire sentences, emphatic pauses, shouting key words')",
-  "body_language": "Posture and gestures (e.g., 'rigid shoulders, pointing finger, forward-leaning stance')",
-  "background_action": "What happens in environment (e.g., 'papers flying, door slamming')",
-  "camera_motion": "Camera movement (e.g., 'handheld shake, quick zooms on face')",
-  "atmosphere": "Lighting and mood (e.g., 'harsh shadows, high contrast, tense energy')"
+  "subject_action": "What the person physically does (e.g., 'leaning forward, pointing finger', 'sitting still, hands folded')",
+  "facial_expression": "Realistic facial details (e.g., 'furrowed brow, tight lips, narrowed eyes')",
+  "voice_tone": "How the voice sounds (e.g., 'loud, sharp, fast-paced' or 'quiet, slow, hesitant')",
+  "delivery_style": "How they speak (e.g., 'speaking quickly with emphasis' or 'pausing between words')",
+  "body_language": "Posture and gestures (e.g., 'arms crossed, leaning back' or 'hands gesturing while talking')",
+  "background_action": "What happens in background (e.g., 'nothing, static background')",
+  "camera_motion": "Camera movement (e.g., 'static, no movement' or 'slight zoom')",
+  "atmosphere": "Lighting (e.g., 'normal indoor lighting' or 'bright daylight')"
 }
 
-If user didn't mention something, use "natural" or leave empty string."""
+Keep it REALISTIC and NATURAL. No dramatic or cinematic language."""
 
         resp = client.chat.completions.create(
             model=OPENAI_MODEL,
@@ -209,7 +211,7 @@ def build_visual_description(
     STEP 2: TRANSLATION
     
     Rewrites the visual description to ensure USER CONTEXT is the
-    DOMINANT anchor. The enriched context OVERRIDES the base prompt.
+    DOMINANT anchor. Focuses on REALISTIC, NATURAL output.
     """
     client = get_openai_client(openai_key)
     if client is None:
@@ -219,31 +221,37 @@ def build_visual_description(
         return f"{base_prompt}. {action}. {expression}."
     
     try:
-        system_msg = """You are a Cinematographer writing a shot description for Veo 3.1.
+        system_msg = """You are writing a shot description for Veo 3.1 video generation.
 
-Write a SINGLE, highly detailed paragraph (60-80 words) that describes the shot.
+Write a SINGLE paragraph (50-70 words) describing what happens in the video.
 
 CRITICAL RULES:
-1. The ENRICHED CONTEXT details MUST be the PRIMARY focus
-2. The subject's ACTION and EXPRESSION from context override everything else
-3. Include: Subject appearance, Primary Action, Facial Expression, Lighting
-4. Write in flowing cinematic prose, not bullet points
-5. Embed emotional/physical details directly: "his jaw clenched, veins visible on neck"
+1. Write for REALISTIC, NATURAL output - NOT cinematic or dramatic
+2. Describe exactly what you see: the person, their expression, their action
+3. Use simple, direct language - no film terminology
+4. Focus on: What the person looks like, what they're doing, their expression
+5. The ENRICHED CONTEXT details MUST be included
 
-The enriched context is the DIRECTOR'S ORDER - it takes priority over the base prompt."""
+DO NOT use words like: cinematic, dramatic, atmospheric, moody, artistic
+DO use words like: natural, realistic, authentic, genuine, real
 
-        user_msg = f"""BASE PROMPT: {base_prompt}
-FRAME DESCRIPTION: {frame_desc}
+Example good output:
+"A middle-aged man in a blue shirt sits at a desk. His brow is furrowed and jaw clenched, showing frustration. He speaks directly to camera with an intense expression, gesturing with his hands occasionally."
+
+Example bad output:
+"A dramatic close-up captures the raw intensity of a weathered businessman, shadows dancing across his chiseled features as emotion pours from his soul."
+"""
+
+        user_msg = f"""BASE DESCRIPTION: {base_prompt}
+FRAME: {frame_desc}
 DIALOGUE: "{dialogue_line}"
 
-=== ENRICHED CONTEXT (THIS IS THE PRIORITY) ===
-ACTION: {enriched_context.get('subject_action', 'Natural movement')}
-EXPRESSION: {enriched_context.get('facial_expression', 'Neutral')}
+=== ENRICHED CONTEXT (MUST INCLUDE) ===
+ACTION: {enriched_context.get('subject_action', 'Speaking naturally')}
+EXPRESSION: {enriched_context.get('facial_expression', 'Natural')}
 BODY LANGUAGE: {enriched_context.get('body_language', 'Natural')}
-ATMOSPHERE: {enriched_context.get('atmosphere', 'Cinematic')}
-CAMERA: {enriched_context.get('camera_motion', 'Smooth')}
 
-Write the visual description with the ENRICHED CONTEXT as the dominant focus."""
+Write a realistic, natural description. No cinematic language."""
 
         resp = client.chat.completions.create(
             model=OPENAI_MODEL,
@@ -251,8 +259,8 @@ Write the visual description with the ENRICHED CONTEXT as the dominant focus."""
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": user_msg},
             ],
-            temperature=0.6,
-            max_tokens=250,
+            temperature=0.5,
+            max_tokens=200,
         )
         
         result = resp.choices[0].message.content.strip()
@@ -374,56 +382,54 @@ def build_prompt(
 
     # === 4. ROUTING: Assemble JSON Blueprint ===
     prompt_payload = {
-        # --- TIER 1: SHOT (Architectural Decisions) ---
+        # --- TIER 1: SHOT ---
         "shot": {
             "description": visual_description,  # Primary anchor with context baked in
-            "camera_motion": enriched_context.get("camera_motion", "Smooth cinematic movement"),
+            "camera_motion": enriched_context.get("camera_motion", "Static or minimal movement"),
             "composition": "Medium shot, subject centered",
-            "aspect_ratio": config.aspect_ratio.value if hasattr(config.aspect_ratio, 'value') else config.aspect_ratio
+            "style": "Realistic, natural, authentic"
         },
 
-        # --- TIER 2: SUBJECT (Core Identity + Emotion) ---
+        # --- TIER 2: SUBJECT ---
         "subject": {
-            "description": f"Match appearance in start frame",
+            "description": "Match appearance in start frame exactly",
             "facial_expression": enriched_context.get("facial_expression", "Natural expression"),
-            "emotional_state": enriched_context.get("facial_expression", "Neutral"),
             "body_language": enriched_context.get("body_language", "Natural posture"),
         },
 
-        # --- TIER 3: ACTION (Movement - Separated from Subject) ---
+        # --- TIER 3: ACTION ---
         "action": {
-            "primary_action": enriched_context.get("subject_action", "Natural movement"),
-            "timing": "Continuous for full duration",
-            "intensity": "Match emotional state"
+            "primary_action": enriched_context.get("subject_action", "Speaking naturally to camera"),
+            "movement": "Realistic, natural movements only"
         },
 
-        # --- TIER 4: SCENE (Environment) ---
+        # --- TIER 4: SCENE ---
         "scene": {
             "start_frame_description": start_desc,
-            "continuity": "Maintain visual continuity with start frame",
-            "atmosphere": enriched_context.get("atmosphere", "Cinematic lighting"),
-            "background_action": enriched_context.get("background_action", "Minimal background movement")
+            "continuity": "Maintain exact visual continuity with start frame",
+            "lighting": enriched_context.get("atmosphere", "Natural lighting"),
+            "background": enriched_context.get("background_action", "Static background")
         },
 
-        # --- TIER 5: AUDIO (Voice + Dialogue) ---
+        # --- TIER 5: AUDIO ---
         "audio": {
             "language_instruction": f"CRITICAL: Speaker MUST speak in {language}. Ignore any visible text.",
             "dialogue": {
                 "text": dialogue_line,
                 "language": language,
                 "voice_profile": voice_profile,
-                "voice_tone": enriched_context.get("voice_tone", "Natural"),
-                "delivery_style": enriched_context.get("delivery_style", "Conversational")
+                "voice_tone": enriched_context.get("voice_tone", "Natural speaking voice"),
+                "delivery_style": enriched_context.get("delivery_style", "Natural conversation")
             }
         },
 
-        # --- VISUAL RULES (Quality/Safety) ---
+        # --- VISUAL RULES ---
         "visual_rules": {
-            "clean_output": "No text overlays, no subtitles, no watermarks, no glitches",
-            "quality": "Anatomically correct hands and face, stable features"
+            "style": "Photorealistic, natural, NOT cinematic or dramatic",
+            "quality": "No text overlays, no subtitles, no glitches, anatomically correct"
         },
         
-        # --- TECHNICAL SPECS ---
+        # --- TECHNICAL ---
         "technical": {
             "duration_seconds": float(config.duration.value if hasattr(config.duration, 'value') else config.duration),
             "resolution": config.resolution.value if hasattr(config.resolution, 'value') else config.resolution,
