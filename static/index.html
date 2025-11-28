@@ -107,52 +107,54 @@
         
         .storyboard-timeline { position: relative; }
         
-        .storyboard-item { display: flex; align-items: stretch; margin-bottom: 0; }
-        .storyboard-item:last-child { margin-bottom: 0; }
+        .storyboard-item { display: flex; align-items: flex-start; margin-bottom: 0; }
+        .storyboard-item.dragging { opacity: 0.5; }
+        .storyboard-item.drag-over { border-top: 2px solid var(--accent); }
         
-        .storyboard-image-col { display: flex; flex-direction: column; align-items: center; width: 80px; flex-shrink: 0; }
+        .storyboard-image-col { display: flex; flex-direction: column; align-items: center; width: 90px; flex-shrink: 0; }
         
-        .storyboard-image { width: 64px; height: 64px; border-radius: var(--radius-sm); overflow: hidden; border: 2px solid var(--border-color); position: relative; cursor: pointer; transition: all 0.2s; background: var(--bg-input); }
+        .storyboard-image-wrapper { position: relative; }
+        
+        .storyboard-image { width: 64px; height: 64px; border-radius: var(--radius-sm); overflow: hidden; border: 2px solid var(--border-color); position: relative; cursor: grab; transition: all 0.2s; background: var(--bg-input); }
         .storyboard-image:hover { border-color: var(--accent); }
-        .storyboard-image img { width: 100%; height: 100%; object-fit: cover; }
+        .storyboard-image:active { cursor: grabbing; }
+        .storyboard-image img { width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
         .storyboard-image .img-index { position: absolute; bottom: 2px; left: 2px; background: rgba(0, 0, 0, 0.8); color: white; font-size: 9px; padding: 2px 6px; border-radius: 4px; font-weight: 600; }
-        .storyboard-image .img-remove { position: absolute; top: -6px; right: -6px; width: 18px; height: 18px; background: var(--error); color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; cursor: pointer; opacity: 0; transition: opacity 0.2s; border: 2px solid var(--bg-surface); }
-        .storyboard-image:hover .img-remove { opacity: 1; }
-        .storyboard-image.cycle-back { border-style: dashed; opacity: 0.7; }
-        .storyboard-image.cycle-back:hover { opacity: 1; }
+        .storyboard-image .img-actions { position: absolute; top: -8px; right: -8px; display: flex; gap: 2px; opacity: 0; transition: opacity 0.2s; }
+        .storyboard-image:hover .img-actions { opacity: 1; }
+        .storyboard-image .img-remove { width: 18px; height: 18px; background: var(--error); color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; cursor: pointer; border: 2px solid var(--bg-surface); }
+        .storyboard-image.cycle-back { border-style: dashed; opacity: 0.6; cursor: default; }
+        .storyboard-image.cycle-back:hover { opacity: 0.8; border-color: var(--border-color); }
         
-        .storyboard-connector { width: 2px; background: var(--border-color); flex-grow: 1; min-height: 20px; margin: 4px 0; }
+        .storyboard-image-name { font-size: 9px; color: var(--text-muted); margin-top: 4px; max-width: 80px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
+        
+        .storyboard-connector { width: 2px; background: var(--border-color); min-height: 40px; margin: 4px 0; margin-left: 31px; }
         .storyboard-connector.has-clip { background: var(--accent); }
         
-        .storyboard-clip-col { flex: 1; display: flex; align-items: center; padding-left: 12px; min-height: 80px; }
+        .storyboard-clip-row { display: flex; align-items: center; min-height: 40px; margin-left: 12px; padding: 8px 0; }
         
-        .storyboard-clip { display: none; width: 100%; }
-        .storyboard-clip.active { display: flex; align-items: center; gap: 10px; }
+        .storyboard-arrow { color: var(--accent); font-size: 14px; margin-right: 10px; flex-shrink: 0; font-family: monospace; }
         
-        .storyboard-arrow { color: var(--accent); font-size: 16px; flex-shrink: 0; }
-        
-        .storyboard-dialogue { flex: 1; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 10px 12px; font-size: 12px; color: var(--text-secondary); line-height: 1.4; position: relative; transition: all 0.2s; }
-        .storyboard-dialogue:hover { border-color: var(--accent); }
-        .storyboard-dialogue .clip-num { position: absolute; top: -8px; left: 8px; background: var(--accent); color: white; font-size: 9px; padding: 2px 6px; border-radius: 4px; font-weight: 600; }
-        .storyboard-dialogue .clip-edit { position: absolute; top: 6px; right: 6px; background: var(--bg-elevated); color: var(--text-muted); border: none; padding: 4px 8px; border-radius: 4px; font-size: 10px; cursor: pointer; opacity: 0; transition: opacity 0.2s; }
-        .storyboard-dialogue:hover .clip-edit { opacity: 1; }
-        .storyboard-dialogue .clip-edit:hover { background: var(--accent); color: white; }
-        .storyboard-dialogue .dialogue-text { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+        .storyboard-dialogue { flex: 1; font-size: 12px; color: var(--text-secondary); line-height: 1.4; padding: 8px 12px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: var(--radius-sm); }
+        .storyboard-dialogue .clip-label { font-size: 9px; color: var(--accent); font-weight: 600; margin-bottom: 4px; }
         .storyboard-dialogue.empty { border-style: dashed; color: var(--text-muted); font-style: italic; }
         
-        .storyboard-add-line { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--bg-input); border: 1px dashed var(--border-color); border-radius: var(--radius-sm); color: var(--text-muted); font-size: 11px; cursor: pointer; transition: all 0.2s; margin-left: 12px; }
-        .storyboard-add-line:hover { border-color: var(--accent); color: var(--accent); }
+        .storyboard-cycle-indicator { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--text-muted); margin-left: 31px; padding: 4px 0; }
         
-        .storyboard-cycle-note { display: flex; align-items: center; gap: 6px; font-size: 10px; color: var(--text-muted); margin-top: 4px; }
-        .storyboard-cycle-note .cycle-icon { font-size: 12px; }
+        .storyboard-script-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border-color); }
+        .storyboard-script-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+        .storyboard-script-header label { margin-bottom: 0; }
         
         .storyboard-summary { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: var(--bg-input); border-radius: var(--radius-sm); margin-top: 16px; font-size: 11px; }
         .storyboard-summary .summary-item { display: flex; align-items: center; gap: 6px; color: var(--text-secondary); }
         .storyboard-summary .summary-item.ok { color: var(--success); }
         .storyboard-summary .summary-item.warn { color: var(--warning); }
         
-        .storyboard-upload-more { display: flex; align-items: center; justify-content: center; width: 64px; height: 64px; border: 2px dashed var(--border-color); border-radius: var(--radius-sm); color: var(--text-muted); font-size: 20px; cursor: pointer; transition: all 0.2s; margin-top: 8px; }
-        .storyboard-upload-more:hover { border-color: var(--accent); color: var(--accent); }
+        .storyboard-add-image { display: flex; align-items: center; justify-content: center; width: 64px; height: 64px; border: 2px dashed var(--border-color); border-radius: var(--radius-sm); color: var(--text-muted); font-size: 20px; cursor: pointer; transition: all 0.2s; }
+        .storyboard-add-image:hover { border-color: var(--accent); color: var(--accent); }
+        
+        #dialogueInputStoryboard { width: 100%; padding: 10px 14px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: var(--radius-sm); color: var(--text-primary); font-family: 'JetBrains Mono', monospace; font-size: 12px; min-height: 100px; resize: vertical; line-height: 1.6; }
+        #dialogueInputStoryboard:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
         
         .aspect-selector { display: flex; gap: 12px; }
         .aspect-btn { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 12px; background: var(--bg-input); border: 2px solid var(--border-color); border-radius: var(--radius-sm); cursor: pointer; transition: all 0.2s; }
@@ -664,13 +666,11 @@ Example: A realistic vertical video of a professional presenter speaking directl
             const simpleDialogue = document.getElementById('simpleDialogueSection');
             
             if(storyboardMode){
-                // Hide simple thumbnails, show storyboard
                 simpleContainer.classList.add('hidden');
                 storyboardContainer.classList.add('active');
                 simpleDialogue.style.display = 'none';
                 renderStoryboard();
             } else {
-                // Show simple mode
                 simpleContainer.classList.remove('hidden');
                 storyboardContainer.classList.remove('active');
                 simpleDialogue.style.display = 'block';
@@ -688,6 +688,8 @@ Example: A realistic vertical video of a professional presenter speaking directl
             });
         }
         
+        let draggedImageIndex = null;
+        
         function renderStoryboard(){
             const timeline = document.getElementById('storyboardTimeline');
             const summary = document.getElementById('storyboardSummary');
@@ -697,133 +699,175 @@ Example: A realistic vertical video of a professional presenter speaking directl
             
             let html = '';
             
-            // Build timeline: Image -> Clip -> Image -> Clip -> Image (with cycling)
+            // Render each image with its outgoing clip (dialogue)
             for(let i = 0; i < numImages; i++){
                 const img = uploadedFilesData[i];
-                const clipIndex = i; // Clip i goes between image i and image i+1
+                const clipIndex = i;
                 const hasClip = clipIndex < numClips;
                 const dialogue = hasClip ? dialogueLines[clipIndex] : null;
+                const isLastImage = i === numImages - 1;
+                const showConnector = hasClip || (!isLastImage);
                 
-                // Image block
                 html += `
-                    <div class="storyboard-item">
+                    <div class="storyboard-item" data-index="${i}" draggable="true" 
+                         ondragstart="handleDragStart(event, ${i})" 
+                         ondragover="handleDragOver(event)" 
+                         ondrop="handleDrop(event, ${i})"
+                         ondragend="handleDragEnd(event)">
                         <div class="storyboard-image-col">
-                            <div class="storyboard-image" title="${img.name}" onclick="document.getElementById('fileInput').click()">
-                                <img src="${img.dataUrl}" alt="${img.name}">
-                                <div class="img-index">${i+1}</div>
-                                <div class="img-remove" onclick="event.stopPropagation();removeImage(${i})">✕</div>
-                            </div>
-                            ${i < numImages - 1 || numClips >= numImages ? `<div class="storyboard-connector ${hasClip ? 'has-clip' : ''}"></div>` : ''}
-                        </div>
-                        <div class="storyboard-clip-col">
-                            <div class="storyboard-clip ${hasClip ? 'active' : ''}">
-                                <span class="storyboard-arrow">──►</span>
-                                <div class="storyboard-dialogue ${dialogue ? '' : 'empty'}">
-                                    <span class="clip-num">CLIP ${clipIndex + 1}</span>
-                                    <div class="dialogue-text">${dialogue ? dialogue.text : 'No dialogue assigned'}</div>
-                                    <button class="clip-edit" onclick="editClipDialogue(${clipIndex})">✏️</button>
+                            <div class="storyboard-image-wrapper">
+                                <div class="storyboard-image" title="Drag to reorder">
+                                    <img src="${img.dataUrl}" alt="${img.name}">
+                                    <div class="img-index">${i + 1}</div>
+                                    <div class="img-actions">
+                                        <div class="img-remove" onclick="event.stopPropagation();removeImage(${i})" title="Remove">✕</div>
+                                    </div>
                                 </div>
                             </div>
+                            <div class="storyboard-image-name" title="${img.name}">${truncateName(img.name, 12)}</div>
+                            ${showConnector ? `<div class="storyboard-connector ${hasClip ? 'has-clip' : ''}"></div>` : ''}
                         </div>
+                        ${hasClip ? `
+                        <div class="storyboard-clip-row">
+                            <span class="storyboard-arrow">──►</span>
+                            <div class="storyboard-dialogue">
+                                <div class="clip-label">CLIP ${clipIndex + 1}</div>
+                                ${dialogue.text}
+                            </div>
+                        </div>
+                        ` : ''}
                     </div>
                 `;
             }
             
-            // If more clips than images-1, show cycling back to first image
-            if(numClips >= numImages && numImages > 1){
-                const cycleClipIndex = numImages - 1;
-                const hasMoreClips = cycleClipIndex < numClips;
-                const cycleDialogue = hasMoreClips ? dialogueLines[cycleClipIndex] : null;
-                
-                // Show cycle-back image
+            // Show cycle-back indicator if clips >= images
+            if(numClips >= numImages && numImages > 0){
                 html += `
                     <div class="storyboard-item">
                         <div class="storyboard-image-col">
-                            <div class="storyboard-image cycle-back" title="${uploadedFilesData[0].name} (cycles back)">
-                                <img src="${uploadedFilesData[0].dataUrl}" alt="Cycles back">
-                                <div class="img-index">↩ 1</div>
+                            <div class="storyboard-image-wrapper">
+                                <div class="storyboard-image cycle-back" title="Cycles back to image 1">
+                                    <img src="${uploadedFilesData[0].dataUrl}" alt="Cycles back">
+                                    <div class="img-index">↩1</div>
+                                </div>
                             </div>
-                            <div class="storyboard-cycle-note">
-                                <span class="cycle-icon">↩️</span>
-                                <span>Cycles back</span>
-                            </div>
+                            <div class="storyboard-cycle-indicator">↩ cycles back</div>
                         </div>
-                        <div class="storyboard-clip-col"></div>
                     </div>
                 `;
-                
-                // Handle additional clips that cycle through images
-                for(let c = numImages; c < numClips; c++){
-                    const cycleImgIdx = (c) % numImages;
-                    const nextImgIdx = (c + 1) % numImages;
-                    const dialogue = dialogueLines[c];
-                    
-                    // This would be shown in a summary or collapsed view
-                    // For now, just count them
-                }
             }
             
-            // Add "add more images" button
+            // Add image button
             html += `
                 <div class="storyboard-item">
                     <div class="storyboard-image-col">
-                        <div class="storyboard-upload-more" onclick="document.getElementById('fileInput').click()" title="Add more images">+</div>
+                        <div class="storyboard-add-image" onclick="document.getElementById('fileInput').click()" title="Add more images">+</div>
                     </div>
-                    <div class="storyboard-clip-col"></div>
+                </div>
+            `;
+            
+            // Dialogue script section
+            html += `
+                <div class="storyboard-script-section">
+                    <div class="storyboard-script-header">
+                        <label>Dialogue Script</label>
+                        <button class="btn btn-secondary btn-sm" onclick="autoSplitScript()" id="splitBtnStoryboard">✨ Auto-Split</button>
+                    </div>
+                    <textarea id="dialogueInputStoryboard" placeholder="1|First line of dialogue here
+2|Second line goes here
+3|Third line..."
+                        oninput="syncDialogueFromStoryboard()">${document.getElementById('dialogueInput').value}</textarea>
                 </div>
             `;
             
             timeline.innerHTML = html;
             
             // Summary
-            const maxClipsAvailable = numImages; // With cycling, infinite clips possible
-            const perfect = numClips === numImages - 1;
             const needsCycling = numClips >= numImages;
-            
             let summaryHtml = `
                 <div class="summary-item"><strong>${numImages}</strong> images</div>
                 <div class="summary-item"><strong>${numClips}</strong> clips</div>
             `;
             
             if(numClips === 0){
-                summaryHtml += `<div class="summary-item warn">⚠️ Add dialogue lines below</div>`;
+                summaryHtml += `<div class="summary-item warn">⚠️ Add dialogue lines</div>`;
             } else if(needsCycling){
-                summaryHtml += `<div class="summary-item ok">↩️ Auto-cycling: ${getCyclePattern(numImages, numClips)}</div>`;
-            } else if(perfect){
-                summaryHtml += `<div class="summary-item ok">✓ Perfect match!</div>`;
+                summaryHtml += `<div class="summary-item ok">↩️ Cycling: ${getCyclePattern(numImages, numClips)}</div>`;
             } else {
-                summaryHtml += `<div class="summary-item">ℹ️ ${numImages - 1 - numClips} more clip${numImages - 1 - numClips > 1 ? 's' : ''} possible</div>`;
+                summaryHtml += `<div class="summary-item ok">✓ Ready</div>`;
             }
             
             summary.innerHTML = summaryHtml;
         }
         
-        function getCyclePattern(numImages, numClips){
-            let pattern = [];
-            for(let i = 0; i < Math.min(numClips + 1, numImages + 2); i++){
-                pattern.push((i % numImages) + 1);
-            }
-            if(numClips >= numImages) pattern.push('...');
-            return pattern.join(' → ');
+        function truncateName(name, maxLen){
+            if(name.length <= maxLen) return name;
+            const ext = name.split('.').pop();
+            const base = name.substring(0, name.length - ext.length - 1);
+            const availableLen = maxLen - ext.length - 4; // 4 for "..." and "."
+            return base.substring(0, availableLen) + '...' + ext;
         }
         
-        function editClipDialogue(clipIndex){
-            const dialogueLines = getDialogueLines();
-            const currentText = dialogueLines[clipIndex] ? dialogueLines[clipIndex].text : '';
-            const newText = prompt(`Edit dialogue for Clip ${clipIndex + 1}:`, currentText);
-            if(newText !== null){
-                // Update the dialogue input
-                const input = document.getElementById('dialogueInput');
-                const lines = input.value.trim().split('\n').filter(l=>l.trim());
-                if(clipIndex < lines.length){
-                    const parts = lines[clipIndex].split('|');
-                    lines[clipIndex] = `${parts[0]}|${newText}`;
-                } else {
-                    lines.push(`${clipIndex + 1}|${newText}`);
-                }
-                input.value = lines.join('\n');
-                renderStoryboard();
+        function getCyclePattern(numImages, numClips){
+            let pattern = [];
+            for(let i = 0; i <= Math.min(numClips, numImages + 1); i++){
+                pattern.push((i % numImages) + 1);
             }
+            if(numClips > numImages) pattern[pattern.length - 1] = '...';
+            return pattern.join('→');
+        }
+        
+        function syncDialogueFromStoryboard(){
+            const storyboardInput = document.getElementById('dialogueInputStoryboard');
+            const mainInput = document.getElementById('dialogueInput');
+            if(storyboardInput && mainInput){
+                mainInput.value = storyboardInput.value;
+                clearTimeout(window.storyboardUpdateTimeout);
+                window.storyboardUpdateTimeout = setTimeout(renderStoryboard, 300);
+            }
+        }
+        
+        // Drag and drop handlers
+        function handleDragStart(e, index){
+            draggedImageIndex = index;
+            e.target.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+        }
+        
+        function handleDragOver(e){
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            const item = e.target.closest('.storyboard-item');
+            if(item && !item.querySelector('.storyboard-add-image') && !item.querySelector('.cycle-back')){
+                document.querySelectorAll('.storyboard-item').forEach(el => el.classList.remove('drag-over'));
+                item.classList.add('drag-over');
+            }
+        }
+        
+        function handleDrop(e, targetIndex){
+            e.preventDefault();
+            document.querySelectorAll('.storyboard-item').forEach(el => el.classList.remove('drag-over'));
+            
+            if(draggedImageIndex === null || draggedImageIndex === targetIndex) return;
+            
+            // Reorder arrays
+            const draggedFile = uploadedFilesData.splice(draggedImageIndex, 1)[0];
+            const draggedImage = uploadedImages.splice(draggedImageIndex, 1)[0];
+            
+            uploadedFilesData.splice(targetIndex, 0, draggedFile);
+            uploadedImages.splice(targetIndex, 0, draggedImage);
+            
+            // Update indices
+            uploadedFilesData.forEach((f, j) => f.index = j);
+            
+            renderStoryboard();
+            draggedImageIndex = null;
+        }
+        
+        function handleDragEnd(e){
+            e.target.classList.remove('dragging');
+            document.querySelectorAll('.storyboard-item').forEach(el => el.classList.remove('drag-over'));
+            draggedImageIndex = null;
         }
         
         function addImageToStoryboard(){
@@ -846,6 +890,9 @@ Example: A realistic vertical video of a professional presenter speaking directl
             if(isStoryboardMode()){
                 clearTimeout(window.storyboardUpdateTimeout);
                 window.storyboardUpdateTimeout = setTimeout(renderStoryboard, 300);
+            } else {
+                clearTimeout(window.validateTimeout);
+                window.validateTimeout = setTimeout(validateDialogueLines, 500);
             }
         });
         
@@ -914,9 +961,10 @@ Example: A realistic vertical video of a professional presenter speaking directl
             container.innerHTML=(issues===0?`<div class="validation-summary all-ok">✓ All ${okCount} lines are ~7s (${targetWords}±5 words)</div>`:`<div class="validation-summary has-issues">⚠️ ${issues} line${issues>1?'s':''} need adjustment</div>`)+'<div class="line-validation">'+html+'</div>';
             container.style.display='block';
         }
-        document.getElementById('language').addEventListener('change',validateDialogueLines);
-        let validateTimeout=null;
-        document.getElementById('dialogueInput').addEventListener('input',function(){clearTimeout(validateTimeout);validateTimeout=setTimeout(validateDialogueLines,500);});
+        document.getElementById('language').addEventListener('change', function(){
+            if(isStoryboardMode()) renderStoryboard();
+            else validateDialogueLines();
+        });
         
         async function createJob(){
             const btn=document.getElementById('startBtn');btn.disabled=true;btn.innerHTML='⏳ Starting...';
