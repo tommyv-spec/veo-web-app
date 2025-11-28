@@ -59,6 +59,7 @@ class VideoConfigInput(BaseModel):
     use_frame_vision: bool = True
     max_retries_per_clip: int = 5
     custom_prompt: str = ""  # User's custom prompt when AI is disabled
+    user_context: str = ""  # User context for AI prompt generation
     single_image_mode: bool = False  # Use same image for start/end frames
 
 
@@ -317,7 +318,7 @@ async def create_job(
     
     # Validate config
     config = request.config
-    print(f"[main.py] Received config from UI: language={config.language}")
+    print(f"[main.py] Received config from UI: language={config.language}, user_context='{config.user_context[:50] if config.user_context else 'empty'}'")
     errors = []
     
     if config.resolution == "1080p" and config.duration != "8":
@@ -347,7 +348,7 @@ async def create_job(
     
     # Create job record
     config_dict = config.model_dump()
-    print(f"[main.py] Creating job with config: language={config_dict.get('language')}")
+    print(f"[main.py] Creating job with config: language={config_dict.get('language')}, user_context='{config_dict.get('user_context', '')[:50] if config_dict.get('user_context') else 'empty'}'")
     
     job = Job(
         id=job_id,
