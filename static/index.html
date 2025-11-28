@@ -118,10 +118,8 @@
         
         /* Rich Editor */
         .storyboard-editor-col { flex: 1; display: flex; flex-direction: column; }
-        .storyboard-editor-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-        .storyboard-editor-header label { font-size: 10px; font-weight: 500; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
         
-        .storyboard-editor { width: 100%; min-height: 300px; max-height: 500px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 16px; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.8; color: var(--text-primary); overflow-y: auto; outline: none; white-space: pre-wrap; }
+        .storyboard-editor { width: 100%; min-height: 300px; max-height: 500px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 16px; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.8; color: var(--text-primary); overflow-y: auto; outline: none; }
         .storyboard-editor:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
         .storyboard-editor.drag-over { background: rgba(99, 102, 241, 0.05); border-color: var(--accent); }
         
@@ -135,9 +133,15 @@
         .scene-divider-remove { background: transparent; border: 1px solid var(--border-color); color: var(--text-muted); width: 20px; height: 20px; border-radius: 3px; cursor: pointer; font-size: 10px; display: flex; align-items: center; justify-content: center; transition: all 0.2s; }
         .scene-divider-remove:hover { border-color: var(--error); color: var(--error); }
         
-        /* Text blocks between dividers */
-        .scene-text-block { min-height: 1.8em; }
-        .scene-text-block:empty::before { content: 'Type dialogue here...'; color: var(--text-muted); }
+        /* Text blocks with line numbers */
+        .scene-text-block { position: relative; min-height: 1.8em; white-space: pre-wrap; }
+        
+        /* Line number gutter - non-selectable */
+        .line-number { position: absolute; left: -28px; width: 24px; text-align: right; font-size: 9px; color: var(--text-muted); user-select: none; pointer-events: none; opacity: 0.6; }
+        
+        /* Wrapper for lines with gutter */
+        .scene-line { position: relative; padding-left: 32px; min-height: 1.8em; }
+        .scene-line::before { content: attr(data-line); position: absolute; left: 0; width: 24px; text-align: right; font-size: 9px; color: var(--text-muted); user-select: none; pointer-events: none; opacity: 0.5; }
         
         .storyboard-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding: 10px 12px; background: var(--bg-input); border-radius: var(--radius-sm); margin-top: 12px; font-size: 11px; }
         .storyboard-summary .summary-item { display: flex; align-items: center; gap: 4px; color: var(--text-secondary); }
@@ -367,7 +371,7 @@
                 <div id="storyboardContainer" class="storyboard-container card">
                     <div class="storyboard-header">
                         <h3>🎬 Storyboard</h3>
-                        <span class="storyboard-header-hint">Drag images from sidebar to insert scene breaks</span>
+                        <span class="storyboard-header-hint">Drag images to insert scene breaks • Text auto-splits to ~7s clips</span>
                     </div>
                     
                     <div class="storyboard-main">
@@ -376,10 +380,6 @@
                         </div>
                         
                         <div class="storyboard-editor-col">
-                            <div class="storyboard-editor-header">
-                                <label>Dialogue Script</label>
-                                <button class="btn btn-secondary btn-sm" onclick="autoSplitScript()">✨ Auto-Split</button>
-                            </div>
                             <div id="richEditor" 
                                  class="storyboard-editor" 
                                  contenteditable="true"
@@ -719,6 +719,9 @@ Example: A realistic vertical video of a professional presenter speaking directl
             
             if(!cleanedText) return [];
             
+            // Enforce strict max (8 seconds = ~20 words for English)
+            const strictMax = Math.min(maxWords, targetWords + 4);
+            
             const words = cleanedText.split(/\s+/);
             const resultLines = [];
             let currentLine = [];
@@ -740,11 +743,12 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     shouldSplit = true;
                 } else if(wordCount >= minWords && isHardStop){
                     shouldSplit = true;
-                } else if(wordCount >= targetWords && isSoftStop){
+                } else if(wordCount >= targetWords && (isHardStop || isSoftStop)){
                     shouldSplit = true;
-                } else if(wordCount >= maxWords){
+                } else if(wordCount >= strictMax){
+                    // Force split - look for any punctuation in next 2 words only
                     let foundStop = false;
-                    for(let j = i + 1; j <= Math.min(i + 3, words.length - 1); j++){
+                    for(let j = i + 1; j <= Math.min(i + 2, words.length - 1); j++){
                         const nextLastChar = words[j].slice(-1);
                         if(HARD_STOPS.includes(nextLastChar) || SOFT_STOPS.includes(nextLastChar)){
                             foundStop = true;
@@ -752,7 +756,8 @@ Example: A realistic vertical video of a professional presenter speaking directl
                         }
                     }
                     if(!foundStop) shouldSplit = true;
-                } else if(wordCount >= maxWords + 3){
+                } else if(wordCount >= strictMax + 2){
+                    // Absolute force split
                     shouldSplit = true;
                 }
                 
@@ -803,7 +808,6 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     }
                 }
             } else if(numImages > 0){
-                // No lines yet, just bind first image to line 0
                 imageBindings[0] = 0;
             }
             
@@ -832,8 +836,9 @@ Example: A realistic vertical video of a professional presenter speaking directl
             sidebarHtml += `<div class="storyboard-sidebar-add" onclick="document.getElementById('fileInput').click()" title="Add image">+</div>`;
             sidebar.innerHTML = sidebarHtml;
             
-            // Build editor content
+            // Build editor content with line numbers as non-selectable gutters
             let htmlContent = '';
+            let globalLineNum = 1;
             const imagePositions = Object.keys(imageBindings).map(k => parseInt(k)).sort((a,b) => a - b);
             
             if(imagePositions.length > 0){
@@ -857,46 +862,40 @@ Example: A realistic vertical video of a professional presenter speaking directl
                         </div>
                     `;
                     
-                    // Text for this section
+                    // Text for this section - each line wrapped with data-line for CSS gutter
                     const sectionLines = lines.slice(startLine, endLine);
-                    htmlContent += `<div class="scene-text-block">${sectionLines.join('\n')}</div>`;
+                    const linesHtml = sectionLines.map((line, i) => {
+                        const lineNum = startLine + i + 1;
+                        return `<div class="scene-line" data-line="${lineNum}">${line}</div>`;
+                    }).join('');
+                    htmlContent += `<div class="scene-text-block" contenteditable="true">${linesHtml || '<div class="scene-line" data-line=""></div>'}</div>`;
                 });
             } else {
-                // No images - just show text
-                htmlContent = `<div class="scene-text-block">${lines.join('\n')}</div>`;
+                // No images - show all text with line numbers
+                const linesHtml = lines.map((line, i) => {
+                    return `<div class="scene-line" data-line="${i + 1}">${line}</div>`;
+                }).join('');
+                htmlContent = `<div class="scene-text-block" contenteditable="true">${linesHtml || ''}</div>`;
             }
             
             editor.innerHTML = htmlContent;
             
             // Update summary
-            const dialogueLines = getDialogueLines();
-            const numClips = dialogueLines.length;
-            let summaryHtml = `
-                <div class="summary-item"><strong>${numImages}</strong> images</div>
-                <div class="summary-item"><strong>${numClips}</strong> clips</div>
-            `;
-            
-            if(numClips === 0){
-                summaryHtml += `<div class="summary-item warn">⚠️ Add dialogue</div>`;
-            } else if(numImages > 1 && transitionPoints.length > 0){
-                summaryHtml += `<div class="summary-item ok">✓ Scenes: ${transitionPoints.map(t => 'after #' + (t + 1)).join(', ')}</div>`;
-            } else {
-                summaryHtml += `<div class="summary-item ok">✓ Ready</div>`;
-            }
-            
-            summary.innerHTML = summaryHtml;
+            updateStoryboardSummary();
         }
         
         function syncFromRichEditor(){
             const editor = document.getElementById('richEditor');
+            const numImages = uploadedFilesData.length;
             
-            // 1. Collect all content with image markers
-            let segments = []; // {type: 'text' | 'image', content: string | imgIndex}
+            // 1. Collect all content with image markers - validate indices exist
+            let segments = [];
             
             for(let node of editor.childNodes){
                 if(node.classList && node.classList.contains('scene-divider')){
                     const imgIndex = parseInt(node.dataset.imgIndex);
-                    if(!isNaN(imgIndex)){
+                    // Only include if image still exists
+                    if(!isNaN(imgIndex) && imgIndex >= 0 && imgIndex < numImages){
                         segments.push({ type: 'image', imgIndex: imgIndex });
                     }
                 } else {
@@ -936,8 +935,6 @@ Example: A realistic vertical video of a professional presenter speaking directl
             transitionPoints = [];
             const sortedBindings = Object.keys(imageBindings).map(k => parseInt(k)).sort((a,b) => a - b);
             
-            // Each image binding marks where a new scene starts
-            // Transition point = line BEFORE the new scene starts
             for(let i = 1; i < sortedBindings.length; i++){
                 const sceneStartLine = sortedBindings[i];
                 if(sceneStartLine > 0){
@@ -955,7 +952,6 @@ Example: A realistic vertical video of a professional presenter speaking directl
         function renderStoryboardFromBindings(imageBindings, lines){
             const editor = document.getElementById('richEditor');
             const sidebar = document.getElementById('storyboardSidebar');
-            const summary = document.getElementById('storyboardSummary');
             const numImages = uploadedFilesData.length;
             
             // Render Sidebar
@@ -973,20 +969,24 @@ Example: A realistic vertical video of a professional presenter speaking directl
             sidebarHtml += `<div class="storyboard-sidebar-add" onclick="document.getElementById('fileInput').click()" title="Add image">+</div>`;
             sidebar.innerHTML = sidebarHtml;
             
-            // Build editor content
-            let htmlContent = '';
-            let currentLineIndex = 0;
+            // Filter bindings to only include valid image indices
+            const validBindings = {};
+            for(const [lineIdx, imgIdx] of Object.entries(imageBindings)){
+                if(imgIdx >= 0 && imgIdx < numImages){
+                    validBindings[lineIdx] = imgIdx;
+                }
+            }
             
-            // Get sorted image positions
-            const imagePositions = Object.keys(imageBindings).map(k => parseInt(k)).sort((a,b) => a - b);
+            // Build editor content with line gutters
+            let htmlContent = '';
+            const imagePositions = Object.keys(validBindings).map(k => parseInt(k)).sort((a,b) => a - b);
             
             if(imagePositions.length > 0){
                 imagePositions.forEach((startLine, idx) => {
-                    const imgIndex = imageBindings[startLine];
+                    const imgIndex = validBindings[startLine];
                     const img = uploadedFilesData[imgIndex];
                     if(!img) return;
                     
-                    // Find end of this section
                     const nextImageLine = imagePositions[idx + 1];
                     const endLine = nextImageLine !== undefined ? nextImageLine : lines.length;
                     
@@ -1002,13 +1002,16 @@ Example: A realistic vertical video of a professional presenter speaking directl
                         </div>
                     `;
                     
-                    // Text for this section (without line numbers for editing)
+                    // Text with line numbers
                     const sectionLines = lines.slice(startLine, endLine);
-                    const sectionText = sectionLines.join('\n');
-                    htmlContent += `<div class="scene-text-block">${sectionText}</div>`;
+                    const linesHtml = sectionLines.map((line, i) => {
+                        const lineNum = startLine + i + 1;
+                        return `<div class="scene-line" data-line="${lineNum}">${line}</div>`;
+                    }).join('');
+                    htmlContent += `<div class="scene-text-block" contenteditable="true">${linesHtml || '<div class="scene-line" data-line=""></div>'}</div>`;
                 });
             } else if(numImages > 0){
-                // No bindings yet - show first image with all text
+                // No bindings - show first image with all text
                 const img = uploadedFilesData[0];
                 htmlContent += `
                     <div class="scene-divider" contenteditable="false" data-img-index="0" data-start-line="0">
@@ -1020,15 +1023,15 @@ Example: A realistic vertical video of a professional presenter speaking directl
                         <button class="scene-divider-remove" onclick="removeImageFromEditor(0)" title="Remove">✕</button>
                     </div>
                 `;
-                htmlContent += `<div class="scene-text-block">${lines.join('\n')}</div>`;
+                const linesHtml = lines.map((line, i) => `<div class="scene-line" data-line="${i + 1}">${line}</div>`).join('');
+                htmlContent += `<div class="scene-text-block" contenteditable="true">${linesHtml}</div>`;
             } else {
                 // No images
-                htmlContent = `<div class="scene-text-block">${lines.join('\n')}</div>`;
+                const linesHtml = lines.map((line, i) => `<div class="scene-line" data-line="${i + 1}">${line}</div>`).join('');
+                htmlContent = `<div class="scene-text-block" contenteditable="true">${linesHtml}</div>`;
             }
             
             editor.innerHTML = htmlContent;
-            
-            // Update summary
             updateStoryboardSummary();
         }
         
