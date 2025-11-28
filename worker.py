@@ -542,14 +542,35 @@ class JobWorker:
         with get_db() as db:
             # Create clip records with frame assignments
             for i, line_data in enumerate(dialogue_data):
+                
+                # Check if frontend sent a specific image assignment (storyboard mode)
+                forced_idx = line_data.get("start_image_idx")
+                
                 if single_image_mode:
                     # All clips use the same image
                     start_idx = 0
                     end_idx = 0
                     start_frame_name = images[0].name
                     end_frame_name = images[0].name if use_interpolation else None
+                elif forced_idx is not None:
+                    # === USE STORYBOARD MAPPING ===
+                    # UI specified which image this line belongs to
+                    start_idx = int(forced_idx) % num_images
+                    
+                    if use_interpolation:
+                        # Transition to the NEXT image in the list
+                        if start_idx + 1 < num_images:
+                            end_idx = start_idx + 1
+                        else:
+                            end_idx = 0  # Loop back to first image
+                    else:
+                        end_idx = start_idx
+                    
+                    start_frame_name = images[start_idx].name
+                    end_frame_name = images[end_idx].name if use_interpolation else None
+                    print(f"[Worker] Clip {i}: STORYBOARD mapping → img[{start_idx}] to img[{end_idx}]", flush=True)
                 else:
-                    # Sequential pairing: clip i uses pair i (cycling if needed)
+                    # Fallback: Sequential pairing (old round-robin logic)
                     pair_idx = i % num_pairs
                     
                     if use_interpolation:

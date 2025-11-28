@@ -1037,7 +1037,56 @@ Example: A realistic vertical video of a professional presenter speaking directl
         async function createJob(){
             const btn=document.getElementById('startBtn');btn.disabled=true;btn.innerHTML='⏳ Starting...';
             try{
-                const lines=document.getElementById('dialogueInput').value.trim().split('\n').filter(l=>l.trim()).map((l,i)=>{const p=l.split('|');return p.length>=2?{id:parseInt(p[0])||i+1,text:p.slice(1).join('|').trim()}:{id:i+1,text:l.trim()};}).filter(l=>l.text);
+                // 1. Calculate Image Assignments based on Transition Points
+                const numImages = uploadedImages.length;
+                const linesList = document.getElementById('dialogueInput').value.trim().split('\n').filter(l=>l.trim());
+                const numClips = linesList.length;
+                
+                // Ensure transitionPoints are valid for storyboard mode
+                if(numImages > 1 && (transitionPoints.length !== numImages - 1 || !transitionPoints.every(t => t >= 0 && t < numClips))){
+                    // Recalculate: distribute evenly
+                    transitionPoints = [];
+                    if(numClips > 0){
+                        const clipsPerImage = Math.ceil(numClips / numImages);
+                        for(let i = 1; i < numImages; i++){
+                            const transitionAfter = Math.min(i * clipsPerImage - 1, numClips - 2);
+                            if(transitionAfter >= 0) transitionPoints.push(transitionAfter);
+                        }
+                    }
+                }
+                
+                // 2. Prepare the lines payload with image assignments
+                const lines = linesList.map((l, i) => {
+                    // Parse ID|Text
+                    let id, text;
+                    const p = l.split('|');
+                    if (p.length >= 2) {
+                        id = parseInt(p[0]) || i + 1;
+                        text = p.slice(1).join('|').trim();
+                    } else {
+                        id = i + 1;
+                        text = l.trim();
+                    }
+                    
+                    // Determine which image index controls this line
+                    let imageIdx = 0;
+                    if(numImages > 1){
+                        // Find the first transition point that is >= current line index
+                        const tIdx = transitionPoints.findIndex(t => t >= i);
+                        if(tIdx === -1){
+                            imageIdx = numImages - 1; // It's in the last block
+                        } else {
+                            imageIdx = tIdx;
+                        }
+                    }
+                    
+                    return {
+                        id: id,
+                        text: text,
+                        start_image_idx: imageIdx // Send specific image index
+                    };
+                }).filter(l => l.text);
+                
                 if(!lines.length)throw new Error('Add dialogue lines');
                 if(!uploadedImages.length)throw new Error('Upload at least 1 reference image');
                 const useAI=document.getElementById('togAI').dataset.value==='true',customPrompt=document.getElementById('customPrompt')?.value?.trim()||'',contextInput=document.getElementById('contextInput')?.value?.trim()||'';

@@ -47,6 +47,7 @@ from error_handler import ErrorCode
 class DialogueLineInput(BaseModel):
     id: int
     text: str
+    start_image_idx: Optional[int] = None  # Storyboard image assignment
 
 
 class VideoConfigInput(BaseModel):
