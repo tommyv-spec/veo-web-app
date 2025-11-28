@@ -424,6 +424,11 @@ class JobWorker:
                 if not images:
                     raise ValueError(f"No images found in {images_dir}")
                 
+                # Log image order for debugging
+                print(f"[Worker] Loaded {len(images)} images in order:", flush=True)
+                for idx, img in enumerate(images):
+                    print(f"  [{idx}] {img.name}", flush=True)
+                
                 # Create generator
                 generator = VeoGenerator(
                     config=config,
@@ -663,14 +668,20 @@ class JobWorker:
                     clip.status = ClipStatus.GENERATING.value
                     clip.started_at = datetime.utcnow()
                     clip.start_frame = start_frame.name
-                    clip.end_frame = end_frame.name
+                    clip.end_frame = end_frame.name if end_frame else None
                     db.commit()
+            
+            # Log exact frame assignment for debugging
+            print(f"[Worker] CLIP {clip_index} FRAME ASSIGNMENT:", flush=True)
+            print(f"  - start_frame: {start_frame.name} (index {start_index})", flush=True)
+            print(f"  - end_frame: {end_frame.name if end_frame else 'None'} (index {end_index})", flush=True)
             
             self._broadcast_event(job_id, {
                 "type": "clip_started",
                 "clip_index": clip_index,
                 "dialogue_id": dialogue_id,
                 "start_frame": start_frame.name,
+                "end_frame": end_frame.name if end_frame else None,
             })
             
             # Check if start frame is blacklisted
