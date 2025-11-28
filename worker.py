@@ -207,6 +207,7 @@ class JobWorker:
                     use_frame_vision=config_data.get("use_frame_vision", True),
                     max_retries_per_clip=config_data.get("max_retries_per_clip", 5),
                     custom_prompt=config_data.get("custom_prompt", ""),
+                    user_context=config_data.get("user_context", ""),
                     single_image_mode=config_data.get("single_image_mode", False),
                 )
                 
@@ -398,6 +399,7 @@ class JobWorker:
                     use_frame_vision=config_data.get("use_frame_vision", True),
                     max_retries_per_clip=config_data.get("max_retries_per_clip", 5),
                     custom_prompt=config_data.get("custom_prompt", ""),
+                    user_context=config_data.get("user_context", ""),
                     single_image_mode=config_data.get("single_image_mode", False),
                 )
                 
