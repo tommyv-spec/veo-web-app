@@ -1462,25 +1462,11 @@ Example: A realistic vertical video of a professional presenter speaking directl
         async function createJob(){
             const btn=document.getElementById('startBtn');btn.disabled=true;btn.innerHTML='⏳ Starting...';
             try{
-                // 1. Calculate Image Assignments based on Transition Points
                 const numImages = uploadedImages.length;
                 const linesList = document.getElementById('dialogueInput').value.trim().split('\n').filter(l=>l.trim());
                 const numClips = linesList.length;
                 
-                // Ensure transitionPoints are valid for storyboard mode
-                if(numImages > 1 && (transitionPoints.length !== numImages - 1 || !transitionPoints.every(t => t >= 0 && t < numClips))){
-                    // Recalculate: distribute evenly
-                    transitionPoints = [];
-                    if(numClips > 0){
-                        const clipsPerImage = Math.ceil(numClips / numImages);
-                        for(let i = 1; i < numImages; i++){
-                            const transitionAfter = Math.min(i * clipsPerImage - 1, numClips - 2);
-                            if(transitionAfter >= 0) transitionPoints.push(transitionAfter);
-                        }
-                    }
-                }
-                
-                // 2. Prepare the lines payload with image assignments
+                // Prepare the lines payload with image assignments
                 const lines = linesList.map((l, i) => {
                     // Parse ID|Text
                     let id, text;
@@ -1495,20 +1481,31 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     
                     // Determine which image index controls this line
                     let imageIdx = 0;
+                    
                     if(numImages > 1){
-                        // Find the first transition point that is >= current line index
-                        const tIdx = transitionPoints.findIndex(t => t >= i);
-                        if(tIdx === -1){
-                            imageIdx = numImages - 1; // It's in the last block
+                        if(editorMode === 'storyboard' && sceneBreaks.length > 0){
+                            // === STORYBOARD MODE: Use sceneBreaks directly ===
+                            // Find which scene this line belongs to
+                            // sceneBreaks is sorted by lineIndex
+                            // Each scene covers from its lineIndex to the next scene's lineIndex - 1
+                            for(let s = sceneBreaks.length - 1; s >= 0; s--){
+                                if(i >= sceneBreaks[s].lineIndex){
+                                    imageIdx = sceneBreaks[s].imgIndex;
+                                    break;
+                                }
+                            }
                         } else {
-                            imageIdx = tIdx;
+                            // === AUTO-CYCLE MODE: Round-robin ===
+                            imageIdx = i % numImages;
                         }
                     }
+                    
+                    console.log(`Line ${i}: imageIdx = ${imageIdx} (mode: ${editorMode})`);
                     
                     return {
                         id: id,
                         text: text,
-                        start_image_idx: imageIdx // Send specific image index
+                        start_image_idx: imageIdx
                     };
                 }).filter(l => l.text);
                 
@@ -1517,6 +1514,9 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 const useAI=document.getElementById('togAI').dataset.value==='true',customPrompt=document.getElementById('customPrompt')?.value?.trim()||'',contextInput=document.getElementById('contextInput')?.value?.trim()||'';
                 if(!useAI&&!customPrompt)throw new Error('Enter a custom prompt or enable AI Prompts');
                 const cfg={aspect_ratio:getSelectedAspect(),resolution:getSelectedResolution(),duration:document.getElementById('duration').value,language:document.getElementById('language').value,use_interpolation:document.getElementById('togInterp').dataset.value==='true',use_openai_prompt_tuning:useAI,use_frame_vision:useAI,custom_prompt:useAI?'':customPrompt,user_context:useAI?contextInput:'',single_image_mode:uploadedImages.length===1,max_retries_per_clip:5,parallel_clips:3};
+                
+                console.log('Sending lines with image assignments:', lines);
+                
                 const r=await fetch(`${API}/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:cfg,dialogue_lines:lines,api_keys:{gemini_keys:[],openai_key:null},job_id:uploadJobId})});
                 if(!r.ok){const e=await r.json();throw new Error(e.detail?.errors?.join(', ')||e.detail||'Failed');}
                 const job=await r.json();
