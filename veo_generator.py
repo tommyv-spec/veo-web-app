@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-Core Video Generator for Veo Web App
+Veo 3.1 Professional Generator
+Implements "Enrichment -> Translation -> Routing" Workflow
 
-Adapted from the original script with:
-- Better error handling
-- Progress callbacks
-- Database integration
-- Structured logging
+Architecture:
+1. ENRICHMENT: Expand brief user context into forensic details
+2. TRANSLATION: Rewrite visual description with context as primary anchor
+3. ROUTING: Map enriched details to specific JSON Blueprint slots
+
+This ensures user context is the DOMINANT driver of all generation.
 """
 
 import os
@@ -19,15 +21,15 @@ import base64
 import json
 import sys
 from functools import lru_cache
-
-def vlog(msg):
-    """Log with immediate flush"""
-    print(msg, flush=True)
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict, Set, Any, Callable
 from datetime import datetime
 
-# Google GenAI - Optional import (may not be installed)
+def vlog(msg):
+    """Log with immediate flush"""
+    print(msg, flush=True)
+
+# Google GenAI - Optional import
 try:
     from google import genai
     from google.genai import types
@@ -37,8 +39,6 @@ except ImportError:
     types = None
     GENAI_AVAILABLE = False
     print("[WARNING] google-genai not installed. Video generation disabled.")
-    print("         Install with: pip install google-genai")
-    print("         (If Rust errors occur, you need to install Rust first)")
 
 from config import (
     VideoConfig, APIKeysConfig, DialogueLine,
@@ -49,8 +49,7 @@ from config import (
 )
 from error_handler import ErrorHandler, VeoError, error_handler
 
-
-# ===================== OPENAI INTEGRATION =====================
+# ===================== OPENAI CLIENT =====================
 
 _openai_client = None
 
@@ -82,11 +81,92 @@ def get_openai_client(api_key: Optional[str] = None):
     return _openai_client
 
 
-# ===================== FRAME DESCRIPTION =====================
+# ===================== STEP 1: ENRICHMENT ENGINE =====================
+
+def process_user_context(
+    user_context: str,
+    language: str,
+    openai_key: Optional[str] = None
+) -> dict:
+    """
+    STEP 1: ENRICHMENT
+    
+    Takes brief user input (e.g., "he is very angry") and EXPANDS it into
+    forensic details for each Expert Network (Visual, Audio, Motion).
+    
+    This is the KEY function - it transforms simple directions into
+    specific, actionable instructions that Veo can follow.
+    """
+    if not user_context or not user_context.strip():
+        return {}
+
+    client = get_openai_client(openai_key)
+    if client is None:
+        # Fallback: map raw text to all fields
+        return {
+            "subject_action": user_context,
+            "facial_expression": user_context,
+            "voice_tone": user_context,
+            "delivery_style": user_context,
+            "atmosphere": user_context,
+            "body_language": user_context,
+            "background_action": "",
+            "camera_motion": "",
+        }
+
+    try:
+        system_msg = """You are a Director for Veo 3.1 (Google's AI Video Generator).
+
+Your job is to EXPAND brief user directions into SPECIFIC, FORENSIC details.
+
+The user might say something simple like "he is angry" or "nervous interview".
+You must expand this into detailed instructions for EACH aspect of the video.
+
+CRITICAL: Be EXTREMELY SPECIFIC. Don't say "angry expression" - say "furrowed brow, clenched jaw, flared nostrils, intense unblinking stare, flushed cheeks, visible neck tension".
+
+OUTPUT JSON with these fields:
+{
+  "subject_action": "Precise physical movement (e.g., 'pacing back and forth with clenched fists', 'leaning forward aggressively')",
+  "facial_expression": "Detailed facial description (e.g., 'furrowed brow, narrowed eyes, tight lips, jaw clenched, nostrils flared')",
+  "voice_tone": "Voice texture and quality (e.g., 'sharp, clipped words, raised volume, slight growl in throat')",
+  "delivery_style": "How dialogue is delivered (e.g., 'rapid-fire sentences, emphatic pauses, shouting key words')",
+  "body_language": "Posture and gestures (e.g., 'rigid shoulders, pointing finger, forward-leaning stance')",
+  "background_action": "What happens in environment (e.g., 'papers flying, door slamming')",
+  "camera_motion": "Camera movement (e.g., 'handheld shake, quick zooms on face')",
+  "atmosphere": "Lighting and mood (e.g., 'harsh shadows, high contrast, tense energy')"
+}
+
+If user didn't mention something, use "natural" or leave empty string."""
+
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": f"USER DIRECTION: {user_context}\nLANGUAGE: {language}\n\nExpand this into detailed video production instructions."}
+            ],
+            temperature=0.7,  # Higher temp for creative expansion
+            response_format={"type": "json_object"}
+        )
+        
+        result = json.loads(resp.choices[0].message.content)
+        vlog(f"[ENRICHMENT] Expanded '{user_context}' into: {json.dumps(result, indent=2)[:500]}...")
+        return result
+
+    except Exception as e:
+        vlog(f"[ENRICHMENT] Error: {e}")
+        return {
+            "subject_action": user_context,
+            "facial_expression": user_context,
+            "voice_tone": user_context,
+            "atmosphere": user_context
+        }
+
+
+# ===================== STEP 2: FRAME ANALYSIS =====================
 
 @lru_cache(maxsize=512)
 def describe_frame(image_path: str, openai_key: Optional[str] = None) -> str:
-    """Use OpenAI vision to describe a frame"""
+    """Analyze frame for visual context"""
     client = get_openai_client(openai_key)
     if client is None:
         return ""
@@ -99,348 +179,164 @@ def describe_frame(image_path: str, openai_key: Optional[str] = None) -> str:
         with open(path, "rb") as f:
             b64 = base64.b64encode(f.read()).decode("utf-8")
         
-        system_msg = (
-            "You are a cinematographer analyzing a video frame. "
-            "Describe what you see in 60–80 words for a video generation model. "
-            "Focus on: camera angle, shot size, subject appearance (clothing, age, gender), pose, "
-            "facial expression, lighting, and background elements. "
-            "IMPORTANT: If there is text visible (signs, slides, screens), describe it as 'text' or 'slide with text' "
-            "but do NOT mention what language the text is in. The language of visible text is irrelevant - "
-            "only describe the visual composition."
-        )
-        
         resp = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
-                {"role": "system", "content": system_msg},
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "Describe this frame visually. Do not mention what language any visible text is in."},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                    ],
-                },
+                {"role": "system", "content": "Describe this video frame in 50 words. Focus on: camera angle, subject appearance, lighting, background. Ignore any text."},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "Describe this frame."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                ]},
             ],
-            temperature=0.3,
-            max_tokens=300,
+            max_tokens=150,
         )
-        
         return resp.choices[0].message.content.strip()
     except Exception:
         return ""
 
 
-# ===================== VOICE PROFILE =====================
+# ===================== STEP 3: VISUAL TRANSLATION =====================
 
-def generate_voice_profile(
-    frame_description: str, 
+def build_visual_description(
+    base_prompt: str,
+    frame_desc: str,
+    enriched_context: dict,
+    dialogue_line: str,
     language: str,
-    openai_key: Optional[str] = None,
-    user_context: str = ""
+    openai_key: Optional[str] = None
 ) -> str:
-    """Generate voice profile from frame description and user context"""
-    vlog(f"[generate_voice_profile] Generating voice profile for language: {language}, context: {user_context[:50] if user_context else 'none'}")
+    """
+    STEP 2: TRANSLATION
     
+    Rewrites the visual description to ensure USER CONTEXT is the
+    DOMINANT anchor. The enriched context OVERRIDES the base prompt.
+    """
     client = get_openai_client(openai_key)
-    if client is None or not frame_description:
-        profile = get_default_voice_profile(language, user_context)
-        vlog(f"[generate_voice_profile] Using default profile: {profile}")
-        return profile
+    if client is None:
+        # Fallback: combine base with context
+        action = enriched_context.get('subject_action', '')
+        expression = enriched_context.get('facial_expression', '')
+        return f"{base_prompt}. {action}. {expression}."
     
     try:
-        # Build context instruction
-        context_instruction = ""
-        if user_context:
-            context_instruction = f"""
+        system_msg = """You are a Cinematographer writing a shot description for Veo 3.1.
 
-CRITICAL USER DIRECTION: {user_context}
-The voice profile MUST reflect this direction. For example:
-- If user says "angry" → voice should be sharp, loud, intense
-- If user says "whispering" → voice should be soft, breathy, quiet
-- If user says "nervous" → voice should be shaky, hesitant, higher pitch
-- If user says "sad" → voice should be soft, slow, lower energy
-This direction takes PRIORITY over assumptions from the image."""
+Write a SINGLE, highly detailed paragraph (60-80 words) that describes the shot.
 
-        system_msg = (
-            f"You are a voice casting director. Define voice characteristics for a person who will speak {language}.\n\n"
-            f"CRITICAL: The voice MUST be a native {language} speaker with authentic {language} accent and pronunciation.\n"
-            f"IMPORTANT: Ignore any text visible in the scene (signs, slides, screens) - the spoken language is {language} regardless of what text appears in the image.\n"
-            f"Focus on: gender, age range, voice quality, native {language} accent, pitch, tempo, emotional tone, energy level.\n"
-            f"{context_instruction}\n\n"
-            f"OUTPUT FORMAT:\nVOICE_PROFILE:\n<2-3 sentences describing the voice as a native {language} speaker WITH the emotional/tonal qualities>\n"
-        )
-        
-        user_msg = f"FRAME: {frame_description}\nSPOKEN LANGUAGE (not text in image): {language}\nThe speaker must sound like a native {language} speaker."
-        
-        if user_context:
-            user_msg += f"\n\n⚠️ MUST APPLY THIS TO VOICE: {user_context}\nThe voice tone, energy, and emotion MUST match this direction!"
-        
+CRITICAL RULES:
+1. The ENRICHED CONTEXT details MUST be the PRIMARY focus
+2. The subject's ACTION and EXPRESSION from context override everything else
+3. Include: Subject appearance, Primary Action, Facial Expression, Lighting
+4. Write in flowing cinematic prose, not bullet points
+5. Embed emotional/physical details directly: "his jaw clenched, veins visible on neck"
+
+The enriched context is the DIRECTOR'S ORDER - it takes priority over the base prompt."""
+
+        user_msg = f"""BASE PROMPT: {base_prompt}
+FRAME DESCRIPTION: {frame_desc}
+DIALOGUE: "{dialogue_line}"
+
+=== ENRICHED CONTEXT (THIS IS THE PRIORITY) ===
+ACTION: {enriched_context.get('subject_action', 'Natural movement')}
+EXPRESSION: {enriched_context.get('facial_expression', 'Neutral')}
+BODY LANGUAGE: {enriched_context.get('body_language', 'Natural')}
+ATMOSPHERE: {enriched_context.get('atmosphere', 'Cinematic')}
+CAMERA: {enriched_context.get('camera_motion', 'Smooth')}
+
+Write the visual description with the ENRICHED CONTEXT as the dominant focus."""
+
         resp = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system_msg},
                 {"role": "user", "content": user_msg},
             ],
-            temperature=0.3,
-            max_tokens=300,
+            temperature=0.6,
+            max_tokens=250,
         )
         
-        raw = resp.choices[0].message.content.strip()
-        if "VOICE_PROFILE:" in raw.upper():
-            idx = raw.upper().find("VOICE_PROFILE:")
-            profile = raw[idx + len("VOICE_PROFILE:"):].strip()
-        else:
-            profile = raw
-        
-        vlog(f"[generate_voice_profile] OpenAI returned: {profile}")
-        return profile
+        result = resp.choices[0].message.content.strip()
+        vlog(f"[TRANSLATION] Visual description: {result[:200]}...")
+        return result
         
     except Exception as e:
-        vlog(f"[generate_voice_profile] Error: {e}")
-        return get_default_voice_profile(language, user_context)
+        vlog(f"[TRANSLATION] Error: {e}")
+        return base_prompt
+
+
+# ===================== STEP 4: VOICE PROFILE =====================
+
+def generate_voice_profile(
+    frame_description: str, 
+    language: str,
+    enriched_context: dict,
+    openai_key: Optional[str] = None
+) -> str:
+    """
+    Generate voice profile that reflects the enriched context.
+    The voice MUST match the emotional direction.
+    """
+    client = get_openai_client(openai_key)
+    
+    # Get voice directions from enriched context
+    voice_tone = enriched_context.get('voice_tone', '')
+    delivery_style = enriched_context.get('delivery_style', '')
+    
+    if client is None:
+        base = f"Native {language} speaker with clear pronunciation."
+        if voice_tone:
+            return f"{base} Voice quality: {voice_tone}. Delivery: {delivery_style}."
+        return base
+    
+    try:
+        system_msg = f"""You are a Voice Casting Director.
+
+Define the voice characteristics for a {language} speaker based on the emotional direction.
+
+CRITICAL: The voice MUST reflect the emotional context provided.
+- If context says "angry" → voice should be sharp, loud, intense
+- If context says "sad" → voice should be soft, slow, trembling
+- If context says "nervous" → voice should be shaky, hesitant, fast
+
+OUTPUT: 2-3 sentences describing the voice quality, tone, and delivery."""
+
+        user_msg = f"""FRAME: {frame_description}
+LANGUAGE: {language}
+
+=== VOICE DIRECTION (MUST FOLLOW) ===
+VOICE TONE: {voice_tone or 'Natural'}
+DELIVERY STYLE: {delivery_style or 'Conversational'}
+
+Describe the voice that matches this direction."""
+
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.4,
+            max_tokens=150,
+        )
+        
+        result = resp.choices[0].message.content.strip()
+        vlog(f"[VOICE PROFILE] {result[:150]}...")
+        return result
+        
+    except Exception as e:
+        vlog(f"[VOICE PROFILE] Error: {e}")
+        return f"Native {language} speaker. {voice_tone}. {delivery_style}."
 
 
 def get_default_voice_profile(language: str, user_context: str = "") -> str:
-    """Default voice profile with optional context"""
-    base = f"A natural, conversational {language} voice with clear diction, native accent, precise word stress, and professional studio quality."
+    """Default voice profile"""
+    base = f"Natural {language} voice with clear diction and native accent."
     if user_context:
         return f"{base} Emotional direction: {user_context}."
     return base
 
 
-# ===================== PERFORMANCE MODIFIERS =====================
-
-def generate_performance_modifiers(
-    dialogue_line: str, 
-    language: str,
-    openai_key: Optional[str] = None,
-    user_context: str = ""
-) -> str:
-    """Analyze dialogue for performance direction"""
-    client = get_openai_client(openai_key)
-    if client is None:
-        return ""
-    
-    try:
-        # Build context-aware system message
-        context_instruction = ""
-        if user_context:
-            context_instruction = f"\n\nCRITICAL USER DIRECTION: {user_context}\nThe performance MUST reflect this direction. This overrides any default interpretation."
-        
-        system_msg = (
-            "You are a voice director. Determine how a line should be performed.\n"
-            "Describe: emotional tone, energy level, pacing, key words to stress.\n"
-            f"Consider natural speech patterns for {language}.\n"
-            f"{context_instruction}\n"
-            "OUTPUT FORMAT:\nPERFORMANCE:\n<1-2 sentences>\n"
-        )
-        
-        user_msg = f"LANGUAGE: {language}\nLINE: \"{dialogue_line}\""
-        if user_context:
-            user_msg += f"\n\n⚠️ MUST APPLY THIS DIRECTION: {user_context}"
-        
-        resp = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": user_msg},
-            ],
-            temperature=0.4,
-            max_tokens=200,
-        )
-        
-        raw = resp.choices[0].message.content.strip()
-        if "PERFORMANCE:" in raw.upper():
-            idx = raw.upper().find("PERFORMANCE:")
-            return raw[idx + len("PERFORMANCE:"):].strip()
-        return raw
-        
-    except Exception:
-        return ""
-
-
-# ===================== USER CONTEXT PROCESSOR =====================
-
-def process_user_context(
-    user_context: str,
-    language: str,
-    openai_key: Optional[str] = None
-) -> dict:
-    """
-    Process user context into structured Veo-style directions.
-    Handles: emotions, actions, background events, camera, voice, everything.
-    Returns dict with all direction categories.
-    """
-    if not user_context or not user_context.strip():
-        return {}
-    
-    client = get_openai_client(openai_key)
-    if client is None:
-        # Fallback: return raw context in all fields
-        return {
-            "visual_direction": user_context,
-            "voice_tone": user_context,
-            "emotional_state": user_context,
-            "body_language": user_context,
-            "delivery_style": user_context,
-            "subject_action": user_context,
-            "background_action": "",
-            "camera_direction": "",
-            "scene_atmosphere": user_context,
-        }
-    
-    try:
-        system_msg = """You are a professional video/film director and prompt engineer for AI video generation. 
-
-Convert the user's direction into specific, actionable instructions for AI video generation. The user might describe:
-- Emotions/mood (e.g., "he's angry", "she's nervous")
-- Actions (e.g., "he picks up the phone", "she walks to the window")
-- Background events (e.g., "rain outside", "people walking behind", "TV playing")
-- Scene atmosphere (e.g., "dark and moody", "bright and cheerful")
-- Camera work (e.g., "slow zoom in", "shaky handheld")
-- Voice/delivery (e.g., "whispering", "shouting", "sarcastic tone")
-- Any combination of the above
-
-Generate detailed instructions for ALL these categories. If the user didn't mention something, leave it empty or use "natural/default".
-
-OUTPUT FORMAT (JSON):
-{
-  "visual_direction": "Facial expression, eye contact, skin appearance, visual details of subject",
-  "voice_tone": "Pitch, volume, pace, breathiness, texture, accent intensity",
-  "emotional_state": "Internal emotion with intensity (1-10), underlying feelings",
-  "body_language": "Posture, hand gestures, head movement, physical tension",
-  "delivery_style": "Pacing, emphasis, pauses, vocal dynamics for dialogue",
-  "subject_action": "What the subject physically DOES during the clip (movements, interactions with objects)",
-  "background_action": "What happens in the background/environment (other people, weather, objects moving, ambient activity)",
-  "camera_direction": "Camera movement, angle changes, focus shifts, shot type",
-  "scene_atmosphere": "Overall mood, lighting feel, energy level of the scene"
-}
-
-Be specific and use professional film/video terminology. If something wasn't mentioned by the user, write "" (empty string)."""
-
-        user_msg = f"USER DIRECTION: {user_context}\nLANGUAGE: {language}\n\nConvert this into detailed video generation instructions for all categories."
-        
-        resp = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": user_msg},
-            ],
-            temperature=0.4,
-            max_tokens=700,
-        )
-        
-        raw = resp.choices[0].message.content.strip()
-        
-        # Try to parse JSON
-        import re
-        json_match = re.search(r'\{[^{}]*\}', raw, re.DOTALL)
-        if json_match:
-            try:
-                import json
-                result = json.loads(json_match.group())
-                vlog(f"[process_user_context] Processed: {result}")
-                return result
-            except:
-                pass
-        
-        # Fallback: return raw in basic fields
-        return {
-            "visual_direction": user_context,
-            "voice_tone": user_context,
-            "emotional_state": user_context,
-            "body_language": user_context,
-            "delivery_style": user_context,
-            "subject_action": "",
-            "background_action": "",
-            "camera_direction": "",
-            "scene_atmosphere": user_context,
-        }
-        
-    except Exception as e:
-        vlog(f"[process_user_context] Error: {e}")
-        return {
-            "visual_direction": user_context,
-            "voice_tone": user_context,
-            "emotional_state": user_context,
-            "body_language": user_context,
-            "delivery_style": user_context,
-            "subject_action": "",
-            "background_action": "",
-            "camera_direction": "",
-            "scene_atmosphere": user_context,
-        }
-
-
-# ===================== VISUAL PROMPT OPTIMIZATION =====================
-
-def optimize_visual_prompt(
-    base_prompt: str,
-    dialogue_line: str,
-    start_frame_desc: str,
-    end_frame_desc: str,
-    language: str,
-    openai_key: Optional[str] = None,
-    user_context: str = ""
-) -> Tuple[str, str]:
-    """Generate optimized visual prompt and gesture notes"""
-    client = get_openai_client(openai_key)
-    if client is None:
-        return base_prompt, ""
-    
-    try:
-        # Build system message with user context emphasis
-        context_instruction = ""
-        if user_context:
-            context_instruction = f"\n\nCRITICAL DIRECTION FROM USER: {user_context}\nYou MUST incorporate this direction into both the visual prompt and gesture notes. This takes priority over any assumptions from the image."
-        
-        system_msg = (
-            "Create video generation prompts.\n"
-            "VISUAL_PROMPT: Based on frame descriptions (camera, lighting, setup).\n"
-            "GESTURE_NOTES: Based on dialogue (expressions, gestures, emotions, body language for the message).\n"
-            f"Consider {language} gesture patterns.\n"
-            "No text/subtitles on screen.\n"
-            f"{context_instruction}\n"
-            "OUTPUT:\nVISUAL_PROMPT:\n<description>\n\nGESTURE_NOTES:\n<notes>\n"
-        )
-        
-        user_msg = (
-            f"START FRAME: {start_frame_desc or '[none]'}\n"
-            f"END FRAME: {end_frame_desc or '[none]'}\n"
-            f"DIALOGUE ({language}): \"{dialogue_line}\"\n"
-        )
-        
-        # Reinforce user context in user message
-        if user_context:
-            user_msg += f"\n⚠️ IMPORTANT USER DIRECTION: {user_context}\nMake sure the gesture notes and visual prompt reflect this direction!\n"
-        
-        resp = client.chat.completions.create(
-            model=OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": system_msg},
-                {"role": "user", "content": user_msg},
-            ],
-            temperature=0.5,
-            max_tokens=600,
-        )
-        
-        raw = resp.choices[0].message.content.strip()
-        upper = raw.upper()
-        
-        if "VISUAL_PROMPT:" in upper and "GESTURE_NOTES:" in upper:
-            vp_idx = upper.find("VISUAL_PROMPT:")
-            gn_idx = upper.find("GESTURE_NOTES:")
-            visual = raw[vp_idx + len("VISUAL_PROMPT:"):gn_idx].strip()
-            gesture = raw[gn_idx + len("GESTURE_NOTES:"):].strip()
-            return visual, gesture
-        
-        return raw, ""
-        
-    except Exception:
-        return base_prompt, ""
-
-
-# ===================== PROMPT BUILDER =====================
+# ===================== STEP 5: PROMPT ASSEMBLY (ROUTING) =====================
 
 def build_prompt(
     dialogue_line: str,
@@ -452,117 +348,98 @@ def build_prompt(
     config: VideoConfig,
     openai_key: Optional[str] = None,
 ) -> str:
-    """Build complete JSON prompt for Veo 3.1"""
+    """
+    STEP 3: ROUTING
     
-    vlog(f"[build_prompt] Building prompt with language: {language}")
+    Routes enriched details into specific Veo 3.1 JSON Blueprint slots.
+    Each slot has a specific purpose - no cross-contamination.
     
-    # Get frame descriptions
+    Hierarchy: Shot > Subject > Action > Scene > Audio
+    """
+    vlog(f"[ROUTING] Building prompt for clip {clip_index}...")
+
+    # === 1. ENRICHMENT: Expand user context ===
+    user_context_raw = getattr(config, 'user_context', '') or ''
+    enriched_context = process_user_context(user_context_raw, language, openai_key)
+    
+    # === 2. FRAME ANALYSIS ===
     start_desc = ""
-    end_desc = ""
-    
     if config.use_frame_vision and config.use_openai_prompt_tuning:
         start_desc = describe_frame(str(start_frame_path), openai_key)
-        if end_frame_path:
-            end_desc = describe_frame(str(end_frame_path), openai_key)
-    
-    # Get visual prompt and gestures
-    # Use custom_prompt if AI is disabled, otherwise use AI optimization
-    custom_prompt = getattr(config, 'custom_prompt', '') or ''
-    
-    if custom_prompt and not config.use_openai_prompt_tuning:
-        # User provided custom prompt
-        visual_prompt = custom_prompt
-        gesture_notes = ""
-        performance = ""
-    elif config.use_openai_prompt_tuning:
-        # AI-generated prompt
-        user_context = getattr(config, 'user_context', '') or ''
-        visual_prompt, gesture_notes = optimize_visual_prompt(
-            BASE_PROMPT, dialogue_line, start_desc, end_desc, language, openai_key, user_context
-        )
-        performance = generate_performance_modifiers(dialogue_line, language, openai_key, user_context)
-    else:
-        # Fallback to base prompt
-        visual_prompt = BASE_PROMPT
-        gesture_notes = ""
-        performance = ""
-    
-    # Process user context into structured Veo-style directions
-    user_context = getattr(config, 'user_context', '') or ''
-    context_directions = process_user_context(user_context, language, openai_key) if user_context else {}
-    
-    # Build JSON payload
+
+    # === 3. TRANSLATION: Build visual description ===
+    visual_description = build_visual_description(
+        BASE_PROMPT, start_desc, enriched_context, dialogue_line, language, openai_key
+    ) if config.use_openai_prompt_tuning else f"{BASE_PROMPT}. {user_context_raw}"
+
+    # === 4. ROUTING: Assemble JSON Blueprint ===
     prompt_payload = {
-        "audio_language": (
-            f"CRITICAL AUDIO INSTRUCTION: The speaker MUST speak in {language} with a native {language} accent. "
-            f"IGNORE any text visible in the image - the SPOKEN language must be {language} regardless of any on-screen text. "
-            f"The voice must sound like a native {language} speaker, NOT influenced by any foreign text visible in the scene."
-        ),
+        # --- TIER 1: SHOT (Architectural Decisions) ---
         "shot": {
-            "description": visual_prompt,
-            "visual_direction": context_directions.get("visual_direction", ""),
-            "camera_direction": context_directions.get("camera_direction", ""),
+            "description": visual_description,  # Primary anchor with context baked in
+            "camera_motion": enriched_context.get("camera_motion", "Smooth cinematic movement"),
+            "composition": "Medium shot, subject centered",
+            "aspect_ratio": config.aspect_ratio.value if hasattr(config.aspect_ratio, 'value') else config.aspect_ratio
         },
+
+        # --- TIER 2: SUBJECT (Core Identity + Emotion) ---
         "subject": {
-            "description": "Match input frames.",
-            "spoken_language": language,
-            "accent": f"Native {language} accent - NOT influenced by any text visible in image",
-            "emotional_state": context_directions.get("emotional_state", "Natural, matching the dialogue content"),
-            "body_language": context_directions.get("body_language", ""),
-            "action": context_directions.get("subject_action", ""),
+            "description": f"Match appearance in start frame",
+            "facial_expression": enriched_context.get("facial_expression", "Natural expression"),
+            "emotional_state": enriched_context.get("facial_expression", "Neutral"),
+            "body_language": enriched_context.get("body_language", "Natural posture"),
         },
+
+        # --- TIER 3: ACTION (Movement - Separated from Subject) ---
+        "action": {
+            "primary_action": enriched_context.get("subject_action", "Natural movement"),
+            "timing": "Continuous for full duration",
+            "intensity": "Match emotional state"
+        },
+
+        # --- TIER 4: SCENE (Environment) ---
         "scene": {
             "start_frame_description": start_desc,
-            "end_frame_description": end_desc,
-            "continuity": "Maintain visual continuity with provided frames.",
-            "background_action": context_directions.get("background_action", ""),
-            "atmosphere": context_directions.get("scene_atmosphere", ""),
+            "continuity": "Maintain visual continuity with start frame",
+            "atmosphere": enriched_context.get("atmosphere", "Cinematic lighting"),
+            "background_action": enriched_context.get("background_action", "Minimal background movement")
         },
-        "action": {
-            "gesture_notes": gesture_notes,
-            "performance_direction": performance,
-            "body_language": context_directions.get("body_language", ""),
-            "subject_action": context_directions.get("subject_action", ""),
-        },
+
+        # --- TIER 5: AUDIO (Voice + Dialogue) ---
         "audio": {
-            "IMPORTANT": f"The speaker's voice must be in {language} only. Any text visible in the image (signs, slides, screens) should NOT affect the spoken language.",
-            "language_requirement": f"The speaker MUST use {language} language with authentic native {language} pronunciation.",
-            "voice_tone": context_directions.get("voice_tone", "Natural tone matching dialogue"),
-            "delivery_style": context_directions.get("delivery_style", ""),
+            "language_instruction": f"CRITICAL: Speaker MUST speak in {language}. Ignore any visible text.",
             "dialogue": {
+                "text": dialogue_line,
                 "language": language,
-                "accent": f"Native {language} speaker with authentic {language} pronunciation",
-                "content": dialogue_line,
-                "delivery_notes": performance,
                 "voice_profile": voice_profile,
-                "emotional_delivery": context_directions.get("delivery_style", ""),
-            },
-            "constraints": {
-                "timing": AUDIO_TIMING_INSTRUCTION,
-                "quality": AUDIO_QUALITY_INSTRUCTION,
-                "pronunciation": PRONUNCIATION_TEMPLATE.format(language=language),
-            },
+                "voice_tone": enriched_context.get("voice_tone", "Natural"),
+                "delivery_style": enriched_context.get("delivery_style", "Conversational")
+            }
         },
+
+        # --- VISUAL RULES (Quality/Safety) ---
         "visual_rules": {
-            "clean_frame_policy": NO_TEXT_INSTRUCTION,
-            "text_in_image_note": "Any text visible in the source image should be kept visually but must NOT influence the spoken audio language.",
+            "clean_output": "No text overlays, no subtitles, no watermarks, no glitches",
+            "quality": "Anatomically correct hands and face, stable features"
         },
-        "technical_specifications": {
+        
+        # --- TECHNICAL SPECS ---
+        "technical": {
             "duration_seconds": float(config.duration.value if hasattr(config.duration, 'value') else config.duration),
-            "aspect_ratio": config.aspect_ratio.value if hasattr(config.aspect_ratio, 'value') else config.aspect_ratio,
             "resolution": config.resolution.value if hasattr(config.resolution, 'value') else config.resolution,
-        },
-        "meta": {
-            "clip_index": clip_index,
-            "language": language,
-            "start_frame": start_frame_path.name,
-            "end_frame": end_frame_path.name if end_frame_path else None,
         }
     }
-    
+
+    # Add end frame reference if interpolation is on
+    if end_frame_path and config.use_interpolation:
+        prompt_payload["scene"]["end_frame"] = "Transition smoothly to end frame"
+
     prompt_json = json.dumps(prompt_payload, ensure_ascii=False)
-    vlog(f"[build_prompt] Voice profile being used: {voice_profile[:200] if voice_profile else 'None'}...")
-    vlog(f"[build_prompt] Final prompt (first 500 chars): {prompt_json[:500]}...")
+    vlog(f"[ROUTING] Final JSON prompt ({len(prompt_json)} chars)")
+    vlog(f"[ROUTING] User context: '{user_context_raw}'")
+    vlog(f"[ROUTING] Enriched action: '{enriched_context.get('subject_action', 'none')}'")
+    vlog(f"[ROUTING] Enriched expression: '{enriched_context.get('facial_expression', 'none')}'")
+    
     return prompt_json
 
 
@@ -669,7 +546,6 @@ def generate_output_filename(
 
 # ===================== CALLBACK TYPE =====================
 
-# Progress callback signature: (clip_index, status, message, details)
 ProgressCallback = Callable[[int, str, str, Optional[Dict]], None]
 
 
@@ -677,15 +553,12 @@ ProgressCallback = Callable[[int, str, str, Optional[Dict]], None]
 
 class VeoGenerator:
     """
-    Video generator class with progress callbacks and error handling.
+    Video generator with Enrichment -> Translation -> Routing workflow.
     
     Usage:
         generator = VeoGenerator(config, api_keys)
         generator.on_progress = my_callback_function
-        
-        for clip in generator.generate_all(images_dir, dialogue_lines, output_dir):
-            # clip contains result info
-            pass
+        result = generator.generate_single_clip(...)
     """
     
     def __init__(
@@ -713,10 +586,7 @@ class VeoGenerator:
     def _get_client(self) -> 'genai.Client':
         """Get or create Gemini client"""
         if not GENAI_AVAILABLE:
-            raise RuntimeError(
-                "google-genai package not installed. "
-                "Install with: pip install google-genai"
-            )
+            raise RuntimeError("google-genai package not installed.")
         
         api_key = self.api_keys.get_current_gemini_key()
         if not api_key:
@@ -724,13 +594,12 @@ class VeoGenerator:
         return genai.Client(api_key=api_key)
     
     def _rotate_key(self, block_current: bool = True):
-        """Rotate to next API key, blocking current one if specified"""
+        """Rotate to next API key"""
         old_index = self.api_keys.current_key_index
         old_key = self.api_keys.get_current_gemini_key()
         old_suffix = old_key[-8:] if old_key else "?"
         num_keys = len(self.api_keys.gemini_api_keys)
         
-        # Block current key for 12 hours if requested
         self.api_keys.rotate_key(block_current=block_current)
         
         new_index = self.api_keys.current_key_index
@@ -740,20 +609,14 @@ class VeoGenerator:
             new_suffix = new_key[-8:]
             available = self.api_keys.get_available_key_count()
             blocked = len(self.api_keys.blocked_keys)
-            print(f"[VeoGenerator] 🔄 KEY ROTATION: {old_index+1}(...{old_suffix}) -> {new_index+1}(...{new_suffix})", flush=True)
-            print(f"[VeoGenerator]    Available: {available}/{num_keys} keys, Blocked: {blocked}", flush=True)
+            vlog(f"[VeoGenerator] 🔄 KEY ROTATION: {old_index+1}(...{old_suffix}) -> {new_index+1}(...{new_suffix})")
+            vlog(f"[VeoGenerator]    Available: {available}/{num_keys}, Blocked: {blocked}")
         else:
-            print(f"[VeoGenerator] ⚠️ ALL KEYS BLOCKED! No available keys.", flush=True)
+            vlog(f"[VeoGenerator] ⚠️ ALL KEYS BLOCKED!")
         
-        self.client = None  # Force new client
+        self.client = None
     
-    def _emit_progress(
-        self, 
-        clip_index: int, 
-        status: str, 
-        message: str,
-        details: Dict = None
-    ):
+    def _emit_progress(self, clip_index: int, status: str, message: str, details: Dict = None):
         """Emit progress update"""
         if self.on_progress:
             self.on_progress(clip_index, status, message, details)
@@ -774,13 +637,9 @@ class VeoGenerator:
         images_list: List[Path],
         current_end_index: int,
     ) -> Dict[str, Any]:
-        """
-        Generate a single video clip with retry logic.
+        """Generate a single video clip with retry logic."""
         
-        Returns:
-            Dict with keys: success, output_path, end_frame_used, end_index, error
-        """
-        vlog(f"[VeoGenerator] generate_single_clip called: clip_index={clip_index}, dialogue='{dialogue_line[:50]}...'")
+        vlog(f"[VeoGenerator] Generating clip {clip_index}: '{dialogue_line[:50]}...'")
         
         result = {
             "success": False,
@@ -791,15 +650,11 @@ class VeoGenerator:
             "prompt_text": None,
         }
         
-        # Check if genai is available
         if not GENAI_AVAILABLE:
             result["error"] = VeoError(
                 code=ErrorCode.UNKNOWN,
-                message="google-genai package not installed",
-                user_message="Video generation SDK not installed. Install with: pip install google-genai",
-                details={"hint": "You may need to install Rust first if compilation fails"},
-                recoverable=False,
-                suggestion="Install the google-genai package to enable video generation"
+                message="google-genai not installed",
+                recoverable=False
             )
             return result
         
@@ -808,8 +663,9 @@ class VeoGenerator:
             if self.config.use_openai_prompt_tuning:
                 start_desc = describe_frame(str(start_frame), self.openai_key)
                 user_context = getattr(self.config, 'user_context', '') or ''
+                enriched = process_user_context(user_context, self.config.language, self.openai_key)
                 self.voice_profile = generate_voice_profile(
-                    start_desc, self.config.language, self.openai_key, user_context
+                    start_desc, self.config.language, enriched, self.openai_key
                 )
             else:
                 self.voice_profile = get_default_voice_profile(self.config.language)
@@ -820,14 +676,7 @@ class VeoGenerator:
         
         while attempts < self.config.max_retries_per_clip:
             if self.cancelled:
-                result["error"] = VeoError(
-                    code=ErrorCode.UNKNOWN,
-                    message="Cancelled by user",
-                    user_message="Generation was cancelled.",
-                    details={},
-                    recoverable=False,
-                    suggestion="Start a new job to continue."
-                )
+                result["error"] = VeoError(code=ErrorCode.UNKNOWN, message="Cancelled", recoverable=False)
                 return result
             
             while self.paused:
@@ -843,53 +692,22 @@ class VeoGenerator:
                 actual_end_index = current_end_index
             else:
                 next_result = get_next_clean_image(
-                    current_attempt_end_index,
-                    images_list,
-                    self.blacklist,
-                    self.config.max_image_attempts
+                    current_attempt_end_index, images_list, self.blacklist, self.config.max_image_attempts
                 )
                 
                 if next_result is None:
-                    self._emit_progress(
-                        clip_index, "error",
-                        "No clean images available",
-                        {"failed_frames": [f.name for f in failed_end_frames]}
-                    )
-                    
                     if len(failed_end_frames) >= 2:
                         self.blacklist.add(start_frame)
-                        result["error"] = VeoError(
-                            code=ErrorCode.ALL_IMAGES_BLACKLISTED,
-                            message=f"Start frame blacklisted after multiple failures: {start_frame.name}",
-                            user_message="Multiple frames failed. The start image may have issues.",
-                            details={"start_frame": start_frame.name},
-                            recoverable=False,
-                            suggestion="Try with different source images."
-                        )
-                    
                     return result
                 
                 actual_end_index, actual_end_frame = next_result
                 current_attempt_end_index = actual_end_index
-                
-                if attempts > 1:
-                    self._emit_progress(
-                        clip_index, "retrying",
-                        f"Retry #{attempts}: Using {actual_end_frame.name}",
-                        {"attempt": attempts, "end_frame": actual_end_frame.name}
-                    )
             
-            # Build prompt
+            # Build prompt using Enrichment -> Translation -> Routing
             try:
                 prompt_text = build_prompt(
-                    dialogue_line,
-                    start_frame,
-                    actual_end_frame,
-                    clip_index,
-                    self.config.language,
-                    self.voice_profile,
-                    self.config,
-                    self.openai_key,
+                    dialogue_line, start_frame, actual_end_frame, clip_index,
+                    self.config.language, self.voice_profile, self.config, self.openai_key
                 )
                 result["prompt_text"] = prompt_text
             except Exception as e:
@@ -917,7 +735,6 @@ class VeoGenerator:
                     )
             except Exception as e:
                 error = error_handler.classify_exception(e, {"stage": "image_loading"})
-                self._emit_error(error)
                 result["error"] = error
                 return result
             
@@ -927,20 +744,15 @@ class VeoGenerator:
                 {"start": start_frame.name, "end": actual_end_frame.name if actual_end_frame else None}
             )
             
-            # Submit job with retries
+            # Submit to Veo API
             operation = None
-            vlog(f"[VeoGenerator] Attempting to submit clip {clip_index} to Veo API...")
             for submit_attempt in range(1, self.config.max_retries_submit + 1):
                 try:
                     client = self._get_client()
-                    vlog(f"[VeoGenerator] Got client, preparing config...")
                     
-                    # Handle both enum and string config values
                     aspect = self.config.aspect_ratio.value if hasattr(self.config.aspect_ratio, 'value') else self.config.aspect_ratio
                     res = self.config.resolution.value if hasattr(self.config.resolution, 'value') else self.config.resolution
                     dur = self.config.duration.value if hasattr(self.config.duration, 'value') else self.config.duration
-                    
-                    vlog(f"[VeoGenerator] Config: aspect={aspect}, res={res}, dur={dur}")
                     
                     cfg = types.GenerateVideosConfig(
                         aspect_ratio=aspect,
@@ -957,170 +769,105 @@ class VeoGenerator:
                     except Exception:
                         pass
                     
-                    vlog(f"[VeoGenerator] Submitting to Veo API (attempt {submit_attempt})...")
+                    vlog(f"[VeoGenerator] Submitting to Veo (attempt {submit_attempt})...")
                     operation = client.models.generate_videos(
                         model=VEO_MODEL,
                         prompt=prompt_text,
                         image=start_image,
                         config=cfg,
                     )
-                    vlog(f"[VeoGenerator] Submit successful! Operation: {operation.name if hasattr(operation, 'name') else operation}")
+                    vlog(f"[VeoGenerator] Submit OK!")
                     break
                     
                 except Exception as e:
-                    vlog(f"[VeoGenerator] Submit error (attempt {submit_attempt}): {type(e).__name__}: {str(e)[:500]}")
+                    vlog(f"[VeoGenerator] Submit error: {str(e)[:200]}")
                     if is_rate_limit_error(e) and submit_attempt < self.config.max_retries_submit:
-                        num_keys = len(self.api_keys.gemini_api_keys)
-                        
                         if self.api_keys.rotate_keys_on_429:
-                            # Block current key for 12 hours and rotate to next
                             self._rotate_key(block_current=True)
                         
-                        # Check if all keys are blocked
-                        available_keys = self.api_keys.get_available_key_count()
-                        if available_keys == 0:
-                            self._emit_progress(
-                                clip_index, "all_keys_blocked",
-                                f"❌ All {num_keys} API keys are blocked (quota exhausted). Please wait or add new keys.",
-                                {"attempt": submit_attempt, "blocked_keys": num_keys}
-                            )
-                            error = VeoError(
-                                code=ErrorCode.RATE_LIMITED,
-                                message=f"All {num_keys} API keys are blocked for 12 hours (quota exhausted)",
-                                recoverable=False
-                            )
+                        available = self.api_keys.get_available_key_count()
+                        if available == 0:
+                            error = VeoError(code=ErrorCode.RATE_LIMITED, message="All keys blocked", recoverable=False)
                             self._emit_error(error)
                             break
                         
-                        blocked_count = len(self.api_keys.blocked_keys)
+                        blocked = len(self.api_keys.blocked_keys)
                         self._emit_progress(
                             clip_index, "rate_limited",
-                            f"Key blocked, trying next... ({available_keys} available, {blocked_count} blocked)",
-                            {"attempt": submit_attempt, "available": available_keys, "blocked": blocked_count}
+                            f"Key blocked, trying next... ({available} available, {blocked} blocked)",
+                            {"available": available, "blocked": blocked}
                         )
-                        
                         continue
                     
-                    error = error_handler.classify_exception(e, {"stage": "submit"})
-                    self._emit_error(error)
                     failed_end_frames.append(actual_end_frame)
                     break
             
             if operation is None:
-                vlog(f"[VeoGenerator] No operation returned, continuing to next attempt...")
                 continue
             
             # Poll for completion
-            vlog(f"[VeoGenerator] Polling for operation completion...")
             try:
                 client = self._get_client()
-                poll_count = 0
                 while not operation.done:
                     if self.cancelled:
                         return result
                     time.sleep(self.config.poll_interval_sec)
                     operation = client.operations.get(operation)
-                    poll_count += 1
-                    if poll_count % 10 == 0:
-                        vlog(f"[VeoGenerator] Still polling... ({poll_count} polls)")
-                vlog(f"[VeoGenerator] Operation completed after {poll_count} polls")
-                print(f"[VeoGenerator] Polling complete, checking operation result...", flush=True)
             except Exception as e:
-                vlog(f"[VeoGenerator] Polling error: {type(e).__name__}: {str(e)[:200]}")
-                error = error_handler.classify_exception(e, {"stage": "polling"})
-                self._emit_error(error)
                 failed_end_frames.append(actual_end_frame)
                 continue
             
-            # Check for errors in response
-            vlog(f"[VeoGenerator] Checking operation for errors...")
+            # Check for errors
             veo_error = error_handler.classify_veo_operation(
-                operation, 
-                {"clip_index": clip_index, "end_frame": actual_end_frame.name if actual_end_frame else None}
+                operation, {"clip_index": clip_index}
             )
             
             if veo_error:
-                vlog(f"[VeoGenerator] Veo operation error: {veo_error.code} - {veo_error.message}")
-                vlog(f"[VeoGenerator] Operation response: {operation}")
                 self._emit_error(veo_error)
-                
-                if veo_error.code == ErrorCode.CELEBRITY_FILTER:
-                    if actual_end_frame:
-                        self.blacklist.add(actual_end_frame)
-                        self._emit_progress(
-                            clip_index, "blacklisted",
-                            f"Blacklisted: {actual_end_frame.name}",
-                            {"image": actual_end_frame.name, "reason": "celebrity_filter"}
-                        )
-                
+                if veo_error.code == ErrorCode.CELEBRITY_FILTER and actual_end_frame:
+                    self.blacklist.add(actual_end_frame)
                 failed_end_frames.append(actual_end_frame)
-                
-                if len(failed_end_frames) >= 2 and veo_error.code == ErrorCode.CELEBRITY_FILTER:
-                    self.blacklist.add(start_frame)
-                    result["error"] = veo_error
-                    return result
-                
                 continue
             
             # Success! Download video
             try:
-                vlog(f"[VeoGenerator] Success! Downloading video...")
                 resp = getattr(operation, "response", None)
                 vids = getattr(resp, "generated_videos", None) if resp else None
                 
-                if not vids or len(vids) == 0:
-                    vlog(f"[VeoGenerator] No videos in response! resp={resp}")
+                if not vids:
                     failed_end_frames.append(actual_end_frame)
                     continue
                 
                 video = vids[0]
-                vlog(f"[VeoGenerator] Got video, saving to disk...")
-                
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S") if self.config.timestamp_names else ""
-                output_filename = generate_output_filename(
-                    dialogue_id, start_frame, actual_end_frame, timestamp
-                )
+                output_filename = generate_output_filename(dialogue_id, start_frame, actual_end_frame, timestamp)
                 output_path = output_dir / output_filename
                 
                 client = self._get_client()
                 client.files.download(file=video.video)
                 video.video.save(str(output_path))
-                vlog(f"[VeoGenerator] Saved to: {output_path}")
                 
                 result["success"] = True
                 result["output_path"] = output_path
                 result["end_frame_used"] = actual_end_frame
                 result["end_index"] = actual_end_index
                 
-                self._emit_progress(
-                    clip_index, "completed",
-                    f"Saved: {output_filename}",
-                    {"output": output_filename}
-                )
-                
+                self._emit_progress(clip_index, "completed", f"Saved: {output_filename}", {"output": output_filename})
                 return result
                 
             except Exception as e:
-                error = error_handler.classify_exception(e, {"stage": "download"})
-                self._emit_error(error)
                 failed_end_frames.append(actual_end_frame)
                 continue
         
         # Exhausted retries
-        vlog(f"[VeoGenerator] Exhausted retries for clip {clip_index}. Failed frames: {[f.name for f in failed_end_frames]}")
         if len(failed_end_frames) >= 2:
             self.blacklist.add(start_frame)
         
         result["error"] = VeoError(
             code=ErrorCode.VIDEO_GENERATION_FAILED,
             message=f"Failed after {self.config.max_retries_per_clip} attempts",
-            user_message="Video generation failed after multiple retries.",
-            details={"attempts": attempts, "failed_frames": [f.name for f in failed_end_frames]},
-            recoverable=False,
-            suggestion="Try with different images or check your API quota."
+            recoverable=False
         )
-        
-        vlog(f"[VeoGenerator] Returning error result for clip {clip_index}")
         
         return result
     

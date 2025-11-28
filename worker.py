@@ -21,7 +21,8 @@ import traceback
 
 from config import (
     JobStatus, ClipStatus, VideoConfig, APIKeysConfig, 
-    DialogueLine, app_config, get_gemini_keys_from_env, get_openai_key_from_env
+    DialogueLine, app_config, get_gemini_keys_from_env, get_openai_key_from_env,
+    api_keys_config  # Global singleton for persistent key blocking
 )
 from models import (
     get_db, Job, Clip, JobLog, BlacklistEntry, GenerationLog,
@@ -32,25 +33,29 @@ from error_handler import VeoError, error_handler
 
 
 def get_api_keys_with_fallback(api_keys_json: str = None) -> APIKeysConfig:
-    """Get API keys from job data, falling back to environment variables."""
+    """Get API keys - uses global singleton to persist blocked keys state."""
+    global api_keys_config
+    
     api_keys_data = json.loads(api_keys_json) if api_keys_json else {}
     gemini_keys = api_keys_data.get("gemini_keys", [])
     openai_key = api_keys_data.get("openai_key")
     
-    # If no keys provided, use from environment
-    if not gemini_keys:
-        gemini_keys = get_gemini_keys_from_env()
-        print(f"[Worker] ✅ Loaded {len(gemini_keys)} Gemini keys from environment", flush=True)
-        for i, key in enumerate(gemini_keys):
-            print(f"[Worker]    Key {i+1}: ...{key[-8:]}", flush=True)
-    if not openai_key:
-        openai_key = get_openai_key_from_env()
+    # If job provides keys, update the global config (but keep blocked state)
+    if gemini_keys:
+        # Only update if different keys provided
+        if gemini_keys != api_keys_config.gemini_api_keys:
+            api_keys_config.gemini_api_keys = gemini_keys
+            print(f"[Worker] Updated Gemini keys from job: {len(gemini_keys)} keys", flush=True)
     
-    return APIKeysConfig(
-        gemini_api_keys=gemini_keys,
-        openai_api_key=openai_key,
-    )
-
+    if openai_key:
+        api_keys_config.openai_api_key = openai_key
+    
+    # Log current state
+    available = api_keys_config.get_available_key_count()
+    blocked = len(api_keys_config.blocked_keys)
+    print(f"[Worker] API Keys: {available} available, {blocked} blocked", flush=True)
+    
+    return api_keys_config
 
 class JobWorker:
     """
