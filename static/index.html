@@ -1466,6 +1466,13 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 const linesList = document.getElementById('dialogueInput').value.trim().split('\n').filter(l=>l.trim());
                 const numClips = linesList.length;
                 
+                // DEBUG: Log current state
+                console.log('=== CREATE JOB DEBUG ===');
+                console.log('Editor mode:', editorMode);
+                console.log('Num images:', numImages);
+                console.log('Num clips:', numClips);
+                console.log('Scene breaks:', JSON.stringify(sceneBreaks));
+                
                 // Prepare the lines payload with image assignments
                 const lines = linesList.map((l, i) => {
                     // Parse ID|Text
@@ -1485,12 +1492,12 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     if(numImages > 1){
                         if(editorMode === 'storyboard' && sceneBreaks.length > 0){
                             // === STORYBOARD MODE: Use sceneBreaks directly ===
-                            // Find which scene this line belongs to
                             // sceneBreaks is sorted by lineIndex
-                            // Each scene covers from its lineIndex to the next scene's lineIndex - 1
+                            // Find which scene this line belongs to by checking from last to first
                             for(let s = sceneBreaks.length - 1; s >= 0; s--){
                                 if(i >= sceneBreaks[s].lineIndex){
                                     imageIdx = sceneBreaks[s].imgIndex;
+                                    console.log(`Line ${i}: matched sceneBreak[${s}] (lineIndex=${sceneBreaks[s].lineIndex}, imgIndex=${sceneBreaks[s].imgIndex})`);
                                     break;
                                 }
                             }
@@ -1500,7 +1507,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
                         }
                     }
                     
-                    console.log(`Line ${i}: imageIdx = ${imageIdx} (mode: ${editorMode})`);
+                    console.log(`Line ${i} ("${text.substring(0,30)}..."): start_image_idx = ${imageIdx}`);
                     
                     return {
                         id: id,
@@ -1509,13 +1516,13 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     };
                 }).filter(l => l.text);
                 
+                console.log('Final lines payload:', JSON.stringify(lines, null, 2));
+                
                 if(!lines.length)throw new Error('Add dialogue lines');
                 if(!uploadedImages.length)throw new Error('Upload at least 1 reference image');
                 const useAI=document.getElementById('togAI').dataset.value==='true',customPrompt=document.getElementById('customPrompt')?.value?.trim()||'',contextInput=document.getElementById('contextInput')?.value?.trim()||'';
                 if(!useAI&&!customPrompt)throw new Error('Enter a custom prompt or enable AI Prompts');
                 const cfg={aspect_ratio:getSelectedAspect(),resolution:getSelectedResolution(),duration:document.getElementById('duration').value,language:document.getElementById('language').value,use_interpolation:document.getElementById('togInterp').dataset.value==='true',use_openai_prompt_tuning:useAI,use_frame_vision:useAI,custom_prompt:useAI?'':customPrompt,user_context:useAI?contextInput:'',single_image_mode:uploadedImages.length===1,max_retries_per_clip:5,parallel_clips:3};
-                
-                console.log('Sending lines with image assignments:', lines);
                 
                 const r=await fetch(`${API}/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:cfg,dialogue_lines:lines,api_keys:{gemini_keys:[],openai_key:null},job_id:uploadJobId})});
                 if(!r.ok){const e=await r.json();throw new Error(e.detail?.errors?.join(', ')||e.detail||'Failed');}

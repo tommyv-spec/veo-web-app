@@ -546,12 +546,15 @@ class JobWorker:
                 # Check if frontend sent a specific image assignment (storyboard mode)
                 forced_idx = line_data.get("start_image_idx")
                 
+                print(f"[Worker] Clip {i} received: start_image_idx={forced_idx}, text='{line_data.get('text', '')[:40]}...'", flush=True)
+                
                 if single_image_mode:
                     # All clips use the same image
                     start_idx = 0
                     end_idx = 0
                     start_frame_name = images[0].name
                     end_frame_name = images[0].name if use_interpolation else None
+                    print(f"[Worker] Clip {i}: SINGLE IMAGE MODE → img[0]", flush=True)
                 elif forced_idx is not None:
                     # === USE STORYBOARD MAPPING ===
                     # UI specified which image this line belongs to
@@ -568,7 +571,7 @@ class JobWorker:
                     
                     start_frame_name = images[start_idx].name
                     end_frame_name = images[end_idx].name if use_interpolation else None
-                    print(f"[Worker] Clip {i}: STORYBOARD mapping → img[{start_idx}] to img[{end_idx}]", flush=True)
+                    print(f"[Worker] Clip {i}: STORYBOARD mapping forced_idx={forced_idx} → img[{start_idx}] ({start_frame_name}) to img[{end_idx}] ({end_frame_name})", flush=True)
                 else:
                     # Fallback: Sequential pairing (old round-robin logic)
                     pair_idx = i % num_pairs
@@ -587,6 +590,7 @@ class JobWorker:
                     
                     start_frame_name = images[start_idx].name
                     end_frame_name = images[end_idx].name if use_interpolation else None
+                    print(f"[Worker] Clip {i}: FALLBACK (no forced_idx) → img[{start_idx}] to img[{end_idx}]", flush=True)
                 
                 # Create clip with frame info stored
                 clip = Clip(
