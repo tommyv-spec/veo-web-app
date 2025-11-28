@@ -230,6 +230,11 @@
         .validation-summary.has-issues { background: rgba(239, 68, 68, 0.15); color: var(--error); }
         
         .logs { max-height: 140px; overflow-y: auto; background: var(--bg-input); border-radius: var(--radius-sm); padding: 8px; font-family: 'JetBrains Mono', monospace; font-size: 10px; margin-top: 12px; }
+        .alert-banner { background: linear-gradient(135deg, #dc2626 0%, #991b1b 100%); color: white; padding: 16px; border-radius: var(--radius-md); margin-bottom: 16px; text-align: center; animation: pulse 2s infinite; }
+        .alert-banner h4 { margin: 0 0 8px 0; font-size: 16px; }
+        .alert-banner p { margin: 0; font-size: 13px; opacity: 0.9; }
+        .alert-banner a { color: white; text-decoration: underline; font-weight: 600; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.8; } }
         .log { padding: 4px 0; display: flex; gap: 10px; border-bottom: 1px solid var(--border-color); }
         .log:last-child { border: none; }
         .log-time { color: var(--text-muted); }
@@ -701,6 +706,50 @@ Example: A realistic vertical video of a professional presenter speaking directl
         function cancelJob(id){if(!confirm('Cancel?'))return;fetch(`${API}/jobs/${id}/cancel`,{method:'POST'}).then(()=>{loadJob(id);refreshJobsList();});}
         function deleteJob(id){if(!confirm('Delete?'))return;document.getElementById('jobDetails').style.display='none';document.getElementById('noJob').style.display='block';selectedJobId=null;fetch(`${API}/jobs/${id}`,{method:'DELETE'}).then(()=>refreshJobsList());}
         function downloadAll(id){fetch(`${API}/jobs/${id}/outputs?approved_only=true`).then(r=>r.json()).then(d=>{if(d.videos.length===0){alert('No approved clips to download');return;}d.videos.forEach((v,i)=>{setTimeout(()=>{const a=document.createElement('a');a.href=v.url;a.download=v.filename;a.click();},i*500);});});}
+        
+        function showKeysExhaustedAlert(data){
+            removeAlert();
+            const alert=document.createElement('div');
+            alert.id='keysAlert';
+            alert.className='alert-banner';
+            alert.innerHTML=`<h4>⚠️ API Keys Exhausted</h4><p>${data.message}</p>`;
+            document.querySelector('.results-panel .card')?.prepend(alert);
+        }
+        function showContactSupportAlert(data){
+            removeAlert();
+            const alert=document.createElement('div');
+            alert.id='keysAlert';
+            alert.className='alert-banner';
+            alert.innerHTML=`<h4>🚨 Generation Failed - No API Keys</h4><p>${data.message}</p><p style="margin-top:8px"><a href="mailto:support@example.com">Contact Support</a> to resolve this issue.</p>`;
+            document.querySelector('.results-panel .card')?.prepend(alert);
+        }
+        function removeAlert(){document.getElementById('keysAlert')?.remove();}
+        
+        // Poll for special events (keys exhausted, etc.)
+        async function checkJobEvents(jobId){
+            try{
+                const r=await fetch(`${API}/jobs/${jobId}/logs?limit=10`);
+                if(!r.ok)return;
+                const logs=await r.json();
+                for(const log of logs){
+                    if(log.message.includes('API keys exhausted') && log.message.includes('Waiting')){
+                        showKeysExhaustedAlert({message:log.message});
+                        return;
+                    }
+                    if(log.message.includes('Job failed') && log.message.includes('contact support')){
+                        showContactSupportAlert({message:log.message});
+                        return;
+                    }
+                }
+                // No alert conditions, remove any existing alert
+                const job=await(await fetch(`${API}/jobs/${jobId}`)).json();
+                if(job.status==='completed'||job.status==='running')removeAlert();
+            }catch(e){}
+        }
+        
+        // Add to polling
+        const origLoadJob=loadJob;
+        loadJob=async function(id){await origLoadJob(id);await checkJobEvents(id);};
         
         refreshJobs();
     </script>
