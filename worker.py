@@ -557,6 +557,9 @@ class JobWorker:
         print(f"[Worker] Image assignment: {num_images} images, {total_clips} clips, interpolation={use_interpolation}", flush=True)
         print(f"[Worker] Available image pairs: {num_pairs}", flush=True)
         
+        # Debug: Print raw dialogue data
+        print(f"[Worker] Raw dialogue_data: {json.dumps(dialogue_data, indent=2)}", flush=True)
+        
         with get_db() as db:
             # Create clip records with frame assignments
             for i, line_data in enumerate(dialogue_data):
@@ -621,27 +624,45 @@ class JobWorker:
             
             db.commit()
         
-        # Pre-calculate frame assignments for processing (using stored values)
+        # Pre-calculate frame assignments for processing
+        # Read from the Clip records we just created (which have correct storyboard assignments)
         clip_frames = []
-        for i in range(total_clips):
-            if single_image_mode:
+        with get_db() as db:
+            clips = db.query(Clip).filter(Clip.job_id == job_id).order_by(Clip.clip_index).all()
+            
+            for clip in clips:
+                # Find the image files by name
+                start_frame = None
+                end_frame = None
                 start_idx = 0
                 end_idx = 0
-            else:
-                pair_idx = i % num_pairs
-                if use_interpolation:
-                    start_idx = pair_idx
-                    end_idx = pair_idx + 1 if pair_idx + 1 < num_images else 0
-                else:
-                    start_idx = pair_idx
-                    end_idx = pair_idx
-            
-            clip_frames.append({
-                "start_index": start_idx,
-                "start_frame": images[start_idx],
-                "end_index": end_idx,
-                "end_frame": images[end_idx] if use_interpolation else None,
-            })
+                
+                for idx, img in enumerate(images):
+                    if img.name == clip.start_frame:
+                        start_frame = img
+                        start_idx = idx
+                    if clip.end_frame and img.name == clip.end_frame:
+                        end_frame = img
+                        end_idx = idx
+                
+                # Fallback if not found
+                if not start_frame:
+                    start_frame = images[0]
+                    start_idx = 0
+                
+                # For interpolation with same image, use same frame for both
+                if use_interpolation and not end_frame:
+                    end_frame = start_frame
+                    end_idx = start_idx
+                
+                clip_frames.append({
+                    "start_index": start_idx,
+                    "start_frame": start_frame,
+                    "end_index": end_idx,
+                    "end_frame": end_frame if use_interpolation else None,
+                })
+                
+                print(f"[Worker] clip_frames[{clip.clip_index}]: {start_frame.name} → {end_frame.name if end_frame else 'None'}", flush=True)
         
         # Queue of pending clip indices
         pending_clips = list(range(total_clips))

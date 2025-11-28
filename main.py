@@ -361,11 +361,15 @@ async def create_job(
     config_dict = config.model_dump()
     print(f"[main.py] Creating job with config: language={config_dict.get('language')}, user_context='{config_dict.get('user_context', '')[:50] if config_dict.get('user_context') else 'empty'}'")
     
+    # Convert dialogue lines to dict, preserving start_image_idx
+    dialogue_list = [d.model_dump() for d in request.dialogue_lines]
+    print(f"[main.py] Dialogue lines with image assignments: {json.dumps(dialogue_list, indent=2)}")
+    
     job = Job(
         id=job_id,
         status=JobStatus.PENDING.value,
         config_json=json.dumps(config_dict),
-        dialogue_json=json.dumps([d.model_dump() for d in request.dialogue_lines]),
+        dialogue_json=json.dumps(dialogue_list),
         api_keys_json=json.dumps(api_keys_data),
         images_dir=str(images_dir),
         output_dir=str(output_dir),
