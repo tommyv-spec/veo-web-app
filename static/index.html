@@ -639,6 +639,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
         
         function selectJob(id){
             if(selectedJobId===id)return;selectedJobId=id;lastLogId=0;clipStates={};
+            setActiveState(); // Reopen Review panel when selecting a job
             document.getElementById('noJob').style.display='none';document.getElementById('jobDetails').style.display='block';
             document.getElementById('jobInfo').innerHTML='<div style="color:var(--text-muted)">Loading...</div>';
             document.getElementById('clipsList').innerHTML='<div style="color:var(--text-muted);text-align:center;padding:20px">Loading...</div>';

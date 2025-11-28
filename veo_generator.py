@@ -138,29 +138,42 @@ def generate_voice_profile(
     openai_key: Optional[str] = None,
     user_context: str = ""
 ) -> str:
-    """Generate voice profile from frame description"""
-    vlog(f"[generate_voice_profile] Generating voice profile for language: {language}")
+    """Generate voice profile from frame description and user context"""
+    vlog(f"[generate_voice_profile] Generating voice profile for language: {language}, context: {user_context[:50] if user_context else 'none'}")
     
     client = get_openai_client(openai_key)
     if client is None or not frame_description:
-        profile = get_default_voice_profile(language)
+        profile = get_default_voice_profile(language, user_context)
         vlog(f"[generate_voice_profile] Using default profile: {profile}")
         return profile
     
     try:
+        # Build context instruction
+        context_instruction = ""
+        if user_context:
+            context_instruction = f"""
+
+CRITICAL USER DIRECTION: {user_context}
+The voice profile MUST reflect this direction. For example:
+- If user says "angry" → voice should be sharp, loud, intense
+- If user says "whispering" → voice should be soft, breathy, quiet
+- If user says "nervous" → voice should be shaky, hesitant, higher pitch
+- If user says "sad" → voice should be soft, slow, lower energy
+This direction takes PRIORITY over assumptions from the image."""
+
         system_msg = (
             f"You are a voice casting director. Define voice characteristics for a person who will speak {language}.\n\n"
             f"CRITICAL: The voice MUST be a native {language} speaker with authentic {language} accent and pronunciation.\n"
             f"IMPORTANT: Ignore any text visible in the scene (signs, slides, screens) - the spoken language is {language} regardless of what text appears in the image.\n"
-            f"Focus on: gender, age range, voice quality, native {language} accent, pitch, tempo.\n\n"
-            f"OUTPUT FORMAT:\nVOICE_PROFILE:\n<2-3 sentences describing the voice as a native {language} speaker>\n"
+            f"Focus on: gender, age range, voice quality, native {language} accent, pitch, tempo, emotional tone, energy level.\n"
+            f"{context_instruction}\n\n"
+            f"OUTPUT FORMAT:\nVOICE_PROFILE:\n<2-3 sentences describing the voice as a native {language} speaker WITH the emotional/tonal qualities>\n"
         )
         
-        user_msg = f"FRAME: {frame_description}\nSPOKEN LANGUAGE (not text in image): {language}\nThe speaker must sound like a native {language} speaker. Any text visible in the scene does NOT affect the spoken language."
+        user_msg = f"FRAME: {frame_description}\nSPOKEN LANGUAGE (not text in image): {language}\nThe speaker must sound like a native {language} speaker."
         
-        # Add user context if provided
         if user_context:
-            user_msg += f"\n\nADDITIONAL CONTEXT ABOUT THE SPEAKER: {user_context}"
+            user_msg += f"\n\n⚠️ MUST APPLY THIS TO VOICE: {user_context}\nThe voice tone, energy, and emotion MUST match this direction!"
         
         resp = client.chat.completions.create(
             model=OPENAI_MODEL,
@@ -169,7 +182,7 @@ def generate_voice_profile(
                 {"role": "user", "content": user_msg},
             ],
             temperature=0.3,
-            max_tokens=250,
+            max_tokens=300,
         )
         
         raw = resp.choices[0].message.content.strip()
@@ -184,24 +197,24 @@ def generate_voice_profile(
         
     except Exception as e:
         vlog(f"[generate_voice_profile] Error: {e}")
-        return get_default_voice_profile(language)
+        return get_default_voice_profile(language, user_context)
 
 
-def get_default_voice_profile(language: str) -> str:
-    """Default voice profile"""
-    return (
-        f"A natural, conversational {language} voice with clear diction, "
-        f"native accent, precise word stress, and professional studio quality."
-    )
+def get_default_voice_profile(language: str, user_context: str = "") -> str:
+    """Default voice profile with optional context"""
+    base = f"A natural, conversational {language} voice with clear diction, native accent, precise word stress, and professional studio quality."
+    if user_context:
+        return f"{base} Emotional direction: {user_context}."
+    return base
 
 
 # ===================== PERFORMANCE MODIFIERS =====================
 
-@lru_cache(maxsize=512)
 def generate_performance_modifiers(
     dialogue_line: str, 
     language: str,
-    openai_key: Optional[str] = None
+    openai_key: Optional[str] = None,
+    user_context: str = ""
 ) -> str:
     """Analyze dialogue for performance direction"""
     client = get_openai_client(openai_key)
@@ -209,18 +222,28 @@ def generate_performance_modifiers(
         return ""
     
     try:
+        # Build context-aware system message
+        context_instruction = ""
+        if user_context:
+            context_instruction = f"\n\nCRITICAL USER DIRECTION: {user_context}\nThe performance MUST reflect this direction. This overrides any default interpretation."
+        
         system_msg = (
             "You are a voice director. Determine how a line should be performed.\n"
             "Describe: emotional tone, energy level, pacing, key words to stress.\n"
             f"Consider natural speech patterns for {language}.\n"
+            f"{context_instruction}\n"
             "OUTPUT FORMAT:\nPERFORMANCE:\n<1-2 sentences>\n"
         )
+        
+        user_msg = f"LANGUAGE: {language}\nLINE: \"{dialogue_line}\""
+        if user_context:
+            user_msg += f"\n\n⚠️ MUST APPLY THIS DIRECTION: {user_context}"
         
         resp = client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": system_msg},
-                {"role": "user", "content": f"LANGUAGE: {language}\nLINE: \"{dialogue_line}\""},
+                {"role": "user", "content": user_msg},
             ],
             temperature=0.4,
             max_tokens=200,
@@ -234,6 +257,119 @@ def generate_performance_modifiers(
         
     except Exception:
         return ""
+
+
+# ===================== USER CONTEXT PROCESSOR =====================
+
+def process_user_context(
+    user_context: str,
+    language: str,
+    openai_key: Optional[str] = None
+) -> dict:
+    """
+    Process user context into structured Veo-style directions.
+    Handles: emotions, actions, background events, camera, voice, everything.
+    Returns dict with all direction categories.
+    """
+    if not user_context or not user_context.strip():
+        return {}
+    
+    client = get_openai_client(openai_key)
+    if client is None:
+        # Fallback: return raw context in all fields
+        return {
+            "visual_direction": user_context,
+            "voice_tone": user_context,
+            "emotional_state": user_context,
+            "body_language": user_context,
+            "delivery_style": user_context,
+            "subject_action": user_context,
+            "background_action": "",
+            "camera_direction": "",
+            "scene_atmosphere": user_context,
+        }
+    
+    try:
+        system_msg = """You are a professional video/film director and prompt engineer for AI video generation. 
+
+Convert the user's direction into specific, actionable instructions for AI video generation. The user might describe:
+- Emotions/mood (e.g., "he's angry", "she's nervous")
+- Actions (e.g., "he picks up the phone", "she walks to the window")
+- Background events (e.g., "rain outside", "people walking behind", "TV playing")
+- Scene atmosphere (e.g., "dark and moody", "bright and cheerful")
+- Camera work (e.g., "slow zoom in", "shaky handheld")
+- Voice/delivery (e.g., "whispering", "shouting", "sarcastic tone")
+- Any combination of the above
+
+Generate detailed instructions for ALL these categories. If the user didn't mention something, leave it empty or use "natural/default".
+
+OUTPUT FORMAT (JSON):
+{
+  "visual_direction": "Facial expression, eye contact, skin appearance, visual details of subject",
+  "voice_tone": "Pitch, volume, pace, breathiness, texture, accent intensity",
+  "emotional_state": "Internal emotion with intensity (1-10), underlying feelings",
+  "body_language": "Posture, hand gestures, head movement, physical tension",
+  "delivery_style": "Pacing, emphasis, pauses, vocal dynamics for dialogue",
+  "subject_action": "What the subject physically DOES during the clip (movements, interactions with objects)",
+  "background_action": "What happens in the background/environment (other people, weather, objects moving, ambient activity)",
+  "camera_direction": "Camera movement, angle changes, focus shifts, shot type",
+  "scene_atmosphere": "Overall mood, lighting feel, energy level of the scene"
+}
+
+Be specific and use professional film/video terminology. If something wasn't mentioned by the user, write "" (empty string)."""
+
+        user_msg = f"USER DIRECTION: {user_context}\nLANGUAGE: {language}\n\nConvert this into detailed video generation instructions for all categories."
+        
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.4,
+            max_tokens=700,
+        )
+        
+        raw = resp.choices[0].message.content.strip()
+        
+        # Try to parse JSON
+        import re
+        json_match = re.search(r'\{[^{}]*\}', raw, re.DOTALL)
+        if json_match:
+            try:
+                import json
+                result = json.loads(json_match.group())
+                vlog(f"[process_user_context] Processed: {result}")
+                return result
+            except:
+                pass
+        
+        # Fallback: return raw in basic fields
+        return {
+            "visual_direction": user_context,
+            "voice_tone": user_context,
+            "emotional_state": user_context,
+            "body_language": user_context,
+            "delivery_style": user_context,
+            "subject_action": "",
+            "background_action": "",
+            "camera_direction": "",
+            "scene_atmosphere": user_context,
+        }
+        
+    except Exception as e:
+        vlog(f"[process_user_context] Error: {e}")
+        return {
+            "visual_direction": user_context,
+            "voice_tone": user_context,
+            "emotional_state": user_context,
+            "body_language": user_context,
+            "delivery_style": user_context,
+            "subject_action": "",
+            "background_action": "",
+            "camera_direction": "",
+            "scene_atmosphere": user_context,
+        }
 
 
 # ===================== VISUAL PROMPT OPTIMIZATION =====================
@@ -253,12 +389,18 @@ def optimize_visual_prompt(
         return base_prompt, ""
     
     try:
+        # Build system message with user context emphasis
+        context_instruction = ""
+        if user_context:
+            context_instruction = f"\n\nCRITICAL DIRECTION FROM USER: {user_context}\nYou MUST incorporate this direction into both the visual prompt and gesture notes. This takes priority over any assumptions from the image."
+        
         system_msg = (
             "Create video generation prompts.\n"
             "VISUAL_PROMPT: Based on frame descriptions (camera, lighting, setup).\n"
-            "GESTURE_NOTES: Based on dialogue (expressions, gestures for the message).\n"
+            "GESTURE_NOTES: Based on dialogue (expressions, gestures, emotions, body language for the message).\n"
             f"Consider {language} gesture patterns.\n"
             "No text/subtitles on screen.\n"
+            f"{context_instruction}\n"
             "OUTPUT:\nVISUAL_PROMPT:\n<description>\n\nGESTURE_NOTES:\n<notes>\n"
         )
         
@@ -268,9 +410,9 @@ def optimize_visual_prompt(
             f"DIALOGUE ({language}): \"{dialogue_line}\"\n"
         )
         
-        # Add user context if provided
+        # Reinforce user context in user message
         if user_context:
-            user_msg += f"\nADDITIONAL CONTEXT: {user_context}\n"
+            user_msg += f"\n⚠️ IMPORTANT USER DIRECTION: {user_context}\nMake sure the gesture notes and visual prompt reflect this direction!\n"
         
         resp = client.chat.completions.create(
             model=OPENAI_MODEL,
@@ -338,12 +480,16 @@ def build_prompt(
         visual_prompt, gesture_notes = optimize_visual_prompt(
             BASE_PROMPT, dialogue_line, start_desc, end_desc, language, openai_key, user_context
         )
-        performance = generate_performance_modifiers(dialogue_line, language, openai_key)
+        performance = generate_performance_modifiers(dialogue_line, language, openai_key, user_context)
     else:
         # Fallback to base prompt
         visual_prompt = BASE_PROMPT
         gesture_notes = ""
         performance = ""
+    
+    # Process user context into structured Veo-style directions
+    user_context = getattr(config, 'user_context', '') or ''
+    context_directions = process_user_context(user_context, language, openai_key) if user_context else {}
     
     # Build JSON payload
     prompt_payload = {
@@ -354,30 +500,42 @@ def build_prompt(
         ),
         "shot": {
             "description": visual_prompt,
+            "visual_direction": context_directions.get("visual_direction", ""),
+            "camera_direction": context_directions.get("camera_direction", ""),
         },
         "subject": {
             "description": "Match input frames.",
             "spoken_language": language,
             "accent": f"Native {language} accent - NOT influenced by any text visible in image",
+            "emotional_state": context_directions.get("emotional_state", "Natural, matching the dialogue content"),
+            "body_language": context_directions.get("body_language", ""),
+            "action": context_directions.get("subject_action", ""),
         },
         "scene": {
             "start_frame_description": start_desc,
             "end_frame_description": end_desc,
-            "continuity": "Maintain visual continuity with provided frames."
+            "continuity": "Maintain visual continuity with provided frames.",
+            "background_action": context_directions.get("background_action", ""),
+            "atmosphere": context_directions.get("scene_atmosphere", ""),
         },
         "action": {
             "gesture_notes": gesture_notes,
             "performance_direction": performance,
+            "body_language": context_directions.get("body_language", ""),
+            "subject_action": context_directions.get("subject_action", ""),
         },
         "audio": {
             "IMPORTANT": f"The speaker's voice must be in {language} only. Any text visible in the image (signs, slides, screens) should NOT affect the spoken language.",
             "language_requirement": f"The speaker MUST use {language} language with authentic native {language} pronunciation.",
+            "voice_tone": context_directions.get("voice_tone", "Natural tone matching dialogue"),
+            "delivery_style": context_directions.get("delivery_style", ""),
             "dialogue": {
                 "language": language,
                 "accent": f"Native {language} speaker with authentic {language} pronunciation",
                 "content": dialogue_line,
                 "delivery_notes": performance,
                 "voice_profile": voice_profile,
+                "emotional_delivery": context_directions.get("delivery_style", ""),
             },
             "constraints": {
                 "timing": AUDIO_TIMING_INSTRUCTION,
