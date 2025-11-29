@@ -31,7 +31,8 @@
         
         .app-container { min-height: 100vh; display: flex; flex-direction: column; transition: all 0.6s cubic-bezier(0.4, 0, 0.2, 1); }
         .app-container.state-initial .main-content { display: flex; justify-content: center; align-items: flex-start; padding: 40px 24px; flex: 1; }
-        .app-container.state-initial .config-panel { width: 100%; max-width: 900px; animation: fadeInUp 0.5s ease-out; }
+        .app-container.state-initial .config-panel { width: 100%; max-width: 900px; animation: fadeInUp 0.5s ease-out; transition: max-width 0.3s ease; }
+        .app-container.state-initial .config-panel.storyboard-active { max-width: 1200px; }
         .app-container.state-initial .results-panel { display: none; }
         .app-container.state-active .main-content { display: grid; grid-template-columns: 480px 1fr; gap: 0; flex: 1; }
         .app-container.state-active .config-panel { border-right: 1px solid var(--border-color); padding: 24px; height: calc(100vh - 64px); overflow-y: auto; animation: slideInLeft 0.6s ease-out; }
@@ -152,17 +153,25 @@
         .storyboard-editor.drag-over::after { content: 'Drop image here to create scene break'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: var(--accent); color: white; padding: 8px 16px; border-radius: var(--radius-sm); font-size: 11px; pointer-events: none; }
         
         /* Scene Divider - for Storyboard mode */
-        .scene-divider { display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin: 12px 0 6px -28px; background: var(--bg-elevated); border: 1px solid var(--accent); border-radius: var(--radius-sm); user-select: none; cursor: grab; transition: all 0.2s; }
-        .scene-divider:active { cursor: grabbing; }
+        .scene-divider { display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin: 12px 0 6px -28px; background: var(--bg-elevated); border: 1px solid var(--accent); border-radius: var(--radius-sm); user-select: none; transition: all 0.2s; }
         .scene-divider:hover { border-color: var(--accent); background: rgba(99, 102, 241, 0.1); }
         .scene-divider.dragging { opacity: 0.5; border-style: dashed; }
         .scene-divider:first-child { margin-top: 0; }
-        .scene-divider img { width: 28px; height: 28px; border-radius: 3px; object-fit: cover; pointer-events: none; }
+        .scene-divider img { width: 28px; height: 28px; border-radius: 3px; object-fit: cover; pointer-events: none; flex-shrink: 0; }
         .scene-divider-info { flex: 1; pointer-events: none; }
         .scene-divider-label { font-size: 10px; font-weight: 700; color: var(--accent); }
         .scene-divider-hint { font-size: 9px; color: var(--text-muted); }
+        .scene-divider-actions { display: flex; align-items: center; gap: 6px; }
         .scene-divider-remove { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 12px; padding: 2px 6px; border-radius: 3px; }
         .scene-divider-remove:hover { color: var(--error); background: rgba(239, 68, 68, 0.1); }
+        
+        /* Interpolation toggle on scene divider */
+        .scene-interp-toggle { display: flex; align-items: center; gap: 4px; padding: 2px 6px; background: var(--bg-input); border-radius: 4px; cursor: pointer; border: 1px solid var(--border-color); transition: all 0.2s; }
+        .scene-interp-toggle:hover { border-color: var(--accent); }
+        .scene-interp-toggle.active { background: rgba(99, 102, 241, 0.2); border-color: var(--accent); }
+        .scene-interp-toggle .interp-icon { font-size: 10px; }
+        .scene-interp-toggle .interp-label { font-size: 8px; color: var(--text-muted); text-transform: uppercase; font-weight: 600; }
+        .scene-interp-toggle.active .interp-label { color: var(--accent); }
         
         /* Drop zone indicator between lines */
         .drop-indicator { height: 3px; background: var(--accent); margin: 4px 0; border-radius: 2px; display: none; }
@@ -805,8 +814,8 @@ Example: A realistic vertical video of a professional presenter speaking directl
             
             // Reset scene breaks when switching to storyboard
             if(mode === 'storyboard' && sceneBreaks.length === 0){
-                // Initialize with first image at line 0
-                sceneBreaks = [{ lineIndex: 0, imgIndex: 0 }];
+                // Initialize with first image at line 0, interpolation on by default
+                sceneBreaks = [{ lineIndex: 0, imgIndex: 0, interpolate: true }];
             }
             
             renderStoryboard();
@@ -817,16 +826,19 @@ Example: A realistic vertical video of a professional presenter speaking directl
             const simpleImagesCard = document.getElementById('simpleImagesCard');
             const storyboardContainer = document.getElementById('storyboardContainer');
             const simpleDialogue = document.getElementById('simpleDialogueSection');
+            const configPanel = document.querySelector('.config-panel');
             
             if(storyboardMode){
                 simpleImagesCard.style.display = 'none';
                 storyboardContainer.classList.add('active');
                 simpleDialogue.style.display = 'none';
+                if(configPanel) configPanel.classList.add('storyboard-active');
                 renderStoryboard();
             } else {
                 simpleImagesCard.style.display = 'block';
                 storyboardContainer.classList.remove('active');
                 simpleDialogue.style.display = 'block';
+                if(configPanel) configPanel.classList.remove('storyboard-active');
                 renderThumbnails();
                 validateDialogueLines();
             }
@@ -1105,6 +1117,9 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     
                     // Scene divider - draggable (except first one which stays at top)
                     const isDraggable = sceneIdx > 0;
+                    const hasInterpolation = scene.interpolate !== false; // Default to true
+                    const isLastScene = sceneIdx === sceneBreaks.length - 1;
+                    
                     htmlContent += `
                         <div class="scene-divider ${isDraggable ? '' : ''}" 
                              contenteditable="false" 
@@ -1115,7 +1130,17 @@ Example: A realistic vertical video of a professional presenter speaking directl
                                 <span class="scene-divider-label">Scene ${sceneIdx + 1} (Image ${scene.imgIndex + 1})</span>
                                 <span class="scene-divider-hint">Clips #${scene.lineIndex + 1}${endLine > scene.lineIndex + 1 ? '-' + endLine : ''}</span>
                             </div>
-                            ${isDraggable ? `<button class="scene-divider-remove" onclick="event.stopPropagation();removeSceneBreak(${sceneIdx})">✕</button>` : ''}
+                            <div class="scene-divider-actions">
+                                ${!isLastScene ? `
+                                    <div class="scene-interp-toggle ${hasInterpolation ? 'active' : ''}" 
+                                         onclick="event.stopPropagation();toggleSceneInterpolation(${sceneIdx})"
+                                         title="${hasInterpolation ? 'Smooth transition to next scene' : 'Hard cut to next scene'}">
+                                        <span class="interp-icon">${hasInterpolation ? '🔄' : '✂️'}</span>
+                                        <span class="interp-label">${hasInterpolation ? 'Blend' : 'Cut'}</span>
+                                    </div>
+                                ` : ''}
+                                ${isDraggable ? `<button class="scene-divider-remove" onclick="event.stopPropagation();removeSceneBreak(${sceneIdx})">✕</button>` : ''}
+                            </div>
                         </div>
                     `;
                     
@@ -1151,6 +1176,13 @@ Example: A realistic vertical video of a professional presenter speaking directl
         function removeSceneBreak(sceneIdx){
             if(sceneIdx > 0 && sceneIdx < sceneBreaks.length){
                 sceneBreaks.splice(sceneIdx, 1);
+                renderStoryboard();
+            }
+        }
+        
+        function toggleSceneInterpolation(sceneIdx){
+            if(sceneIdx >= 0 && sceneIdx < sceneBreaks.length){
+                sceneBreaks[sceneIdx].interpolate = !sceneBreaks[sceneIdx].interpolate;
                 renderStoryboard();
             }
         }
@@ -1413,8 +1445,8 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 if(existingBreak){
                     existingBreak.imgIndex = draggedImageIndex;
                 } else if(targetLineIndex > 0){
-                    // Only add new breaks after line 0
-                    sceneBreaks.push({ lineIndex: targetLineIndex, imgIndex: draggedImageIndex });
+                    // Only add new breaks after line 0 - default interpolate to true
+                    sceneBreaks.push({ lineIndex: targetLineIndex, imgIndex: draggedImageIndex, interpolate: true });
                 } else if(targetLineIndex === 0 && sceneBreaks.length > 0){
                     // Update first scene's image
                     sceneBreaks[0].imgIndex = draggedImageIndex;
@@ -1619,8 +1651,9 @@ Example: A realistic vertical video of a professional presenter speaking directl
                         text = l.trim();
                     }
                     
-                    // Determine which image index controls this line
+                    // Determine which image index controls this line and interpolation setting
                     let imageIdx = 0;
+                    let sceneInterpolate = true; // Default to interpolate
                     
                     if(numImages > 1){
                         if(editorMode === 'storyboard' && sceneBreaks.length > 0){
@@ -1630,7 +1663,8 @@ Example: A realistic vertical video of a professional presenter speaking directl
                             for(let s = sceneBreaks.length - 1; s >= 0; s--){
                                 if(i >= sceneBreaks[s].lineIndex){
                                     imageIdx = sceneBreaks[s].imgIndex;
-                                    console.log(`Line ${i}: matched sceneBreak[${s}] (lineIndex=${sceneBreaks[s].lineIndex}, imgIndex=${sceneBreaks[s].imgIndex})`);
+                                    sceneInterpolate = sceneBreaks[s].interpolate !== false;
+                                    console.log(`Line ${i}: matched sceneBreak[${s}] (lineIndex=${sceneBreaks[s].lineIndex}, imgIndex=${sceneBreaks[s].imgIndex}, interpolate=${sceneInterpolate})`);
                                     break;
                                 }
                             }
@@ -1640,12 +1674,13 @@ Example: A realistic vertical video of a professional presenter speaking directl
                         }
                     }
                     
-                    console.log(`Line ${i} ("${text.substring(0,30)}..."): start_image_idx = ${imageIdx}`);
+                    console.log(`Line ${i} ("${text.substring(0,30)}..."): start_image_idx = ${imageIdx}, interpolate = ${sceneInterpolate}`);
                     
                     return {
                         id: id,
                         text: text,
-                        start_image_idx: imageIdx
+                        start_image_idx: imageIdx,
+                        scene_interpolate: sceneInterpolate
                     };
                 }).filter(l => l.text);
                 

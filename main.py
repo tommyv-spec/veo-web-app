@@ -48,6 +48,7 @@ class DialogueLineInput(BaseModel):
     id: int
     text: str
     start_image_idx: Optional[int] = None  # Storyboard image assignment
+    scene_interpolate: Optional[bool] = True  # Whether to interpolate to next scene's image
 
 
 class VideoConfigInput(BaseModel):

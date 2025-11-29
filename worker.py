@@ -563,10 +563,12 @@ class JobWorker:
         with get_db() as db:
             # First pass: determine start_image_idx for each clip
             clip_assignments = []
+            clip_interpolation = []  # Per-clip interpolation settings
             is_storyboard = False
             
             for i, line_data in enumerate(dialogue_data):
                 forced_idx = line_data.get("start_image_idx")
+                scene_interp = line_data.get("scene_interpolate", True)
                 
                 if single_image_mode:
                     start_idx = 0
@@ -579,14 +581,17 @@ class JobWorker:
                     start_idx = i % num_images
                 
                 clip_assignments.append(start_idx)
-                print(f"[Worker] Clip {i}: start_image_idx={start_idx} (forced={forced_idx})", flush=True)
+                clip_interpolation.append(scene_interp)
+                print(f"[Worker] Clip {i}: start_image_idx={start_idx} (forced={forced_idx}), scene_interpolate={scene_interp}", flush=True)
             
             # Second pass: create clips with proper end frames
-            # RULE: End frame of clip N = Start frame of clip N+1
+            # RULE: End frame of clip N = Start frame of clip N+1 (if interpolation is enabled for that scene)
             for i, line_data in enumerate(dialogue_data):
                 start_idx = clip_assignments[i]
+                scene_interp = clip_interpolation[i]
                 
-                if use_interpolation:
+                # Determine end frame based on global interpolation AND scene-level interpolation
+                if use_interpolation and scene_interp:
                     if i < len(clip_assignments) - 1:
                         # Not the last clip: end frame is NEXT clip's start frame
                         end_idx = clip_assignments[i + 1]
@@ -599,12 +604,13 @@ class JobWorker:
                             # Auto-cycle: loop back to first clip's image
                             end_idx = clip_assignments[0]
                 else:
+                    # No interpolation for this clip - stay on same image
                     end_idx = start_idx
                 
                 start_frame_name = images[start_idx].name
-                end_frame_name = images[end_idx].name if use_interpolation else None
+                end_frame_name = images[end_idx].name if (use_interpolation and scene_interp) else images[start_idx].name
                 
-                print(f"[Worker] Clip {i}: {start_frame_name} → {end_frame_name or 'N/A'}", flush=True)
+                print(f"[Worker] Clip {i}: {start_frame_name} → {end_frame_name or 'N/A'} (interpolate={scene_interp})", flush=True)
                 
                 # Create clip with frame info stored
                 clip = Clip(
