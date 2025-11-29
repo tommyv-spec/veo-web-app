@@ -153,26 +153,49 @@
         .storyboard-editor.drag-over::after { content: 'Drop image here to create scene break'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: var(--accent); color: white; padding: 8px 16px; border-radius: var(--radius-sm); font-size: 11px; pointer-events: none; }
         
         /* Scene Divider - for Storyboard mode */
-        .scene-divider { display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin: 12px 0 6px -28px; background: var(--bg-elevated); border: 1px solid var(--accent); border-radius: var(--radius-sm); user-select: none; transition: all 0.2s; position: relative; }
+        .scene-divider-wrapper { margin: 12px 0 6px -28px; }
+        .scene-divider-wrapper:first-child { margin-top: 0; }
+        
+        /* Scene transition toggle (Blend to / Cut to) - floats above scene box */
+        .scene-transition-toggle { display: inline-flex; align-items: center; gap: 3px; padding: 2px 8px; margin-bottom: 4px; margin-left: 10px; background: var(--bg-surface); border-radius: 4px; cursor: pointer; border: 1px solid var(--border-color); transition: all 0.2s; font-size: 9px; }
+        .scene-transition-toggle:hover { border-color: var(--accent); background: var(--bg-elevated); }
+        .scene-transition-toggle.blend { background: rgba(99, 102, 241, 0.2); border-color: var(--accent); }
+        .scene-transition-toggle .trans-icon { font-size: 10px; }
+        .scene-transition-toggle .trans-label { color: var(--text-secondary); text-transform: uppercase; font-weight: 600; letter-spacing: 0.3px; }
+        .scene-transition-toggle.blend .trans-label { color: var(--accent); }
+        
+        /* Scene box container */
+        .scene-divider { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--bg-elevated); border: 1px solid var(--accent); border-radius: var(--radius-sm); user-select: none; transition: all 0.2s; }
         .scene-divider:hover { border-color: var(--accent); background: rgba(99, 102, 241, 0.1); }
         .scene-divider.dragging { opacity: 0.5; border-style: dashed; }
-        .scene-divider:first-child { margin-top: 0; }
-        .scene-divider-img-wrapper { position: relative; flex-shrink: 0; }
-        .scene-divider-img-wrapper img { width: 36px; height: 36px; border-radius: 4px; object-fit: cover; pointer-events: none; display: block; }
-        .scene-divider-info { flex: 1; pointer-events: none; }
+        
+        /* Image thumbnail */
+        .scene-divider-img { width: 40px; height: 40px; border-radius: 4px; object-fit: cover; pointer-events: none; flex-shrink: 0; }
+        
+        /* Clip mode toggle (Blend/Continue/Fresh) - next to image */
+        .clip-mode-toggle { display: flex; border-radius: 4px; overflow: hidden; border: 1px solid var(--border-color); flex-shrink: 0; }
+        .clip-mode-btn { padding: 4px 6px; font-size: 8px; text-transform: uppercase; font-weight: 600; background: var(--bg-input); color: var(--text-muted); border: none; cursor: pointer; transition: all 0.15s; white-space: nowrap; letter-spacing: 0.2px; }
+        .clip-mode-btn:not(:last-child) { border-right: 1px solid var(--border-color); }
+        .clip-mode-btn:hover { background: var(--bg-elevated); color: var(--text-secondary); }
+        .clip-mode-btn.active { background: var(--accent); color: white; }
+        .clip-mode-btn.active.blend-btn { background: #6366f1; }
+        .clip-mode-btn.active.continue-btn { background: #10b981; }
+        .clip-mode-btn.active.fresh-btn { background: #f59e0b; }
+        
+        /* Scene info */
+        .scene-divider-info { flex: 1; pointer-events: none; min-width: 0; }
         .scene-divider-label { font-size: 10px; font-weight: 700; color: var(--accent); }
         .scene-divider-hint { font-size: 9px; color: var(--text-muted); }
-        .scene-divider-actions { display: flex; align-items: center; gap: 6px; }
+        
+        /* Scene actions */
+        .scene-divider-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
         .scene-divider-remove { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 12px; padding: 2px 6px; border-radius: 3px; }
         .scene-divider-remove:hover { color: var(--error); background: rgba(239, 68, 68, 0.1); }
         
-        /* Interpolation toggle - overlays on image */
-        .scene-interp-toggle { position: absolute; top: -6px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 3px; padding: 2px 6px; background: var(--bg-surface); border-radius: 3px; cursor: pointer; border: 1px solid var(--border-color); transition: all 0.2s; white-space: nowrap; z-index: 1; box-shadow: 0 2px 4px rgba(0,0,0,0.3); }
-        .scene-interp-toggle:hover { border-color: var(--accent); background: var(--bg-elevated); }
-        .scene-interp-toggle.active { background: rgba(99, 102, 241, 0.3); border-color: var(--accent); }
-        .scene-interp-toggle .interp-icon { font-size: 9px; }
-        .scene-interp-toggle .interp-label { font-size: 7px; color: var(--text-secondary); text-transform: uppercase; font-weight: 600; letter-spacing: 0.3px; }
-        .scene-interp-toggle.active .interp-label { color: var(--accent); }
+        /* Global interpolation toggle disabled state */
+        .toggle-row.disabled { opacity: 0.4; pointer-events: none; }
+        .toggle-row.disabled .toggle { background: var(--bg-input) !important; }
+        .toggle-row.disabled .toggle::after { left: 50% !important; transform: translateX(-50%); }
         
         /* Drop zone indicator between lines */
         .drop-indicator { height: 3px; background: var(--accent); margin: 4px 0; border-radius: 2px; display: none; }
@@ -251,6 +274,7 @@
         .badge { display: inline-block; padding: 4px 10px; border-radius: 99px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
         .badge-pending, .badge-pending_review { background: rgba(99, 102, 241, 0.15); color: var(--accent); }
         .badge-running, .badge-generating { background: rgba(99, 102, 241, 0.15); color: var(--accent); }
+        .badge-waiting_approval { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
         .badge-completed, .badge-approved { background: rgba(16, 185, 129, 0.15); color: var(--success); }
         .badge-failed, .badge-max_attempts { background: rgba(239, 68, 68, 0.15); color: var(--error); }
         .badge-rejected { background: rgba(239, 68, 68, 0.15); color: var(--error); }
@@ -529,7 +553,7 @@
                             </div>
                         </div>
                         <div class="config-box">
-                            <div class="toggle-row">
+                            <div class="toggle-row" id="interpToggleRow">
                                 <span class="toggle-label">Interpolation
                                     <span class="info-icon">?
                                         <div class="tooltip">
@@ -541,6 +565,7 @@
                                                 <li><strong>OFF:</strong> Static/minimal motion</li>
                                             </ul>
                                             <p style="color:var(--success);">✓ Recommended: Keep ON</p>
+                                            <p style="color:var(--text-muted);font-size:11px;margin-top:8px;">📌 In Storyboard mode, this is controlled per-scene.</p>
                                         </div>
                                     </span>
                                 </span>
@@ -861,18 +886,23 @@ Example: A realistic vertical video of a professional presenter speaking directl
             const storyboardContainer = document.getElementById('storyboardContainer');
             const simpleDialogue = document.getElementById('simpleDialogueSection');
             const configPanel = document.querySelector('.config-panel');
+            const interpToggleRow = document.getElementById('interpToggleRow');
             
             if(storyboardMode){
                 simpleImagesCard.style.display = 'none';
                 storyboardContainer.classList.add('active');
                 simpleDialogue.style.display = 'none';
                 if(configPanel) configPanel.classList.add('storyboard-active');
+                // Disable global interpolation toggle - managed per-scene in Storyboard
+                if(interpToggleRow) interpToggleRow.classList.add('disabled');
                 renderStoryboard();
             } else {
                 simpleImagesCard.style.display = 'block';
                 storyboardContainer.classList.remove('active');
                 simpleDialogue.style.display = 'block';
                 if(configPanel) configPanel.classList.remove('storyboard-active');
+                // Re-enable global interpolation toggle
+                if(interpToggleRow) interpToggleRow.classList.remove('disabled');
                 renderThumbnails();
                 validateDialogueLines();
             }
@@ -1256,24 +1286,44 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     // Scene divider - draggable (except first one which stays at top)
                     const isDraggable = sceneIdx > 0;
                     const isFirstScene = sceneIdx === 0;
-                    // Interpolation toggle on destination scene (not first) - controls how we ARRIVE at this scene
-                    const hasInterpolation = scene.interpolate !== false; // Default to true
                     
+                    // Scene transition (Blend to / Cut to) - how we arrive FROM previous scene
+                    const hasBlendTransition = scene.transition !== 'cut'; // Default to blend
+                    
+                    // Clip mode (blend/continue/fresh) - how clips transition within this scene
+                    const clipMode = scene.clipMode || 'blend'; // Default to blend
+                    
+                    htmlContent += `<div class="scene-divider-wrapper">`;
+                    
+                    // Scene transition toggle (only for non-first scenes)
+                    if(!isFirstScene){
+                        htmlContent += `
+                            <div class="scene-transition-toggle ${hasBlendTransition ? 'blend' : ''}" 
+                                 onclick="toggleSceneTransition(${sceneIdx})"
+                                 title="${hasBlendTransition ? 'Blend: Previous scene morphs into this one' : 'Cut: Hard cut from previous scene'}">
+                                <span class="trans-icon">${hasBlendTransition ? '🔄' : '✂️'}</span>
+                                <span class="trans-label">${hasBlendTransition ? 'Blend to' : 'Cut to'}</span>
+                            </div>
+                        `;
+                    }
+                    
+                    // Scene box
                     htmlContent += `
-                        <div class="scene-divider ${isDraggable ? '' : ''}" 
+                        <div class="scene-divider" 
                              contenteditable="false" 
                              data-scene-idx="${sceneIdx}"
                              ${isDraggable ? `draggable="true" ondragstart="handleSceneDragStart(event, ${sceneIdx})"` : ''}>
-                            <div class="scene-divider-img-wrapper">
-                                <img src="${img.dataUrl}">
-                                ${!isFirstScene ? `
-                                    <div class="scene-interp-toggle ${hasInterpolation ? 'active' : ''}" 
-                                         onclick="event.stopPropagation();toggleSceneInterpolation(${sceneIdx})"
-                                         title="${hasInterpolation ? 'Smooth blend transition to this scene' : 'Hard cut transition to this scene'}">
-                                        <span class="interp-icon">${hasInterpolation ? '🔄' : '✂️'}</span>
-                                        <span class="interp-label">${hasInterpolation ? 'Blend to' : 'Cut to'}</span>
-                                    </div>
-                                ` : ''}
+                            <img class="scene-divider-img" src="${img.dataUrl}">
+                            <div class="clip-mode-toggle">
+                                <button class="clip-mode-btn blend-btn ${clipMode === 'blend' ? 'active' : ''}" 
+                                        onclick="event.stopPropagation();setClipMode(${sceneIdx}, 'blend')"
+                                        title="Blend: Morph between frames within scene">Blend</button>
+                                <button class="clip-mode-btn continue-btn ${clipMode === 'continue' ? 'active' : ''}" 
+                                        onclick="event.stopPropagation();setClipMode(${sceneIdx}, 'continue')"
+                                        title="Continue: Use last frame from previous clip">Continue</button>
+                                <button class="clip-mode-btn fresh-btn ${clipMode === 'fresh' ? 'active' : ''}" 
+                                        onclick="event.stopPropagation();setClipMode(${sceneIdx}, 'fresh')"
+                                        title="Fresh: Always start from original image">Fresh</button>
                             </div>
                             <div class="scene-divider-info">
                                 <span class="scene-divider-label">Scene ${sceneIdx + 1} (Image ${scene.imgIndex + 1})</span>
@@ -1283,7 +1333,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
                                 ${isDraggable ? `<button class="scene-divider-remove" onclick="event.stopPropagation();removeSceneBreak(${sceneIdx})">✕</button>` : ''}
                             </div>
                         </div>
-                    `;
+                    </div>`;
                     
                     // Lines for this scene
                     sceneLines.forEach((line, i) => {
@@ -1296,13 +1346,18 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 if(numImages > 0){
                     const img = uploadedFilesData[0];
                     htmlContent += `
-                        <div class="scene-divider" contenteditable="false" data-scene-idx="0">
-                            <div class="scene-divider-img-wrapper">
-                                <img src="${img.dataUrl}">
-                            </div>
-                            <div class="scene-divider-info">
-                                <span class="scene-divider-label">Scene 1 (Image 1)</span>
-                                <span class="scene-divider-hint">Paste your script below</span>
+                        <div class="scene-divider-wrapper">
+                            <div class="scene-divider" contenteditable="false" data-scene-idx="0">
+                                <img class="scene-divider-img" src="${img.dataUrl}">
+                                <div class="clip-mode-toggle">
+                                    <button class="clip-mode-btn blend-btn active" disabled title="Blend: Morph between frames">Blend</button>
+                                    <button class="clip-mode-btn continue-btn" disabled title="Continue: Use last frame">Continue</button>
+                                    <button class="clip-mode-btn fresh-btn" disabled title="Fresh: Original image">Fresh</button>
+                                </div>
+                                <div class="scene-divider-info">
+                                    <span class="scene-divider-label">Scene 1 (Image 1)</span>
+                                    <span class="scene-divider-hint">Paste your script below</span>
+                                </div>
                             </div>
                         </div>
                     `;
@@ -1323,9 +1378,18 @@ Example: A realistic vertical video of a professional presenter speaking directl
             }
         }
         
-        function toggleSceneInterpolation(sceneIdx){
+        function toggleSceneTransition(sceneIdx){
+            // Toggle between blend and cut for scene transition
+            if(sceneIdx > 0 && sceneIdx < sceneBreaks.length){
+                sceneBreaks[sceneIdx].transition = sceneBreaks[sceneIdx].transition === 'cut' ? 'blend' : 'cut';
+                renderStoryboard();
+            }
+        }
+        
+        function setClipMode(sceneIdx, mode){
+            // Set clip mode for a scene: 'blend', 'continue', or 'fresh'
             if(sceneIdx >= 0 && sceneIdx < sceneBreaks.length){
-                sceneBreaks[sceneIdx].interpolate = !sceneBreaks[sceneIdx].interpolate;
+                sceneBreaks[sceneIdx].clipMode = mode;
                 renderStoryboard();
             }
         }
@@ -1824,6 +1888,26 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 console.log('Num clips:', numClips);
                 console.log('Scene breaks:', JSON.stringify(sceneBreaks));
                 
+                // Build scenes array for backend (Storyboard mode only)
+                let scenesPayload = null;
+                if(editorMode === 'storyboard' && sceneBreaks.length > 0){
+                    scenesPayload = sceneBreaks.map((scene, idx) => {
+                        const nextScene = sceneBreaks[idx + 1];
+                        const endLine = nextScene ? nextScene.lineIndex : numClips;
+                        const clipIndices = [];
+                        for(let c = scene.lineIndex; c < endLine; c++) clipIndices.push(c);
+                        
+                        return {
+                            sceneIndex: idx,
+                            imageIndex: scene.imgIndex,
+                            clipMode: scene.clipMode || 'blend',      // 'blend' | 'continue' | 'fresh'
+                            transition: idx === 0 ? null : (scene.transition || 'blend'),  // 'blend' | 'cut' | null for first
+                            clips: clipIndices
+                        };
+                    });
+                    console.log('Scenes payload:', JSON.stringify(scenesPayload, null, 2));
+                }
+                
                 // Prepare the lines payload with image assignments
                 const lines = linesList.map((l, i) => {
                     // Parse ID|Text
@@ -1837,20 +1921,21 @@ Example: A realistic vertical video of a professional presenter speaking directl
                         text = l.trim();
                     }
                     
-                    // Determine which image index controls this line and interpolation setting
+                    // Determine which scene this line belongs to
                     let imageIdx = 0;
-                    let sceneInterpolate = true; // Default to interpolate
+                    let sceneIdx = 0;
+                    let clipMode = 'blend';
+                    let sceneTransition = 'blend';
                     
                     if(numImages > 1){
                         if(editorMode === 'storyboard' && sceneBreaks.length > 0){
                             // === STORYBOARD MODE: Use sceneBreaks directly ===
-                            // sceneBreaks is sorted by lineIndex
-                            // Find which scene this line belongs to by checking from last to first
                             for(let s = sceneBreaks.length - 1; s >= 0; s--){
                                 if(i >= sceneBreaks[s].lineIndex){
                                     imageIdx = sceneBreaks[s].imgIndex;
-                                    sceneInterpolate = sceneBreaks[s].interpolate !== false;
-                                    console.log(`Line ${i}: matched sceneBreak[${s}] (lineIndex=${sceneBreaks[s].lineIndex}, imgIndex=${sceneBreaks[s].imgIndex}, interpolate=${sceneInterpolate})`);
+                                    sceneIdx = s;
+                                    clipMode = sceneBreaks[s].clipMode || 'blend';
+                                    sceneTransition = s > 0 ? (sceneBreaks[s].transition || 'blend') : null;
                                     break;
                                 }
                             }
@@ -1860,13 +1945,15 @@ Example: A realistic vertical video of a professional presenter speaking directl
                         }
                     }
                     
-                    console.log(`Line ${i} ("${text.substring(0,30)}..."): start_image_idx = ${imageIdx}, interpolate = ${sceneInterpolate}`);
+                    console.log(`Line ${i}: scene=${sceneIdx}, image=${imageIdx}, clipMode=${clipMode}, transition=${sceneTransition}`);
                     
                     return {
                         id: id,
                         text: text,
                         start_image_idx: imageIdx,
-                        scene_interpolate: sceneInterpolate
+                        scene_index: sceneIdx,
+                        clip_mode: clipMode,           // 'blend' | 'continue' | 'fresh'
+                        scene_transition: sceneTransition  // 'blend' | 'cut' | null
                     };
                 }).filter(l => l.text);
                 
@@ -1876,9 +1963,16 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 if(!uploadedImages.length)throw new Error('Upload at least 1 reference image');
                 const useAI=document.getElementById('togAI').dataset.value==='true',customPrompt=document.getElementById('customPrompt')?.value?.trim()||'',contextInput=document.getElementById('contextInput')?.value?.trim()||'';
                 if(!useAI&&!customPrompt)throw new Error('Enter a custom prompt or enable AI Prompts');
-                const cfg={aspect_ratio:getSelectedAspect(),resolution:getSelectedResolution(),duration:document.getElementById('duration').value,language:document.getElementById('language').value,use_interpolation:document.getElementById('togInterp').dataset.value==='true',use_openai_prompt_tuning:useAI,use_frame_vision:useAI,custom_prompt:useAI?'':customPrompt,user_context:useAI?contextInput:'',single_image_mode:uploadedImages.length===1,max_retries_per_clip:5,parallel_clips:3};
                 
-                const r=await fetch(`${API}/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:cfg,dialogue_lines:lines,api_keys:{gemini_keys:[],openai_key:null},job_id:uploadJobId})});
+                // In storyboard mode, use_interpolation is always true (managed per-scene)
+                const useInterpolation = editorMode === 'storyboard' ? true : document.getElementById('togInterp').dataset.value==='true';
+                
+                const cfg={aspect_ratio:getSelectedAspect(),resolution:getSelectedResolution(),duration:document.getElementById('duration').value,language:document.getElementById('language').value,use_interpolation:useInterpolation,use_openai_prompt_tuning:useAI,use_frame_vision:useAI,custom_prompt:useAI?'':customPrompt,user_context:useAI?contextInput:'',single_image_mode:uploadedImages.length===1,max_retries_per_clip:5,parallel_clips:3,storyboard_mode:editorMode==='storyboard'};
+                
+                const payload = {config:cfg, dialogue_lines:lines, api_keys:{gemini_keys:[],openai_key:null}, job_id:uploadJobId};
+                if(scenesPayload) payload.scenes = scenesPayload;
+                
+                const r=await fetch(`${API}/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
                 if(!r.ok){const e=await r.json();throw new Error(e.detail?.errors?.join(', ')||e.detail||'Failed');}
                 const job=await r.json();
                 uploadJobId=null;uploadedImages=[];
@@ -1947,10 +2041,11 @@ Example: A realistic vertical video of a professional presenter speaking directl
         }
         
         function renderClip(c,jid){
-            const approved=c.approval_status==='approved',rejected=c.approval_status==='rejected',maxed=c.approval_status==='max_attempts',generating=c.status==='generating',pending=c.status==='pending',failed=c.status==='failed',redoQueued=c.status==='redo_queued',isRegenerating=generating||redoQueued,canReview=c.status==='completed'&&!approved&&!maxed&&!rejected;
+            const approved=c.approval_status==='approved',rejected=c.approval_status==='rejected',maxed=c.approval_status==='max_attempts',generating=c.status==='generating',pending=c.status==='pending',failed=c.status==='failed',redoQueued=c.status==='redo_queued',waitingApproval=c.status==='waiting_approval',isRegenerating=generating||redoQueued,canReview=c.status==='completed'&&!approved&&!maxed&&!rejected;
             const totalVariants=c.total_variants||(c.versions||[]).length,selectedVariant=c.selected_variant||1,hasMultipleVariants=totalVariants>1;
             let vid='';
             if(isRegenerating)vid=`<div class="generating-state"><div class="generating-spinner">🎬</div><div class="generating-text">${redoQueued?'Regenerating...':'Generating...'}</div></div>`;
+            else if(waitingApproval)vid=`<div class="pending-state"><div class="pending-icon">⏸️</div><div class="pending-text">Awaiting<br>Approval</div></div>`;
             else if(pending)vid=`<div class="pending-state"><div class="pending-icon">⏳</div><div class="pending-text">Waiting...</div></div>`;
             else if(c.output_filename)vid=`<video controls preload="auto" playsinline><source src="${API}/jobs/${jid}/outputs/${c.output_filename}?t=${Date.now()}" type="video/mp4"></video>`;
             else if(failed)vid=`<div class="failed-state"><div class="failed-icon">❌</div><div class="failed-text">Failed</div></div>`;
@@ -1958,12 +2053,13 @@ Example: A realistic vertical video of a professional presenter speaking directl
             let variantNav='';
             if(hasMultipleVariants&&c.output_filename&&!isRegenerating)variantNav=`<div class="variant-nav"><button class="variant-btn" onclick="switchVariant(${c.id},${selectedVariant-1})" ${selectedVariant<=1?'disabled':''}>◀</button><span class="variant-indicator">v${selectedVariant}/${totalVariants}</span><button class="variant-btn" onclick="switchVariant(${c.id},${selectedVariant+1})" ${selectedVariant>=totalVariants?'disabled':''}>▶</button></div>`;
             let status=c.status,badgeClass=c.status;
-            if(isRegenerating){status=redoQueued?'regenerating':'generating';badgeClass='running';}else if(failed){status='failed';badgeClass='failed';}else if(approved){status='approved';badgeClass='approved';}else if(rejected){status='rejected';badgeClass='rejected';}else if(pending){status='pending';badgeClass='running';}else if(c.status==='completed'){status=c.approval_status||'pending_review';badgeClass=status;}
+            if(isRegenerating){status=redoQueued?'regenerating':'generating';badgeClass='running';}else if(failed){status='failed';badgeClass='failed';}else if(approved){status='approved';badgeClass='approved';}else if(rejected){status='rejected';badgeClass='rejected';}else if(waitingApproval){status='waiting approval';badgeClass='waiting_approval';}else if(pending){status='pending';badgeClass='running';}else if(c.status==='completed'){status=c.approval_status||'pending_review';badgeClass=status;}
             let acts='';const clipId=c.id||0;
             if(isRegenerating)acts=`<div class="clip-progress"><div class="clip-progress-bar"></div></div><div style="color:var(--text-muted);text-align:center;font-size:10px;margin-top:4px">v${c.generation_attempt} in progress...</div>`;
             else if(approved)acts=`<div style="color:var(--success);text-align:center;font-size:14px">✓ Approved${hasMultipleVariants?' (v'+selectedVariant+')':''}</div>`;
             else if(rejected&&!redoQueued)acts=`<div class="rejected-notice"><span>❌ Rejected</span>${c.attempts_remaining>0&&clipId?`<button class="btn btn-redo btn-sm" onclick="redoModal(${clipId},${c.attempts_remaining},${c.clip_index})">↻ Redo (${c.attempts_remaining})</button>`:'<span>No redos</span>'}</div>`;
             else if(maxed)acts='<div class="max-notice">⚠️ Max attempts</div>';
+            else if(waitingApproval)acts=`<div style="color:#f59e0b;text-align:center;font-size:10px">⏸️ Approve clip #${c.clip_index} first</div>`;
             else if(pending)acts='<div style="color:var(--text-muted);text-align:center;font-size:10px">In queue</div>';
             else if(failed)acts=`<div style="color:var(--error);text-align:center;font-size:10px">${c.error_message||'Failed'}</div>`;
             else if(canReview&&clipId)acts=`<div class="clip-actions"><button class="btn btn-approve" onclick="approve(${clipId})">✓</button><button class="btn btn-reject" onclick="confirmDelete(${clipId},${c.clip_index})">🗑</button><button class="btn btn-redo" onclick="redoModal(${clipId},${c.attempts_remaining},${c.clip_index})" ${c.attempts_remaining<=0?'disabled':''}>↻${c.attempts_remaining}</button></div>`;
@@ -1974,7 +2070,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 const endName=c.end_frame?(c.end_frame.length>15?c.end_frame.substring(0,12)+'...':c.end_frame):'';
                 frameInfo=`<div class="clip-frames" title="Start: ${c.start_frame}${c.end_frame?' → End: '+c.end_frame:''}"><span class="frame-icon">🖼</span><span class="frame-names">${startName}${endName?' → '+endName:''}</span></div>`;
             }
-            return `<div class="clip-card ${rejected&&!redoQueued?'clip-rejected':''} ${approved?'clip-approved':''} ${isRegenerating?'clip-generating':''} ${pending?'clip-pending':''}"><div class="clip-video">${vid}${variantNav}</div><div class="clip-content"><div class="clip-header"><span class="clip-idx">#${c.clip_index+1}</span><span class="badge badge-${badgeClass}">${status.replace('_',' ')}</span></div>${frameInfo}<div class="clip-text">${c.dialogue_text}</div>${acts}</div></div>`;
+            return `<div class="clip-card ${rejected&&!redoQueued?'clip-rejected':''} ${approved?'clip-approved':''} ${isRegenerating?'clip-generating':''} ${pending||waitingApproval?'clip-pending':''}"><div class="clip-video">${vid}${variantNav}</div><div class="clip-content"><div class="clip-header"><span class="clip-idx">#${c.clip_index+1}</span><span class="badge badge-${badgeClass}">${status.replace('_',' ')}</span></div>${frameInfo}<div class="clip-text">${c.dialogue_text}</div>${acts}</div></div>`;
         }
         
         async function loadLogs(id){try{const isInitial=lastLogId===0,url=isInitial?`${API}/jobs/${id}/logs?limit=100`:`${API}/jobs/${id}/logs?since_id=${lastLogId}&limit=30`;const r=await fetch(url);if(!r.ok)return;const logs=await r.json();if(!logs.length)return;lastLogId=logs[logs.length-1].id;const c=document.getElementById('logs');const logsHtml=logs.map(l=>`<div class="log"><span class="log-time">${new Date(l.created_at).toLocaleTimeString()}</span><span class="log-msg">${l.message}</span></div>`).join('');if(isInitial)c.innerHTML=logsHtml;else c.innerHTML+=logsHtml;c.scrollTop=c.scrollHeight;}catch(e){}}

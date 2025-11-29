@@ -430,8 +430,24 @@ class JobWorker:
                 # Parse API keys (with env fallback)
                 api_keys = get_api_keys_with_fallback(job.api_keys_json)
                 
-                # Parse dialogue
-                dialogue_data = json.loads(job.dialogue_json)
+                # Parse dialogue data (new format includes scenes)
+                dialogue_raw = json.loads(job.dialogue_json)
+                
+                # Handle both old format (list) and new format (dict with lines/scenes)
+                if isinstance(dialogue_raw, list):
+                    # Old format: just a list of lines
+                    dialogue_data = dialogue_raw
+                    scenes_data = None
+                else:
+                    # New format: {lines: [...], scenes: [...]}
+                    dialogue_data = dialogue_raw.get("lines", [])
+                    scenes_data = dialogue_raw.get("scenes", None)
+                
+                # Store scenes data for processing
+                storyboard_mode = config_data.get("storyboard_mode", False)
+                print(f"[Worker] Storyboard mode: {storyboard_mode}", flush=True)
+                if scenes_data:
+                    print(f"[Worker] Scenes: {json.dumps(scenes_data, indent=2)}", flush=True)
                 
                 # Get images
                 images_dir = Path(job.images_dir)
@@ -470,8 +486,8 @@ class JobWorker:
                 
                 self.running_jobs[job_id] = generator
             
-            # Process clips
-            self._process_clips(job_id, generator, dialogue_data, images, output_dir)
+            # Process clips (pass scenes_data for storyboard mode)
+            self._process_clips(job_id, generator, dialogue_data, images, output_dir, scenes_data)
             
         except Exception as e:
             error = error_handler.classify_exception(e, {"job_id": job_id})
@@ -512,9 +528,11 @@ class JobWorker:
         dialogue_data: List[Dict],
         images: List[Path],
         output_dir: Path,
+        scenes_data: Optional[List[Dict]] = None,
     ):
-        """Process all clips for a job - with parallel generation support"""
+        """Process all clips for a job - with parallel generation support and scene-aware sequencing"""
         from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
+        import subprocess
         
         # Check for single image mode
         single_image_mode = getattr(generator.config, 'single_image_mode', False) or len(images) == 1
@@ -534,97 +552,103 @@ class JobWorker:
         max_no_keys_retries = 3
         no_keys_wait_seconds = 300  # 5 minutes
         
-        # === CALCULATE IMAGE-TO-CLIP ASSIGNMENTS ===
-        # Logic:
-        # - With interpolation: each clip uses image[i] as start, image[i+1] as end
-        # - Without interpolation: each clip uses image[i] as start only
-        # - If more clips than image pairs, cycle through images
-        # - Single image mode: all clips use the same image
-        
+        # === BUILD SCENE-AWARE CLIP STRUCTURE ===
         num_images = len(images)
         use_interpolation = getattr(generator.config, 'use_interpolation', True)
         
-        # Calculate how many image pairs we have
-        if use_interpolation:
-            # For interpolation, we need pairs: (0,1), (1,2), (2,3), etc.
-            # With N images, we get N-1 pairs (or N if we want to loop back)
-            num_pairs = num_images - 1 if num_images > 1 else 1
-        else:
-            # Without interpolation, each image is standalone
-            num_pairs = num_images
+        print(f"[Worker] Processing {total_clips} clips with {num_images} images", flush=True)
+        print(f"[Worker] Scenes data: {scenes_data}", flush=True)
         
-        # Log the assignment strategy
-        print(f"[Worker] Image assignment: {num_images} images, {total_clips} clips, interpolation={use_interpolation}", flush=True)
-        print(f"[Worker] Available image pairs: {num_pairs}", flush=True)
+        # Build clip info with scene awareness
+        clip_info = []  # List of dicts with all clip metadata
         
-        # Debug: Print raw dialogue data
-        print(f"[Worker] Raw dialogue_data: {json.dumps(dialogue_data, indent=2)}", flush=True)
+        for i, line_data in enumerate(dialogue_data):
+            info = {
+                "index": i,
+                "text": line_data["text"],
+                "dialogue_id": line_data["id"],
+                "image_idx": line_data.get("start_image_idx", i % num_images) if not single_image_mode else 0,
+                "scene_index": line_data.get("scene_index", 0),
+                "clip_mode": line_data.get("clip_mode", "blend"),  # 'blend' | 'continue' | 'fresh'
+                "scene_transition": line_data.get("scene_transition"),  # 'blend' | 'cut' | None
+                "requires_previous": False,  # Will be set below
+                "start_frame": None,  # Will be set or calculated
+                "end_frame": None,    # Will be set or calculated
+            }
+            
+            # Determine if this clip requires the previous clip to complete first
+            # This happens when clip_mode is 'continue' AND it's not the first clip in its scene
+            if info["clip_mode"] == "continue" and i > 0:
+                prev_scene = dialogue_data[i-1].get("scene_index", 0)
+                if prev_scene == info["scene_index"]:
+                    # Same scene, continue mode - must wait for previous clip
+                    info["requires_previous"] = True
+            
+            clip_info.append(info)
+            print(f"[Worker] Clip {i}: scene={info['scene_index']}, mode={info['clip_mode']}, requires_prev={info['requires_previous']}", flush=True)
         
+        # Calculate initial frame assignments
         with get_db() as db:
-            # First pass: determine start_image_idx for each clip
-            clip_assignments = []
-            clip_interpolation = []  # Per-clip: does the NEXT scene want us to blend into it?
-            is_storyboard = False
-            
-            for i, line_data in enumerate(dialogue_data):
-                forced_idx = line_data.get("start_image_idx")
-                scene_interp = line_data.get("scene_interpolate", True)
+            for i, info in enumerate(clip_info):
+                start_idx = info["image_idx"]
+                clip_mode = info["clip_mode"]
                 
-                if single_image_mode:
-                    start_idx = 0
-                elif forced_idx is not None:
-                    # Storyboard mode: use frontend assignment
-                    start_idx = int(forced_idx) % num_images
-                    is_storyboard = True
-                else:
-                    # Auto-cycle mode: round-robin through images
-                    start_idx = i % num_images
-                
-                clip_assignments.append(start_idx)
-                clip_interpolation.append(scene_interp)
-                print(f"[Worker] Clip {i}: start_image_idx={start_idx} (forced={forced_idx}), scene_interpolate={scene_interp}", flush=True)
-            
-            # Second pass: create clips with proper end frames
-            # NEW LOGIC: scene_interpolate on a clip means "the scene I belong to wants PREVIOUS clips to blend INTO me"
-            # So we check the NEXT clip's scene_interpolate to decide if THIS clip should blend to next
-            for i, line_data in enumerate(dialogue_data):
-                start_idx = clip_assignments[i]
-                
-                # Check if we should interpolate TO the next clip
-                should_interpolate = False
-                if use_interpolation and i < len(clip_assignments) - 1:
-                    # Check if the NEXT clip's scene wants us to blend into it
-                    next_scene_interp = clip_interpolation[i + 1]
-                    # Also check if we're actually changing images (same image = no visible interpolation needed but still do it)
-                    should_interpolate = next_scene_interp
-                
-                if should_interpolate:
-                    # Blend to next clip's image
-                    end_idx = clip_assignments[i + 1]
-                elif use_interpolation and i == len(clip_assignments) - 1:
-                    # Last clip behavior
-                    if is_storyboard:
-                        # Storyboard: stay on assigned image (no loop)
-                        end_idx = start_idx
+                # Determine end frame based on clip mode and next clip
+                if clip_mode == "blend":
+                    # Blend mode: morph to next clip's image (if different) or same image
+                    if i < len(clip_info) - 1:
+                        next_info = clip_info[i + 1]
+                        # Check if next clip is in same scene or wants blend transition
+                        if next_info["scene_index"] == info["scene_index"]:
+                            # Same scene - blend to same image (creates motion)
+                            end_idx = start_idx
+                        elif next_info["scene_transition"] == "blend":
+                            # Different scene with blend transition - morph to next image
+                            end_idx = next_info["image_idx"]
+                        else:
+                            # Different scene with cut - stay on same image
+                            end_idx = start_idx
                     else:
-                        # Auto-cycle: loop back to first clip's image
-                        end_idx = clip_assignments[0]
+                        # Last clip - stay on same image
+                        end_idx = start_idx
+                        
+                elif clip_mode == "continue":
+                    # Continue mode: start from previous clip's last frame (will be set dynamically)
+                    # For now, set end_idx = start_idx (will stay on extracted frame)
+                    end_idx = start_idx
+                    
+                elif clip_mode == "fresh":
+                    # Fresh mode: always use original image, no blending
+                    end_idx = start_idx
+                    
                 else:
-                    # No interpolation - stay on same image
+                    # Default: same as blend
                     end_idx = start_idx
                 
                 start_frame_name = images[start_idx].name
                 end_frame_name = images[end_idx].name
                 
-                print(f"[Worker] Clip {i}: {start_frame_name} → {end_frame_name} (should_interpolate={should_interpolate})", flush=True)
+                info["start_frame"] = start_frame_name
+                info["end_frame"] = end_frame_name
+                info["start_idx"] = start_idx
+                info["end_idx"] = end_idx
                 
-                # Create clip with frame info stored
+                print(f"[Worker] Clip {i}: {start_frame_name} → {end_frame_name} (mode={clip_mode})", flush=True)
+                
+                # Determine initial status
+                # For "continue" mode clips (except first in scene), set to WAITING_APPROVAL
+                initial_status = ClipStatus.PENDING.value
+                if info["requires_previous"]:
+                    initial_status = ClipStatus.WAITING_APPROVAL.value
+                    print(f"[Worker] Clip {i}: Set to WAITING_APPROVAL (requires previous clip approval)", flush=True)
+                
+                # Create clip record
                 clip = Clip(
                     job_id=job_id,
                     clip_index=i,
-                    dialogue_id=line_data["id"],
-                    dialogue_text=line_data["text"],
-                    status=ClipStatus.PENDING.value,
+                    dialogue_id=info["dialogue_id"],
+                    dialogue_text=info["text"],
+                    status=initial_status,
                     start_frame=start_frame_name,
                     end_frame=end_frame_name,
                 )
@@ -632,48 +656,30 @@ class JobWorker:
             
             db.commit()
         
-        # Pre-calculate frame assignments for processing
-        # Read from the Clip records we just created (which have correct storyboard assignments)
+        # Build clip_frames list for processing
         clip_frames = []
-        with get_db() as db:
-            clips = db.query(Clip).filter(Clip.job_id == job_id).order_by(Clip.clip_index).all()
+        for i, info in enumerate(clip_info):
+            start_frame = images[info["start_idx"]]
+            end_frame = images[info["end_idx"]] if use_interpolation else None
             
-            for clip in clips:
-                # Find the image files by name
-                start_frame = None
-                end_frame = None
-                start_idx = 0
-                end_idx = 0
-                
-                for idx, img in enumerate(images):
-                    if img.name == clip.start_frame:
-                        start_frame = img
-                        start_idx = idx
-                    if clip.end_frame and img.name == clip.end_frame:
-                        end_frame = img
-                        end_idx = idx
-                
-                # Fallback if not found
-                if not start_frame:
-                    start_frame = images[0]
-                    start_idx = 0
-                
-                # For interpolation with same image, use same frame for both
-                if use_interpolation and not end_frame:
-                    end_frame = start_frame
-                    end_idx = start_idx
-                
-                clip_frames.append({
-                    "start_index": start_idx,
-                    "start_frame": start_frame,
-                    "end_index": end_idx,
-                    "end_frame": end_frame if use_interpolation else None,
-                })
-                
-                print(f"[Worker] clip_frames[{clip.clip_index}]: {start_frame.name} → {end_frame.name if end_frame else 'None'}", flush=True)
+            clip_frames.append({
+                "start_index": info["start_idx"],
+                "start_frame": start_frame,
+                "end_index": info["end_idx"],
+                "end_frame": end_frame,
+                "clip_mode": info["clip_mode"],
+                "requires_previous": info["requires_previous"],
+            })
         
-        # Queue of pending clip indices
-        pending_clips = list(range(total_clips))
+        # Track completed AND APPROVED clips for 'continue' mode frame extraction
+        approved_clip_videos = {}  # clip_index -> video_path (only approved ones)
+        completed_clip_videos = {}  # clip_index -> video_path (all completed, for tracking)
+        
+        # Queue of pending clip indices (only PENDING status, not WAITING_APPROVAL)
+        pending_clips = [i for i, info in enumerate(clip_info) if not info["requires_previous"]]
+        waiting_clips = [i for i, info in enumerate(clip_info) if info["requires_previous"]]
+        
+        print(f"[Worker] Initial queue: {len(pending_clips)} pending, {len(waiting_clips)} waiting for approval", flush=True)
         
         def check_keys_available():
             """Check if any API keys are available"""
@@ -708,6 +714,65 @@ class JobWorker:
             # TODO: Add webhook/email alert here
             # self._send_admin_alert(alert_msg, job_id)
         
+        def extract_frame_from_video(video_path: Path, frame_offset: int = -8) -> Optional[Path]:
+            """Extract a frame from video. frame_offset=-8 means 8 frames from the end."""
+            try:
+                # Get video duration
+                probe_cmd = [
+                    "ffprobe", "-v", "error", "-select_streams", "v:0",
+                    "-show_entries", "stream=duration,r_frame_rate",
+                    "-of", "csv=p=0", str(video_path)
+                ]
+                probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+                if probe_result.returncode != 0:
+                    print(f"[Worker] ffprobe failed: {probe_result.stderr}", flush=True)
+                    return None
+                
+                # Parse duration and fps
+                parts = probe_result.stdout.strip().split(',')
+                if len(parts) < 2:
+                    print(f"[Worker] Could not parse ffprobe output: {probe_result.stdout}", flush=True)
+                    return None
+                    
+                fps_str = parts[0]
+                duration_str = parts[1] if len(parts) > 1 else "8"
+                
+                # Calculate fps from fraction (e.g., "30000/1001" or "30/1")
+                if '/' in fps_str:
+                    num, den = fps_str.split('/')
+                    fps = float(num) / float(den)
+                else:
+                    fps = float(fps_str) if fps_str else 30.0
+                
+                duration = float(duration_str) if duration_str else 8.0
+                
+                # Calculate timestamp for frame_offset from end
+                # frame_offset = -8 means 8 frames before end
+                frames_from_end = abs(frame_offset)
+                seconds_from_end = frames_from_end / fps
+                timestamp = max(0, duration - seconds_from_end)
+                
+                print(f"[Worker] Extracting frame at {timestamp:.3f}s (fps={fps:.2f}, duration={duration:.2f}s, offset={frame_offset})", flush=True)
+                
+                # Extract frame
+                output_frame = video_path.parent / f"{video_path.stem}_lastframe.jpg"
+                extract_cmd = [
+                    "ffmpeg", "-y", "-ss", str(timestamp), "-i", str(video_path),
+                    "-frames:v", "1", "-q:v", "2", str(output_frame)
+                ]
+                extract_result = subprocess.run(extract_cmd, capture_output=True, text=True)
+                
+                if extract_result.returncode == 0 and output_frame.exists():
+                    print(f"[Worker] Extracted frame to {output_frame.name}", flush=True)
+                    return output_frame
+                else:
+                    print(f"[Worker] ffmpeg frame extraction failed: {extract_result.stderr}", flush=True)
+                    return None
+                    
+            except Exception as e:
+                print(f"[Worker] Frame extraction error: {e}", flush=True)
+                return None
+        
         def process_single_clip(clip_index: int):
             """Process a single clip - runs in thread"""
             if generator.cancelled:
@@ -722,6 +787,20 @@ class JobWorker:
             end_frame = frames["end_frame"]
             start_index = frames["start_index"]
             end_index = frames["end_index"]
+            clip_mode = frames.get("clip_mode", "blend")
+            
+            # Handle "continue" mode - use extracted frame from APPROVED previous clip
+            if clip_mode == "continue" and clip_index > 0:
+                prev_video = approved_clip_videos.get(clip_index - 1)
+                if prev_video and Path(prev_video).exists():
+                    extracted = extract_frame_from_video(Path(prev_video), frame_offset=-8)
+                    if extracted:
+                        start_frame = extracted
+                        print(f"[Worker] Clip {clip_index}: Using extracted frame from APPROVED clip {clip_index - 1}", flush=True)
+                    else:
+                        print(f"[Worker] Clip {clip_index}: Frame extraction failed, using original image", flush=True)
+                else:
+                    print(f"[Worker] Clip {clip_index}: Approved previous clip video not found, using original image", flush=True)
             
             # Update clip status to generating
             with get_db() as db:
@@ -733,14 +812,15 @@ class JobWorker:
                 if clip:
                     clip.status = ClipStatus.GENERATING.value
                     clip.started_at = datetime.utcnow()
-                    clip.start_frame = start_frame.name
+                    clip.start_frame = start_frame.name if hasattr(start_frame, 'name') else str(start_frame)
                     clip.end_frame = end_frame.name if end_frame else None
                     db.commit()
             
             # Log exact frame assignment for debugging
+            start_name = start_frame.name if hasattr(start_frame, 'name') else str(start_frame)
             print(f"[Worker] CLIP {clip_index} FRAME ASSIGNMENT:", flush=True)
-            print(f"  - start_frame: {start_frame.name} (index {start_index})", flush=True)
-            print(f"  - end_frame: {end_frame.name if end_frame else 'None'} (index {end_index})", flush=True)
+            print(f"  - start_frame: {start_name} (mode={clip_mode})", flush=True)
+            print(f"  - end_frame: {end_frame.name if end_frame else 'None'}", flush=True)
             
             self._broadcast_event(job_id, {
                 "type": "clip_started",
@@ -941,16 +1021,81 @@ class JobWorker:
             
             # Determine batch size based on available keys
             available_keys = generator.api_keys.get_available_key_count()
-            batch_size = min(parallel_clips, available_keys, len(pending_clips))
+            
+            # For continue mode clips in waiting_clips, check if previous clip is APPROVED
+            newly_ready = []
+            still_waiting = []
+            
+            for clip_idx in waiting_clips:
+                prev_idx = clip_idx - 1
+                # Check if previous clip is approved
+                if prev_idx in approved_clip_videos:
+                    # Previous clip is approved, move this to pending
+                    newly_ready.append(clip_idx)
+                    # Update clip status from WAITING_APPROVAL to PENDING
+                    with get_db() as db:
+                        clip = db.query(Clip).filter(
+                            Clip.job_id == job_id,
+                            Clip.clip_index == clip_idx
+                        ).first()
+                        if clip and clip.status == ClipStatus.WAITING_APPROVAL.value:
+                            clip.status = ClipStatus.PENDING.value
+                            db.commit()
+                            print(f"[Worker] Clip {clip_idx}: Previous approved, moved to PENDING", flush=True)
+                else:
+                    still_waiting.append(clip_idx)
+            
+            # Update waiting_clips
+            waiting_clips = still_waiting
+            
+            # Add newly ready clips to pending
+            if newly_ready:
+                pending_clips.extend(newly_ready)
+                print(f"[Worker] {len(newly_ready)} clips now ready after approval", flush=True)
+            
+            # All pending clips are ready (no dependency check needed anymore - that's handled by waiting_clips)
+            ready_clips = pending_clips.copy()
+            
+            if not ready_clips:
+                # No clips ready - check if we're waiting for approvals
+                if waiting_clips:
+                    # Still have clips waiting for approval - pause job processing
+                    print(f"[Worker] {len(waiting_clips)} clips waiting for user approval", flush=True)
+                    time.sleep(2)  # Check every 2 seconds for approvals
+                    
+                    # Check database for any approved clips
+                    with get_db() as db:
+                        for clip_idx in waiting_clips:
+                            prev_idx = clip_idx - 1
+                            prev_clip = db.query(Clip).filter(
+                                Clip.job_id == job_id,
+                                Clip.clip_index == prev_idx
+                            ).first()
+                            if prev_clip and prev_clip.approval_status == "approved":
+                                # Found an approval! Add to approved_clip_videos
+                                if prev_idx not in approved_clip_videos:
+                                    video_path = None
+                                    if prev_clip.output_filename:
+                                        video_path = str(output_dir / prev_clip.output_filename)
+                                    approved_clip_videos[prev_idx] = video_path
+                                    print(f"[Worker] Detected approval for clip {prev_idx}", flush=True)
+                    
+                    continue
+                else:
+                    # Nothing pending and nothing waiting - we're done
+                    break
+            
+            batch_size = min(parallel_clips, available_keys, len(ready_clips))
             
             if batch_size == 0:
                 continue
             
             # Get next batch of clips
-            batch = pending_clips[:batch_size]
-            pending_clips = pending_clips[batch_size:]
+            batch = ready_clips[:batch_size]
+            # Remove processed clips from pending
+            pending_clips = [c for c in pending_clips if c not in batch]
             
-            print(f"[Worker] Processing batch of {batch_size} clips ({available_keys} keys available)", flush=True)
+            print(f"[Worker] Processing batch of {batch_size} clips ({available_keys} keys available, {len(waiting_clips)} awaiting approval)", flush=True)
             
             # Process batch in parallel
             with ThreadPoolExecutor(max_workers=batch_size) as clip_executor:
@@ -972,10 +1117,17 @@ class JobWorker:
                             print(f"[Worker] Clip {clip_index} failed due to no keys, re-queuing", flush=True)
                         elif result.get("success"):
                             completed += 1
+                            # Track completed video for "continue" mode
+                            inner_result = result.get("result", {})
+                            if inner_result.get("output_path"):
+                                completed_clip_videos[clip_index] = str(inner_result["output_path"])
+                                print(f"[Worker] Tracked completed video for clip {clip_index}: {inner_result['output_path'].name}", flush=True)
                         elif result.get("skipped"):
                             skipped += 1
                         else:
                             failed += 1
+                            # For failed clips, still mark as "done" so dependent clips can fall back
+                            completed_clip_videos[clip_index] = None
                         
                         # Update job progress
                         with get_db() as db:
@@ -991,6 +1143,8 @@ class JobWorker:
                     except Exception as e:
                         print(f"[Worker] Future error for clip {clip_index}: {e}")
                         failed += 1
+                        # Mark as done so dependents can proceed
+                        completed_clip_videos[clip_index] = None
                 
                 # Add re-queued clips back to pending
                 if requeue_clips:

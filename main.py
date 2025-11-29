@@ -48,7 +48,17 @@ class DialogueLineInput(BaseModel):
     id: int
     text: str
     start_image_idx: Optional[int] = None  # Storyboard image assignment
-    scene_interpolate: Optional[bool] = True  # Whether to interpolate to next scene's image
+    scene_index: Optional[int] = None      # Which scene this clip belongs to
+    clip_mode: Optional[str] = "blend"     # 'blend' | 'continue' | 'fresh'
+    scene_transition: Optional[str] = None # 'blend' | 'cut' | null (for first scene)
+
+
+class SceneInput(BaseModel):
+    sceneIndex: int
+    imageIndex: int
+    clipMode: str = "blend"        # 'blend' | 'continue' | 'fresh'
+    transition: Optional[str] = None  # 'blend' | 'cut' | null for first scene
+    clips: List[int] = []          # List of clip indices in this scene
 
 
 class VideoConfigInput(BaseModel):
@@ -63,6 +73,7 @@ class VideoConfigInput(BaseModel):
     custom_prompt: str = ""  # User's custom prompt when AI is disabled
     user_context: str = ""  # User context for AI prompt generation
     single_image_mode: bool = False  # Use same image for start/end frames
+    storyboard_mode: bool = False    # Whether in storyboard mode
 
 
 class APIKeysInput(BaseModel):
@@ -75,6 +86,7 @@ class CreateJobRequest(BaseModel):
     dialogue_lines: List[DialogueLineInput]
     api_keys: APIKeysInput
     job_id: Optional[str] = None  # Use existing upload job_id if provided
+    scenes: Optional[List[SceneInput]] = None  # Scene definitions for storyboard mode
 
 
 class JobResponse(BaseModel):
@@ -362,15 +374,21 @@ async def create_job(
     config_dict = config.model_dump()
     print(f"[main.py] Creating job with config: language={config_dict.get('language')}, user_context='{config_dict.get('user_context', '')[:50] if config_dict.get('user_context') else 'empty'}'")
     
-    # Convert dialogue lines to dict, preserving start_image_idx
+    # Convert dialogue lines to dict, preserving all clip settings
     dialogue_list = [d.model_dump() for d in request.dialogue_lines]
-    print(f"[main.py] Dialogue lines with image assignments: {json.dumps(dialogue_list, indent=2)}")
+    print(f"[main.py] Dialogue lines with clip settings: {json.dumps(dialogue_list, indent=2)}")
+    
+    # Convert scenes if provided (storyboard mode)
+    scenes_list = None
+    if request.scenes:
+        scenes_list = [s.model_dump() for s in request.scenes]
+        print(f"[main.py] Scenes structure: {json.dumps(scenes_list, indent=2)}")
     
     job = Job(
         id=job_id,
         status=JobStatus.PENDING.value,
         config_json=json.dumps(config_dict),
-        dialogue_json=json.dumps(dialogue_list),
+        dialogue_json=json.dumps({"lines": dialogue_list, "scenes": scenes_list}),
         api_keys_json=json.dumps(api_keys_data),
         images_dir=str(images_dir),
         output_dir=str(output_dir),
@@ -594,6 +612,7 @@ async def get_job_clips(job_id: str, db: Session = Depends(get_db_session)):
 async def approve_clip(clip_id: int, db: Session = Depends(get_db_session)):
     """
     Approve a clip - marks it as accepted by the user.
+    For 'continue' mode scenes, this allows the next clip to start generating.
     """
     clip = db.query(Clip).filter(Clip.id == clip_id).first()
     
@@ -620,10 +639,22 @@ async def approve_clip(clip_id: int, db: Session = Depends(get_db_session)):
     
     add_job_log(db, clip.job_id, f"Clip {clip.clip_index + 1} approved by user", "INFO", "approval")
     
+    # Check if there's a next clip waiting for this approval (continue mode)
+    next_clip = db.query(Clip).filter(
+        Clip.job_id == clip.job_id,
+        Clip.clip_index == clip.clip_index + 1
+    ).first()
+    
+    next_clip_triggered = False
+    if next_clip and next_clip.status == ClipStatus.WAITING_APPROVAL.value:
+        # There's a clip waiting - it will be picked up by the worker's polling loop
+        add_job_log(db, clip.job_id, f"Clip {clip.clip_index + 2} can now proceed (was waiting for approval)", "INFO", "approval")
+        next_clip_triggered = True
+    
     return ApprovalResponse(
         clip_id=clip.id,
         status="approved",
-        message="Clip has been approved",
+        message="Clip approved" + (" - next clip will start generating" if next_clip_triggered else ""),
         attempts_remaining=3 - clip.generation_attempt
     )
 

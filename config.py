@@ -82,6 +82,7 @@ class ClipStatus(str, Enum):
     SKIPPED = "skipped"
     RETRYING = "retrying"
     REDO_QUEUED = "redo_queued"  # Waiting for redo generation
+    WAITING_APPROVAL = "waiting_approval"  # Continue mode: waiting for previous clip approval
 
 
 class ApprovalStatus(str, Enum):
