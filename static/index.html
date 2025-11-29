@@ -69,9 +69,9 @@
         
         .info-icon { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; background: var(--bg-input); color: var(--text-muted); border-radius: 50%; font-size: 10px; cursor: help; position: relative; transition: all 0.2s; border: 1px solid var(--border-color); }
         .info-icon:hover { background: var(--accent); color: white; border-color: var(--accent); }
-        .info-icon .tooltip { display: none; position: absolute; bottom: calc(100% + 10px); left: 50%; transform: translateX(-50%); background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px 16px; width: 280px; z-index: 1000; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); text-transform: none; letter-spacing: normal; }
+        .info-icon .tooltip { display: none; position: absolute; bottom: calc(100% + 10px); left: 0; transform: none; background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: var(--radius-md); padding: 14px 16px; width: 280px; max-width: calc(100vw - 40px); z-index: 1000; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4); text-transform: none; letter-spacing: normal; }
         .info-icon:hover .tooltip { display: block; }
-        .info-icon .tooltip::after { content: ''; position: absolute; top: 100%; left: 50%; transform: translateX(-50%); border: 8px solid transparent; border-top-color: var(--border-color); }
+        .info-icon .tooltip::after { content: ''; position: absolute; top: 100%; left: 20px; transform: none; border: 8px solid transparent; border-top-color: var(--border-color); }
         .info-icon .tooltip h5 { font-size: 12px; font-weight: 600; color: var(--text-primary); margin-bottom: 8px; }
         .info-icon .tooltip p { font-size: 11px; color: var(--text-secondary); line-height: 1.5; margin: 0 0 8px 0; }
         .info-icon .tooltip p:last-child { margin-bottom: 0; }
@@ -81,11 +81,21 @@
         .info-icon .tooltip td { padding: 6px 8px; border: 1px solid var(--border-color); color: var(--text-secondary); }
         .info-icon .tooltip td:first-child { font-weight: 500; background: var(--bg-elevated); color: var(--text-primary); }
         
-        .upload-area { border: 2px dashed var(--border-color); border-radius: var(--radius-md); padding: 20px 16px; text-align: center; cursor: pointer; transition: all 0.2s ease; background: var(--bg-input); }
+        .upload-area { border: 2px dashed var(--border-color); border-radius: var(--radius-md); padding: 20px 16px; text-align: center; cursor: pointer; transition: all 0.2s ease; background: var(--bg-input); position: relative; }
         .upload-area:hover { border-color: var(--accent); background: rgba(99, 102, 241, 0.05); }
+        .upload-area.uploading { pointer-events: none; border-color: var(--accent); }
         .upload-area .upload-icon { font-size: 28px; margin-bottom: 6px; }
         .upload-area p { font-size: 12px; color: var(--text-secondary); margin-bottom: 2px; }
         .upload-area span { font-size: 10px; color: var(--text-muted); }
+        
+        /* Upload loading animation */
+        .upload-loading { display: none; flex-direction: column; align-items: center; gap: 12px; padding: 10px 0; }
+        .upload-area.uploading .upload-loading { display: flex; }
+        .upload-area.uploading .upload-content { display: none; }
+        .upload-spinner { width: 32px; height: 32px; border: 3px solid var(--border-color); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .upload-loading-text { font-size: 12px; color: var(--accent); font-weight: 500; }
+        
         .uploaded { font-size: 11px; color: var(--success); margin-top: 8px; font-weight: 500; }
         
         .image-thumbnails { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
@@ -377,9 +387,15 @@
                     <!-- Simple Mode: Just upload area and thumbnails -->
                     <div id="simpleModeContainer" class="simple-mode-container">
                         <div class="upload-area" id="uploadArea">
-                            <div class="upload-icon">📤</div>
-                            <p>Drop images or click to upload</p>
-                            <span>PNG, JPG, WebP • Required</span>
+                            <div class="upload-content">
+                                <div class="upload-icon">📤</div>
+                                <p>Drop images or click to upload</p>
+                                <span>PNG, JPG, WebP • Required</span>
+                            </div>
+                            <div class="upload-loading">
+                                <div class="upload-spinner"></div>
+                                <span class="upload-loading-text">Uploading...</span>
+                            </div>
                         </div>
                         <input type="file" id="fileInput" multiple accept=".png,.jpg,.jpeg,.webp" hidden>
                         <div class="uploaded" id="uploadedCount"></div>
@@ -660,19 +676,34 @@ Example: A realistic vertical video of a professional presenter speaking directl
         
         async function upload(files){
             if(!files.length)return;
-            const fd=new FormData();
-            files.forEach(f=>fd.append('files',f));
-            if(uploadJobId)fd.append('job_id',uploadJobId);
-            const r=await fetch(`${API}/upload`,{method:'POST',body:fd});
-            const d=await r.json();
-            uploadJobId=d.job_id;
-            uploadedImages=uploadedImages.concat(d.uploaded);
-            for(const f of files){
-                const reader=new FileReader();
-                reader.onload=(e)=>{uploadedFilesData.push({name:f.name,dataUrl:e.target.result,index:uploadedFilesData.length});updateUIMode();};
-                reader.readAsDataURL(f);
+            
+            // Show loading state
+            uploadArea.classList.add('uploading');
+            const loadingText = uploadArea.querySelector('.upload-loading-text');
+            if(loadingText) loadingText.textContent = `Uploading ${files.length} image${files.length > 1 ? 's' : ''}...`;
+            
+            try {
+                const fd=new FormData();
+                files.forEach(f=>fd.append('files',f));
+                if(uploadJobId)fd.append('job_id',uploadJobId);
+                const r=await fetch(`${API}/upload`,{method:'POST',body:fd});
+                const d=await r.json();
+                uploadJobId=d.job_id;
+                uploadedImages=uploadedImages.concat(d.uploaded);
+                for(const f of files){
+                    const reader=new FileReader();
+                    reader.onload=(e)=>{uploadedFilesData.push({name:f.name,dataUrl:e.target.result,index:uploadedFilesData.length});updateUIMode();};
+                    reader.readAsDataURL(f);
+                }
+                document.getElementById('uploadedCount').textContent=uploadedImages.length?`✓ ${uploadedImages.length} image${uploadedImages.length>1?'s':''} uploaded`:'';
+            } catch(e) {
+                console.error('Upload error:', e);
+                alert('Upload failed: ' + e.message);
+            } finally {
+                // Hide loading state
+                uploadArea.classList.remove('uploading');
+                if(loadingText) loadingText.textContent = 'Uploading...';
             }
-            document.getElementById('uploadedCount').textContent=uploadedImages.length?`✓ ${uploadedImages.length} image${uploadedImages.length>1?'s':''} uploaded`:'';
         }
         
         function renderThumbnails(){
