@@ -563,7 +563,7 @@ class JobWorker:
         with get_db() as db:
             # First pass: determine start_image_idx for each clip
             clip_assignments = []
-            clip_interpolation = []  # Per-clip interpolation settings
+            clip_interpolation = []  # Per-clip: does the NEXT scene want us to blend into it?
             is_storyboard = False
             
             for i, line_data in enumerate(dialogue_data):
@@ -585,32 +585,38 @@ class JobWorker:
                 print(f"[Worker] Clip {i}: start_image_idx={start_idx} (forced={forced_idx}), scene_interpolate={scene_interp}", flush=True)
             
             # Second pass: create clips with proper end frames
-            # RULE: End frame of clip N = Start frame of clip N+1 (if interpolation is enabled for that scene)
+            # NEW LOGIC: scene_interpolate on a clip means "the scene I belong to wants PREVIOUS clips to blend INTO me"
+            # So we check the NEXT clip's scene_interpolate to decide if THIS clip should blend to next
             for i, line_data in enumerate(dialogue_data):
                 start_idx = clip_assignments[i]
-                scene_interp = clip_interpolation[i]
                 
-                # Determine end frame based on global interpolation AND scene-level interpolation
-                if use_interpolation and scene_interp:
-                    if i < len(clip_assignments) - 1:
-                        # Not the last clip: end frame is NEXT clip's start frame
-                        end_idx = clip_assignments[i + 1]
+                # Check if we should interpolate TO the next clip
+                should_interpolate = False
+                if use_interpolation and i < len(clip_assignments) - 1:
+                    # Check if the NEXT clip's scene wants us to blend into it
+                    next_scene_interp = clip_interpolation[i + 1]
+                    # Also check if we're actually changing images (same image = no visible interpolation needed but still do it)
+                    should_interpolate = next_scene_interp
+                
+                if should_interpolate:
+                    # Blend to next clip's image
+                    end_idx = clip_assignments[i + 1]
+                elif use_interpolation and i == len(clip_assignments) - 1:
+                    # Last clip behavior
+                    if is_storyboard:
+                        # Storyboard: stay on assigned image (no loop)
+                        end_idx = start_idx
                     else:
-                        # Last clip behavior differs by mode:
-                        if is_storyboard:
-                            # Storyboard: stay on assigned image (no loop)
-                            end_idx = start_idx
-                        else:
-                            # Auto-cycle: loop back to first clip's image
-                            end_idx = clip_assignments[0]
+                        # Auto-cycle: loop back to first clip's image
+                        end_idx = clip_assignments[0]
                 else:
-                    # No interpolation for this clip - stay on same image
+                    # No interpolation - stay on same image
                     end_idx = start_idx
                 
                 start_frame_name = images[start_idx].name
-                end_frame_name = images[end_idx].name if (use_interpolation and scene_interp) else images[start_idx].name
+                end_frame_name = images[end_idx].name
                 
-                print(f"[Worker] Clip {i}: {start_frame_name} → {end_frame_name or 'N/A'} (interpolate={scene_interp})", flush=True)
+                print(f"[Worker] Clip {i}: {start_frame_name} → {end_frame_name} (should_interpolate={should_interpolate})", flush=True)
                 
                 # Create clip with frame info stored
                 clip = Clip(
