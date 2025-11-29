@@ -592,48 +592,44 @@ class JobWorker:
             for i, info in enumerate(clip_info):
                 start_idx = info["image_idx"]
                 clip_mode = info["clip_mode"]
+                scene_transition = info["scene_transition"]  # How THIS clip transitions FROM previous
                 
-                # Determine end frame based on clip mode and next clip
-                if clip_mode == "blend":
-                    # Blend mode: morph to next clip's image (if different) or same image
-                    if i < len(clip_info) - 1:
-                        next_info = clip_info[i + 1]
-                        # Check if next clip is in same scene or wants blend transition
-                        if next_info["scene_index"] == info["scene_index"]:
-                            # Same scene - blend to same image (creates motion)
-                            end_idx = start_idx
-                        elif next_info["scene_transition"] == "blend":
-                            # Different scene with blend transition - morph to next image
-                            end_idx = next_info["image_idx"]
-                        else:
-                            # Different scene with cut - stay on same image
-                            end_idx = start_idx
-                    else:
-                        # Last clip - stay on same image
-                        end_idx = start_idx
-                        
-                elif clip_mode == "continue":
-                    # Continue mode: start from previous clip's last frame (will be set dynamically)
-                    # For now, set end_idx = start_idx (will stay on extracted frame)
-                    end_idx = start_idx
-                    
-                elif clip_mode == "fresh":
-                    # Fresh mode: always use original image, no blending
-                    end_idx = start_idx
-                    
-                else:
-                    # Default: same as blend
-                    end_idx = start_idx
+                # Default: start and end on our assigned image
+                actual_start_idx = start_idx
+                actual_end_idx = start_idx
                 
-                start_frame_name = images[start_idx].name
-                end_frame_name = images[end_idx].name
+                # Determine end frame based on what the NEXT clip wants
+                if i < len(clip_info) - 1:
+                    next_info = clip_info[i + 1]
+                    
+                    if next_info["scene_index"] != info["scene_index"]:
+                        # Next clip is in a DIFFERENT scene
+                        if next_info["scene_transition"] == "blend":
+                            # Next scene wants BLEND transition
+                            # So THIS clip should morph toward next scene's image
+                            actual_end_idx = next_info["image_idx"]
+                            print(f"[Worker] Clip {i}: Will morph to next scene's image {actual_end_idx} (blend transition)", flush=True)
+                        # else: "cut" transition - stay on our image (actual_end_idx = start_idx already)
+                    # else: Same scene - stay on our image for internal motion
+                
+                # Handle THIS clip's start based on scene_transition
+                # NOTE: For "blend" transition, the PREVIOUS clip already morphed toward us,
+                # so we should START on our OWN image, not the previous scene's image
+                # The blend happens on the previous clip's END, not this clip's START
+                
+                # For "continue" mode, the start will be overridden at runtime with extracted frame
+                # For "fresh" mode, always use original image
+                # For "blend" mode (within scene), use our assigned image
+                
+                start_frame_name = images[actual_start_idx].name
+                end_frame_name = images[actual_end_idx].name
                 
                 info["start_frame"] = start_frame_name
                 info["end_frame"] = end_frame_name
-                info["start_idx"] = start_idx
-                info["end_idx"] = end_idx
+                info["start_idx"] = actual_start_idx
+                info["end_idx"] = actual_end_idx
                 
-                print(f"[Worker] Clip {i}: {start_frame_name} → {end_frame_name} (mode={clip_mode})", flush=True)
+                print(f"[Worker] Clip {i}: {start_frame_name} → {end_frame_name} (mode={clip_mode}, transition={scene_transition})", flush=True)
                 
                 # Determine initial status
                 # For "continue" mode clips (except first in scene), set to WAITING_APPROVAL

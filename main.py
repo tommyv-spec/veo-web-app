@@ -469,6 +469,52 @@ async def get_job(job_id: str, db: Session = Depends(get_db_session)):
     )
 
 
+@app.get("/api/jobs/{job_id}/config")
+async def get_job_config(job_id: str, db: Session = Depends(get_db_session)):
+    """Get job configuration for cloning - returns config and dialogue data"""
+    job = db.query(Job).filter(Job.id == job_id).first()
+    
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    # Parse config and dialogue
+    config_data = json.loads(job.config_json) if job.config_json else {}
+    dialogue_raw = json.loads(job.dialogue_json) if job.dialogue_json else []
+    
+    # Handle both old format (list) and new format (dict with lines/scenes)
+    if isinstance(dialogue_raw, list):
+        dialogue_lines = dialogue_raw
+        scenes = None
+    else:
+        dialogue_lines = dialogue_raw.get("lines", [])
+        scenes = dialogue_raw.get("scenes", None)
+    
+    # Get list of images
+    images = []
+    if job.images_dir:
+        images_path = Path(job.images_dir)
+        if images_path.exists():
+            for img_file in sorted(images_path.glob("image_*.png")):
+                images.append({
+                    "filename": img_file.name,
+                    "url": f"/api/jobs/{job_id}/images/{img_file.name}"
+                })
+            for img_file in sorted(images_path.glob("image_*.jpg")):
+                images.append({
+                    "filename": img_file.name,
+                    "url": f"/api/jobs/{job_id}/images/{img_file.name}"
+                })
+    
+    return {
+        "job_id": job_id,
+        "config": config_data,
+        "dialogue_lines": dialogue_lines,
+        "scenes": scenes,
+        "images": images,
+        "images_dir": job.images_dir
+    }
+
+
 @app.delete("/api/jobs/{job_id}")
 async def delete_job(job_id: str, db: Session = Depends(get_db_session)):
     """Delete a job and its data"""
@@ -1157,6 +1203,30 @@ async def download_output(job_id: str, filename: str, db: Session = Depends(get_
         media_type="video/mp4",
         filename=filename,
     )
+
+
+@app.get("/api/jobs/{job_id}/images/{filename}")
+async def get_job_image(job_id: str, filename: str, db: Session = Depends(get_db_session)):
+    """Get an image from a job's images directory"""
+    job = db.query(Job).filter(Job.id == job_id).first()
+    
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    if not job.images_dir:
+        raise HTTPException(status_code=404, detail="No images directory")
+    
+    filepath = Path(job.images_dir) / filename
+    
+    if not filepath.exists():
+        raise HTTPException(status_code=404, detail="Image not found")
+    
+    # Determine media type
+    suffix = filepath.suffix.lower()
+    media_types = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp'}
+    media_type = media_types.get(suffix, 'image/png')
+    
+    return FileResponse(filepath, media_type=media_type)
 
 
 # ============ Script Splitting ============

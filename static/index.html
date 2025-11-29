@@ -713,10 +713,13 @@ Example: A realistic vertical video of a professional presenter speaking directl
             document.getElementById('contextInput').value='';
             document.getElementById('lineValidation').style.display='none';
             document.getElementById('splitStatus').style.display='none';
+            // Reset file input (important for re-uploading same files)
+            document.getElementById('fileInput').value='';
             // Reset simple editor
             renderSimpleEditor();
             // Reset storyboard
             sceneBreaks = [];
+            editorMode = 'auto-cycle';
             updateUIMode();
         }
         
@@ -2013,7 +2016,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
             })();
         }
         
-        async function loadJob(id){try{const r=await fetch(`${API}/jobs/${id}`);if(!r.ok)return;const j=await r.json();document.getElementById('jobInfo').innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><span class="badge badge-${j.status}">${j.status}</span><span class="job-id">${j.id}</span></div><div class="progress-bar" style="height:6px"><div class="progress-fill ${j.status==='running'?'generating':''}" style="width:${j.progress_percent}%"></div></div><div class="stats-row"><div class="stat"><div class="stat-val">${j.total_clips}</div><div class="stat-lbl">Total</div></div><div class="stat"><div class="stat-val" style="color:var(--success)">${j.completed_clips}</div><div class="stat-lbl">Done</div></div><div class="stat"><div class="stat-val" style="color:var(--error)">${j.failed_clips}</div><div class="stat-lbl">Failed</div></div></div>`;document.getElementById('jobActions').innerHTML=`${j.status==='running'?`<button class="btn btn-danger btn-sm" onclick="cancelJob('${j.id}')">⏹</button>`:''}${j.status==='completed'?`<button class="btn btn-primary btn-sm" onclick="downloadAll('${j.id}')">📥</button>`:''}<button class="btn btn-secondary btn-sm" onclick="deleteJob('${j.id}')">🗑</button>`;}catch(e){}}
+        async function loadJob(id){try{const r=await fetch(`${API}/jobs/${id}`);if(!r.ok)return;const j=await r.json();document.getElementById('jobInfo').innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><span class="badge badge-${j.status}">${j.status}</span><span class="job-id">${j.id}</span></div><div class="progress-bar" style="height:6px"><div class="progress-fill ${j.status==='running'?'generating':''}" style="width:${j.progress_percent}%"></div></div><div class="stats-row"><div class="stat"><div class="stat-val">${j.total_clips}</div><div class="stat-lbl">Total</div></div><div class="stat"><div class="stat-val" style="color:var(--success)">${j.completed_clips}</div><div class="stat-lbl">Done</div></div><div class="stat"><div class="stat-val" style="color:var(--error)">${j.failed_clips}</div><div class="stat-lbl">Failed</div></div></div>`;document.getElementById('jobActions').innerHTML=`<button class="btn btn-secondary btn-sm" onclick="cloneJob('${j.id}')" title="Clone settings to new job">📋</button>${j.status==='running'?`<button class="btn btn-danger btn-sm" onclick="cancelJob('${j.id}')">⏹</button>`:''}${j.status==='completed'?`<button class="btn btn-primary btn-sm" onclick="downloadAll('${j.id}')">📥</button>`:''}<button class="btn btn-secondary btn-sm" onclick="deleteJob('${j.id}')">🗑</button>`;}catch(e){}}
         
         async function loadClips(id){
             try{const r=await fetch(`${API}/jobs/${id}/clips`);if(!r.ok)return;const clips=await r.json();const c=document.getElementById('clipsList');
@@ -2089,6 +2092,137 @@ Example: A realistic vertical video of a professional presenter speaking directl
         function cancelJob(id){if(!confirm('Cancel?'))return;fetch(`${API}/jobs/${id}/cancel`,{method:'POST'}).then(()=>{loadJob(id);refreshJobsList();});}
         function deleteJob(id){if(!confirm('Delete?'))return;document.getElementById('jobDetails').style.display='none';document.getElementById('noJob').style.display='block';selectedJobId=null;fetch(`${API}/jobs/${id}`,{method:'DELETE'}).then(()=>refreshJobsList());}
         function downloadAll(id){fetch(`${API}/jobs/${id}/outputs?approved_only=true`).then(r=>r.json()).then(d=>{if(d.videos.length===0){alert('No approved clips to download');return;}d.videos.forEach((v,i)=>{setTimeout(()=>{const a=document.createElement('a');a.href=v.url;a.download=v.filename;a.click();},i*500);});});}
+        
+        async function cloneJob(id){
+            try {
+                const r = await fetch(`${API}/jobs/${id}/config`);
+                if(!r.ok) throw new Error('Failed to load job config');
+                const data = await r.json();
+                
+                // Switch to create mode
+                collapseResults();
+                
+                // Populate config settings
+                const cfg = data.config || {};
+                
+                // Aspect ratio
+                document.querySelectorAll('.aspect-btn').forEach(b => {
+                    b.classList.remove('active');
+                    if(b.dataset.value === cfg.aspect_ratio) b.classList.add('active');
+                });
+                
+                // Resolution
+                document.querySelectorAll('.resolution-toggle button').forEach(b => {
+                    b.classList.remove('active');
+                    if(b.dataset.value === cfg.resolution) b.classList.add('active');
+                });
+                
+                // Duration
+                const durationEl = document.getElementById('duration');
+                if(durationEl && cfg.duration) durationEl.value = cfg.duration;
+                
+                // Language
+                const langEl = document.getElementById('language');
+                if(langEl && cfg.language) langEl.value = cfg.language;
+                
+                // AI Prompts toggle
+                const togAI = document.getElementById('togAI');
+                if(togAI) {
+                    const useAI = cfg.use_openai_prompt_tuning !== false;
+                    togAI.dataset.value = useAI ? 'true' : 'false';
+                    togAI.classList.toggle('active', useAI);
+                }
+                
+                // User context
+                const contextEl = document.getElementById('contextInput');
+                if(contextEl && cfg.user_context) contextEl.value = cfg.user_context;
+                
+                // Custom prompt
+                const customPromptEl = document.getElementById('customPrompt');
+                if(customPromptEl && cfg.custom_prompt) customPromptEl.value = cfg.custom_prompt;
+                
+                // Dialogue lines
+                const dialogueLines = data.dialogue_lines || [];
+                if(dialogueLines.length > 0) {
+                    const formattedLines = dialogueLines.map((l, i) => `${l.id || i+1}|${l.text}`).join('\n');
+                    document.getElementById('dialogueInput').value = formattedLines;
+                }
+                
+                // Load images from the job
+                if(data.images && data.images.length > 0) {
+                    // We need to re-upload the images or reference them
+                    // For now, show a message that images need to be re-uploaded
+                    uploadedImages = [];
+                    uploadedFilesData = [];
+                    
+                    // Try to load images as dataURLs
+                    const imageLoadPromises = data.images.map(async (img, idx) => {
+                        try {
+                            const imgResponse = await fetch(img.url);
+                            const blob = await imgResponse.blob();
+                            return new Promise((resolve) => {
+                                const reader = new FileReader();
+                                reader.onload = (e) => {
+                                    resolve({
+                                        name: img.filename,
+                                        originalName: img.filename,
+                                        dataUrl: e.target.result,
+                                        index: idx
+                                    });
+                                };
+                                reader.readAsDataURL(blob);
+                            });
+                        } catch(e) {
+                            console.error('Failed to load image:', img.filename, e);
+                            return null;
+                        }
+                    });
+                    
+                    const loadedImages = (await Promise.all(imageLoadPromises)).filter(img => img !== null);
+                    
+                    if(loadedImages.length > 0) {
+                        // Re-upload images to create new job
+                        const fd = new FormData();
+                        for(const img of loadedImages) {
+                            // Convert dataUrl back to blob
+                            const response = await fetch(img.dataUrl);
+                            const blob = await response.blob();
+                            fd.append('files', blob, img.name);
+                        }
+                        
+                        const uploadResponse = await fetch(`${API}/upload`, {method: 'POST', body: fd});
+                        const uploadData = await uploadResponse.json();
+                        uploadJobId = uploadData.job_id;
+                        uploadedImages = uploadData.uploaded;
+                        uploadedFilesData = loadedImages;
+                        
+                        document.getElementById('uploadedCount').textContent = `✓ ${uploadedImages.length} image${uploadedImages.length>1?'s':''} cloned`;
+                    }
+                }
+                
+                // Handle scenes/storyboard mode
+                if(data.scenes && data.scenes.length > 0 && cfg.storyboard_mode) {
+                    editorMode = 'storyboard';
+                    sceneBreaks = data.scenes.map(s => ({
+                        lineIndex: s.clips[0] || 0,
+                        imgIndex: s.imageIndex,
+                        clipMode: s.clipMode || 'blend',
+                        transition: s.transition || 'blend'
+                    }));
+                }
+                
+                // Update UI
+                updateUIMode();
+                renderSimpleEditor();
+                validateDialogueLines();
+                
+                alert('Job settings cloned! Review and click Start Generation when ready.');
+                
+            } catch(e) {
+                console.error('Clone error:', e);
+                alert('Failed to clone job: ' + e.message);
+            }
+        }
         
         function showKeysExhaustedAlert(data){
             removeAlert();
