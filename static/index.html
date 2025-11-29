@@ -763,11 +763,33 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 const d=await r.json();
                 uploadJobId=d.job_id;
                 uploadedImages=uploadedImages.concat(d.uploaded);
-                for(const f of files){
-                    const reader=new FileReader();
-                    reader.onload=(e)=>{uploadedFilesData.push({name:f.name,dataUrl:e.target.result,index:uploadedFilesData.length});updateUIMode();};
-                    reader.readAsDataURL(f);
-                }
+                
+                // Load files in order using server-provided indices
+                const baseIndex = uploadedFilesData.length;
+                const loadPromises = files.map((f, fileIdx) => {
+                    return new Promise((resolve) => {
+                        const reader = new FileReader();
+                        reader.onload = (e) => {
+                            // Find the server response for this file to get the correct index
+                            const serverInfo = d.uploaded.find(u => u.original_filename === f.name);
+                            const actualIndex = serverInfo ? serverInfo.index : (baseIndex + fileIdx);
+                            resolve({
+                                name: serverInfo ? serverInfo.filename : f.name,
+                                originalName: f.name,
+                                dataUrl: e.target.result,
+                                index: actualIndex
+                            });
+                        };
+                        reader.readAsDataURL(f);
+                    });
+                });
+                
+                // Wait for all files to load, then add them in correct order
+                const loadedFiles = await Promise.all(loadPromises);
+                loadedFiles.sort((a, b) => a.index - b.index);
+                uploadedFilesData = uploadedFilesData.concat(loadedFiles);
+                updateUIMode();
+                
                 document.getElementById('uploadedCount').textContent=uploadedImages.length?`✓ ${uploadedImages.length} image${uploadedImages.length>1?'s':''} uploaded`:'';
             } catch(e) {
                 console.error('Upload error:', e);
