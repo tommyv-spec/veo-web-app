@@ -121,6 +121,11 @@
         /* Mode Hint */
         .storyboard-mode-hint { padding: 8px 12px; background: var(--bg-elevated); border-radius: var(--radius-sm); margin-bottom: 12px; font-size: 11px; color: var(--text-secondary); border-left: 3px solid var(--accent); }
         
+        /* Image hover preview */
+        #imagePreview { position: fixed; pointer-events: none; z-index: 10000; display: none; border-radius: var(--radius-md); overflow: hidden; box-shadow: 0 8px 32px rgba(0,0,0,0.5); border: 2px solid var(--accent); background: var(--bg-surface); }
+        #imagePreview img { display: block; max-width: 250px; max-height: 300px; object-fit: contain; }
+        #imagePreview.visible { display: block; }
+        
         .storyboard-main { display: flex; gap: 12px; }
         
         /* Sidebar: Image thumbnails */
@@ -166,6 +171,9 @@
         /* Lines with gutter numbers */
         .scene-line { position: relative; padding: 2px 0; min-height: 1.5em; }
         .scene-line::before { content: attr(data-line); position: absolute; left: -32px; width: 24px; text-align: right; font-size: 9px; color: var(--text-muted); user-select: none; pointer-events: none; opacity: 0.6; }
+        
+        /* Placeholder for empty editor */
+        .scene-line.placeholder-line:empty::before { content: 'Paste your script here...'; position: static; width: auto; text-align: left; font-size: 13px; color: var(--text-muted); opacity: 0.5; font-style: italic; }
         
         /* Image indicator dot for auto-cycle mode */
         .scene-line[data-img]::after { content: attr(data-img); position: absolute; right: 4px; top: 2px; font-size: 8px; color: var(--accent); opacity: 0.7; user-select: none; pointer-events: none; }
@@ -430,6 +438,7 @@
                                  class="storyboard-editor" 
                                  contenteditable="true"
                                  oninput="syncFromRichEditor()"
+                                 onpaste="handleRichEditorPaste(event)"
                                  ondragover="handleEditorDragOver(event)"
                                  ondragleave="handleEditorDragLeave(event)"
                                  ondrop="handleEditorDrop(event)">
@@ -577,11 +586,14 @@
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
                         <span style="font-size:11px;color:var(--text-muted);">Format: ID|Text (one per line)</span>
                     </div>
-                    <textarea id="dialogueInput" placeholder="1|First line of dialogue here
+                    <textarea id="dialogueInput" placeholder="Paste your full script here and it will auto-split into ~7 second clips.
+
+Example format:
+1|First line of dialogue here
 2|Second line goes here
 3|Third line...
 
-OR just paste your full script - it will auto-split!"></textarea>
+Or just paste plain text - line numbers are optional!"></textarea>
                     <div id="splitStatus" style="font-size:11px;color:var(--text-muted);margin-top:8px;display:none;"></div>
                     <div id="lineValidation" style="margin-top:10px;display:none;"></div>
                     <p class="tip-text">💡 <strong>Tip:</strong> Just paste your script and it will automatically split into ~7 second clips.</p>
@@ -1025,7 +1037,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     htmlContent += `<div class="scene-line" data-line="${lineIdx + 1}">${line}</div>`;
                 });
             } else {
-                htmlContent = `<div class="scene-line" data-line="">Paste your script here...</div>`;
+                htmlContent = `<div class="scene-line placeholder-line" data-line="" contenteditable="true"></div>`;
             }
             
             editor.innerHTML = `<div class="scene-text-block">${htmlContent}</div>`;
@@ -1127,7 +1139,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
                         </div>
                     `;
                 }
-                htmlContent += `<div class="scene-line" data-line="">Paste your script here...</div>`;
+                htmlContent += `<div class="scene-line placeholder-line" data-line="" contenteditable="true"></div>`;
             }
             
             editor.innerHTML = `<div class="scene-text-block">${htmlContent}</div>`;
@@ -1146,6 +1158,9 @@ Example: A realistic vertical video of a professional presenter speaking directl
         function syncFromRichEditor(){
             const editor = document.getElementById('richEditor');
             
+            // Skip if we're currently handling a paste
+            if(editor.dataset.pasting === 'true') return;
+            
             if(editorMode === 'storyboard'){
                 // In storyboard mode, read scene structure from DOM
                 syncStoryboardFromDOM();
@@ -1155,6 +1170,52 @@ Example: A realistic vertical video of a professional presenter speaking directl
             }
         }
         
+        function handleRichEditorPaste(e){
+            e.preventDefault();
+            
+            const editor = document.getElementById('richEditor');
+            const clipboardData = e.clipboardData || window.clipboardData;
+            const pastedText = clipboardData.getData('text/plain');
+            
+            if(!pastedText) return;
+            
+            // Mark that we're handling a paste to prevent duplicate processing
+            editor.dataset.pasting = 'true';
+            
+            // Get existing text (excluding placeholder)
+            let existingText = '';
+            const lines = editor.querySelectorAll('.scene-line:not(.placeholder-line)');
+            lines.forEach(line => {
+                const text = line.textContent.trim();
+                if(text) existingText += (existingText ? ' ' : '') + text;
+            });
+            
+            // Combine with pasted text
+            const fullText = existingText ? existingText + ' ' + pastedText : pastedText;
+            
+            // Update the hidden textarea
+            document.getElementById('dialogueInput').value = fullText;
+            
+            // Split and render
+            const language = document.getElementById('language').value;
+            const wps = SPEAKING_RATES[language] || 2.5;
+            const targetWords = Math.round(wps * 7);
+            const minWords = Math.round(targetWords * 0.7);
+            const maxWords = Math.round(targetWords * 1.3);
+            const newLines = smartSplitText(fullText, minWords, targetWords, maxWords);
+            
+            // Update dialogueInput with numbered lines
+            document.getElementById('dialogueInput').value = newLines.map((l, i) => `${i + 1}|${l}`).join('\n');
+            
+            // Re-render the storyboard
+            renderStoryboard();
+            
+            // Clear the pasting flag after a short delay
+            setTimeout(() => {
+                editor.dataset.pasting = 'false';
+            }, 100);
+        }
+        
         function syncAutoCycleFromDOM(){
             const editor = document.getElementById('richEditor');
             const lineElements = editor.querySelectorAll('.scene-line');
@@ -1162,12 +1223,12 @@ Example: A realistic vertical video of a professional presenter speaking directl
             
             lineElements.forEach(el => {
                 const text = el.textContent.trim();
-                if(text && text !== 'Paste your script here...') allText.push(text);
+                if(text && !el.classList.contains('placeholder-line')) allText.push(text);
             });
             
             if(allText.length === 0){
                 const rawText = editor.textContent.trim();
-                if(rawText && rawText !== 'Paste your script here...'){
+                if(rawText){
                     allText = [rawText];
                 }
             }
@@ -1211,7 +1272,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     
                 } else if(node.classList && node.classList.contains('scene-line')){
                     const text = node.textContent.trim();
-                    if(text && text !== 'Paste your script here...'){
+                    if(text && !node.classList.contains('placeholder-line')){
                         allTextSegments.push(text);
                     }
                 }
@@ -1757,6 +1818,102 @@ Example: A realistic vertical video of a professional presenter speaking directl
         loadJob=async function(id){await origLoadJob(id);await checkJobEvents(id);};
         
         refreshJobs();
+        
+        // Image hover preview
+        const imagePreview = document.createElement('div');
+        imagePreview.id = 'imagePreview';
+        imagePreview.innerHTML = '<img src="" alt="Preview">';
+        document.body.appendChild(imagePreview);
+        
+        function showImagePreview(e, imgSrc) {
+            const preview = document.getElementById('imagePreview');
+            const img = preview.querySelector('img');
+            img.src = imgSrc;
+            preview.classList.add('visible');
+            updatePreviewPosition(e);
+        }
+        
+        function hideImagePreview() {
+            const preview = document.getElementById('imagePreview');
+            preview.classList.remove('visible');
+        }
+        
+        function updatePreviewPosition(e) {
+            const preview = document.getElementById('imagePreview');
+            if (!preview.classList.contains('visible')) return;
+            
+            const padding = 15;
+            let x = e.clientX + padding;
+            let y = e.clientY + padding;
+            
+            // Get preview dimensions (use estimates if not yet rendered)
+            const previewRect = preview.getBoundingClientRect();
+            const previewWidth = previewRect.width || 250;
+            const previewHeight = previewRect.height || 300;
+            
+            // Keep within viewport
+            if (x + previewWidth > window.innerWidth - padding) {
+                x = e.clientX - previewWidth - padding;
+            }
+            if (y + previewHeight > window.innerHeight - padding) {
+                y = e.clientY - previewHeight - padding;
+            }
+            if (x < padding) x = padding;
+            if (y < padding) y = padding;
+            
+            preview.style.left = x + 'px';
+            preview.style.top = y + 'px';
+        }
+        
+        // Attach hover events to images (using event delegation)
+        document.addEventListener('mouseover', function(e) {
+            // Check if hovering over sidebar image
+            const sidebarImg = e.target.closest('.storyboard-sidebar-image');
+            if (sidebarImg) {
+                const img = sidebarImg.querySelector('img');
+                if (img) showImagePreview(e, img.src);
+                return;
+            }
+            
+            // Check if hovering over scene divider image
+            const sceneDivider = e.target.closest('.scene-divider');
+            if (sceneDivider) {
+                const img = sceneDivider.querySelector('img');
+                if (img) showImagePreview(e, img.src);
+                return;
+            }
+            
+            // Check if hovering over simple mode thumbnail
+            const thumbImg = e.target.closest('.image-thumb');
+            if (thumbImg) {
+                const img = thumbImg.querySelector('img');
+                if (img) showImagePreview(e, img.src);
+                return;
+            }
+        });
+        
+        document.addEventListener('mouseout', function(e) {
+            const sidebarImg = e.target.closest('.storyboard-sidebar-image');
+            const sceneDivider = e.target.closest('.scene-divider');
+            const thumbImg = e.target.closest('.image-thumb');
+            
+            if (sidebarImg || sceneDivider || thumbImg) {
+                // Check if we're moving to a child element
+                const related = e.relatedTarget;
+                if (related && (
+                    (sidebarImg && sidebarImg.contains(related)) ||
+                    (sceneDivider && sceneDivider.contains(related)) ||
+                    (thumbImg && thumbImg.contains(related))
+                )) {
+                    return;
+                }
+                hideImagePreview();
+            }
+        });
+        
+        document.addEventListener('mousemove', function(e) {
+            updatePreviewPosition(e);
+        });
     </script>
 </body>
 </html>
