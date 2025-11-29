@@ -153,11 +153,12 @@
         .storyboard-editor.drag-over::after { content: 'Drop image here to create scene break'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: var(--accent); color: white; padding: 8px 16px; border-radius: var(--radius-sm); font-size: 11px; pointer-events: none; }
         
         /* Scene Divider - for Storyboard mode */
-        .scene-divider { display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin: 12px 0 6px -28px; background: var(--bg-elevated); border: 1px solid var(--accent); border-radius: var(--radius-sm); user-select: none; transition: all 0.2s; }
+        .scene-divider { display: flex; align-items: center; gap: 8px; padding: 6px 10px; margin: 12px 0 6px -28px; background: var(--bg-elevated); border: 1px solid var(--accent); border-radius: var(--radius-sm); user-select: none; transition: all 0.2s; position: relative; }
         .scene-divider:hover { border-color: var(--accent); background: rgba(99, 102, 241, 0.1); }
         .scene-divider.dragging { opacity: 0.5; border-style: dashed; }
         .scene-divider:first-child { margin-top: 0; }
-        .scene-divider img { width: 28px; height: 28px; border-radius: 3px; object-fit: cover; pointer-events: none; flex-shrink: 0; }
+        .scene-divider-img-wrapper { position: relative; flex-shrink: 0; }
+        .scene-divider-img-wrapper img { width: 36px; height: 36px; border-radius: 4px; object-fit: cover; pointer-events: none; display: block; }
         .scene-divider-info { flex: 1; pointer-events: none; }
         .scene-divider-label { font-size: 10px; font-weight: 700; color: var(--accent); }
         .scene-divider-hint { font-size: 9px; color: var(--text-muted); }
@@ -165,12 +166,12 @@
         .scene-divider-remove { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 12px; padding: 2px 6px; border-radius: 3px; }
         .scene-divider-remove:hover { color: var(--error); background: rgba(239, 68, 68, 0.1); }
         
-        /* Interpolation toggle on scene divider */
-        .scene-interp-toggle { display: flex; align-items: center; gap: 4px; padding: 2px 6px; background: var(--bg-input); border-radius: 4px; cursor: pointer; border: 1px solid var(--border-color); transition: all 0.2s; }
-        .scene-interp-toggle:hover { border-color: var(--accent); }
-        .scene-interp-toggle.active { background: rgba(99, 102, 241, 0.2); border-color: var(--accent); }
-        .scene-interp-toggle .interp-icon { font-size: 10px; }
-        .scene-interp-toggle .interp-label { font-size: 8px; color: var(--text-muted); text-transform: uppercase; font-weight: 600; }
+        /* Interpolation toggle - overlays on image */
+        .scene-interp-toggle { position: absolute; top: -6px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 3px; padding: 2px 6px; background: var(--bg-surface); border-radius: 3px; cursor: pointer; border: 1px solid var(--border-color); transition: all 0.2s; white-space: nowrap; z-index: 1; box-shadow: 0 2px 4px rgba(0,0,0,0.3); }
+        .scene-interp-toggle:hover { border-color: var(--accent); background: var(--bg-elevated); }
+        .scene-interp-toggle.active { background: rgba(99, 102, 241, 0.3); border-color: var(--accent); }
+        .scene-interp-toggle .interp-icon { font-size: 9px; }
+        .scene-interp-toggle .interp-label { font-size: 7px; color: var(--text-secondary); text-transform: uppercase; font-weight: 600; letter-spacing: 0.3px; }
         .scene-interp-toggle.active .interp-label { color: var(--accent); }
         
         /* Drop zone indicator between lines */
@@ -1263,20 +1264,22 @@ Example: A realistic vertical video of a professional presenter speaking directl
                              contenteditable="false" 
                              data-scene-idx="${sceneIdx}"
                              ${isDraggable ? `draggable="true" ondragstart="handleSceneDragStart(event, ${sceneIdx})"` : ''}>
-                            <img src="${img.dataUrl}">
+                            <div class="scene-divider-img-wrapper">
+                                <img src="${img.dataUrl}">
+                                ${!isFirstScene ? `
+                                    <div class="scene-interp-toggle ${hasInterpolation ? 'active' : ''}" 
+                                         onclick="event.stopPropagation();toggleSceneInterpolation(${sceneIdx})"
+                                         title="${hasInterpolation ? 'Smooth blend transition to this scene' : 'Hard cut transition to this scene'}">
+                                        <span class="interp-icon">${hasInterpolation ? '🔄' : '✂️'}</span>
+                                        <span class="interp-label">${hasInterpolation ? 'Blend to' : 'Cut to'}</span>
+                                    </div>
+                                ` : ''}
+                            </div>
                             <div class="scene-divider-info">
                                 <span class="scene-divider-label">Scene ${sceneIdx + 1} (Image ${scene.imgIndex + 1})</span>
                                 <span class="scene-divider-hint">Clips #${scene.lineIndex + 1}${endLine > scene.lineIndex + 1 ? '-' + endLine : ''}</span>
                             </div>
                             <div class="scene-divider-actions">
-                                ${!isFirstScene ? `
-                                    <div class="scene-interp-toggle ${hasInterpolation ? 'active' : ''}" 
-                                         onclick="event.stopPropagation();toggleSceneInterpolation(${sceneIdx})"
-                                         title="${hasInterpolation ? 'Blend: Previous scene morphs into this one' : 'Cut: Hard cut from previous scene'}">
-                                        <span class="interp-icon">${hasInterpolation ? '🔄' : '✂️'}</span>
-                                        <span class="interp-label">${hasInterpolation ? 'Blend' : 'Cut'}</span>
-                                    </div>
-                                ` : ''}
                                 ${isDraggable ? `<button class="scene-divider-remove" onclick="event.stopPropagation();removeSceneBreak(${sceneIdx})">✕</button>` : ''}
                             </div>
                         </div>
@@ -1294,7 +1297,9 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     const img = uploadedFilesData[0];
                     htmlContent += `
                         <div class="scene-divider" contenteditable="false" data-scene-idx="0">
-                            <img src="${img.dataUrl}">
+                            <div class="scene-divider-img-wrapper">
+                                <img src="${img.dataUrl}">
+                            </div>
                             <div class="scene-divider-info">
                                 <span class="scene-divider-label">Scene 1 (Image 1)</span>
                                 <span class="scene-divider-hint">Paste your script below</span>
@@ -1758,9 +1763,52 @@ Example: A realistic vertical video of a professional presenter speaking directl
             container.style.display='block';
         }
         document.getElementById('language').addEventListener('change', function(){
-            if(isStoryboardMode()) renderStoryboard();
-            else validateDialogueLines();
+            if(isStoryboardMode()){
+                // Re-split and re-render storyboard
+                resplitDialogueText();
+                renderStoryboard();
+            } else {
+                // Re-split and re-render simple editor
+                resplitDialogueText();
+                renderSimpleEditor();
+                validateDialogueLines();
+            }
         });
+        
+        function resplitDialogueText(){
+            const dialogueInput = document.getElementById('dialogueInput');
+            const text = dialogueInput.value.trim();
+            if(!text) return;
+            
+            // Get all text content (remove line numbers if present)
+            const rawText = text.split('\n')
+                .map(line => line.replace(/^\d+\|/, '').trim())
+                .filter(line => line)
+                .join(' ');
+            
+            if(!rawText) return;
+            
+            // Re-split with new language settings
+            const language = document.getElementById('language').value;
+            const wps = SPEAKING_RATES[language] || 2.5;
+            const targetWords = Math.round(wps * 7);
+            const minWords = Math.round(targetWords * 0.7);
+            const maxWords = Math.round(targetWords * 1.3);
+            
+            const newLines = smartSplitText(rawText, minWords, targetWords, maxWords);
+            
+            // Update dialogueInput with new splits
+            dialogueInput.value = newLines.map((l, i) => `${i + 1}|${l}`).join('\n');
+            
+            // Show status
+            const status = document.getElementById('splitStatus');
+            if(status && newLines.length > 0){
+                status.style.display = 'block';
+                status.textContent = `✓ Re-split for ${language}: ${newLines.length} clips (~${Math.round(targetWords)} words each)`;
+                status.style.color = 'var(--success)';
+                setTimeout(() => { status.style.display = 'none'; }, 3000);
+            }
+        }
         
         async function createJob(){
             const btn=document.getElementById('startBtn');btn.disabled=true;btn.innerHTML='⏳ Starting...';
