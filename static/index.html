@@ -1043,7 +1043,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
             // Split the text
             const language = document.getElementById('language').value;
             const wps = SPEAKING_RATES[language] || 2.5;
-            const targetWords = Math.round(wps * 7);
+            const targetWords = Math.round(wps * 6);
             const minWords = Math.round(targetWords * 0.7);
             const maxWords = Math.round(targetWords * 1.3);
             const newLines = smartSplitText(fullText, minWords, targetWords, maxWords);
@@ -1103,10 +1103,10 @@ Example: A realistic vertical video of a professional presenter speaking directl
             let currentLine = [];
             let wordCount = 0;
             
-            // Tight range: 6-7.5 seconds
-            // For English (2.5 wps): 6s=15 words, 7s=17-18 words, 7.5s=19 words
-            const absoluteMin = Math.round(targetWords * 0.85);  // ~6s (15 words)
-            const absoluteMax = Math.round(targetWords * 1.07);  // ~7.5s (19 words)
+            // Conservative range: 5-6.5 seconds to ensure speech ends by 7s
+            // This gives 0.5-2s buffer for Veo's timing variance
+            const absoluteMin = Math.round(targetWords * 0.75);  // ~5s
+            const absoluteMax = Math.round(targetWords * 0.93);  // ~6.5s (was 1.07 for 7.5s)
             
             for(let i = 0; i < words.length; i++){
                 const word = words[i];
@@ -1124,19 +1124,19 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     // Last word - must split
                     shouldSplit = true;
                 } else if(wordCount >= absoluteMin && wordCount <= absoluteMax){
-                    // In acceptable range (6-7.5s) - look for stops
+                    // In acceptable range (5-6.5s) - look for stops
                     if(isHardStop){
                         // Hard stop - definitely split
                         shouldSplit = true;
-                    } else if(wordCount >= targetWords && isSoftStop){
-                        // At or past 7s with soft stop - split
+                    } else if(wordCount >= targetWords * 0.85 && isSoftStop){
+                        // At or past ~6s with soft stop - split
                         shouldSplit = true;
                     } else if(wordCount >= absoluteMax){
-                        // At 7.5s max - force split
+                        // At 6.5s max - force split
                         shouldSplit = true;
                     }
                 } else if(wordCount > absoluteMax){
-                    // Past 7.5s - must split now at any opportunity
+                    // Past 6.5s - must split now at any opportunity
                     if(isHardStop || isSoftStop){
                         shouldSplit = true;
                     } else {
@@ -1144,7 +1144,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
                         shouldSplit = true;
                     }
                 }
-                // Below absoluteMin (6s) - keep going, don't split yet
+                // Below absoluteMin (5s) - keep going, don't split yet
                 
                 if(shouldSplit && currentLine.length > 0){
                     resultLines.push(currentLine.join(' '));
@@ -1205,7 +1205,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
             // Get language settings for splitting
             const language = document.getElementById('language').value;
             const wps = SPEAKING_RATES[language] || 2.5;
-            const targetWords = Math.round(wps * 7);
+            const targetWords = Math.round(wps * 6);
             const minWords = Math.round(targetWords * 0.7);
             const maxWords = Math.round(targetWords * 1.3);
             
@@ -1292,6 +1292,25 @@ Example: A realistic vertical video of a professional presenter speaking directl
             // Sort scene breaks by line index
             sceneBreaks.sort((a, b) => a.lineIndex - b.lineIndex);
             
+            // CRITICAL: Remove duplicate lineIndex entries (keep the first one)
+            const seenLineIndices = new Set();
+            sceneBreaks = sceneBreaks.filter(sb => {
+                if(seenLineIndices.has(sb.lineIndex)){
+                    console.log(`[renderStoryboard] Removing duplicate scene at lineIndex ${sb.lineIndex}`);
+                    return false;
+                }
+                seenLineIndices.add(sb.lineIndex);
+                return true;
+            });
+            
+            // Ensure all scenes have clipMode
+            sceneBreaks.forEach((sb, idx) => {
+                if(!sb.clipMode){
+                    sb.clipMode = 'blend';
+                    console.log(`[renderStoryboard] Set default clipMode for scene ${idx}`);
+                }
+            });
+            
             // Ensure first scene starts at line 0
             if(sceneBreaks.length > 0 && sceneBreaks[0].lineIndex !== 0){
                 sceneBreaks[0].lineIndex = 0;
@@ -1367,6 +1386,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     
                     // Clip mode (blend/continue/fresh) - how clips transition within this scene
                     const clipMode = scene.clipMode || 'blend'; // Default to blend
+                    console.log(`[renderStoryboard] Scene ${sceneIdx}: clipMode=${clipMode}, scene.clipMode=${scene.clipMode}, typeof=${typeof scene.clipMode}`);
                     
                     htmlContent += `<div class="scene-divider-wrapper">`;
                     
@@ -1429,20 +1449,32 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     `;
                 }
             } else {
-                // No text yet
+                // No text yet - show the first scene's assigned image (might have been changed by drag & drop)
                 if(numImages > 0){
-                    const img = uploadedFilesData[0];
+                    // Use sceneBreaks[0].imgIndex if available, otherwise default to 0
+                    const firstSceneImgIdx = (sceneBreaks.length > 0 && sceneBreaks[0].imgIndex < numImages) 
+                        ? sceneBreaks[0].imgIndex 
+                        : 0;
+                    const img = uploadedFilesData[firstSceneImgIdx];
+                    const clipMode = (sceneBreaks.length > 0 && sceneBreaks[0].clipMode) || 'blend';
+                    
                     htmlContent += `
                         <div class="scene-divider-wrapper">
                             <div class="scene-divider" contenteditable="false" data-scene-idx="0">
-                                <img class="scene-divider-img" src="${img.dataUrl}">
+                                <img class="scene-divider-img" src="${img.dataUrl}" draggable="false">
                                 <div class="clip-mode-toggle">
-                                    <button class="clip-mode-btn blend-btn active" disabled title="Blend: Morph between frames">Blend</button>
-                                    <button class="clip-mode-btn continue-btn" disabled title="Continue: Use last frame">Continue</button>
-                                    <button class="clip-mode-btn fresh-btn" disabled title="Fresh: Original image">Fresh</button>
+                                    <button class="clip-mode-btn blend-btn ${clipMode === 'blend' ? 'active' : ''}" 
+                                            onclick="event.stopPropagation();setClipMode(0, 'blend')" 
+                                            title="Blend: Morph between frames">Blend</button>
+                                    <button class="clip-mode-btn continue-btn ${clipMode === 'continue' ? 'active' : ''}" 
+                                            onclick="event.stopPropagation();setClipMode(0, 'continue')" 
+                                            title="Continue: Use last frame">Continue</button>
+                                    <button class="clip-mode-btn fresh-btn ${clipMode === 'fresh' ? 'active' : ''}" 
+                                            onclick="event.stopPropagation();setClipMode(0, 'fresh')" 
+                                            title="Fresh: Original image">Fresh</button>
                                 </div>
                                 <div class="scene-divider-info">
-                                    <span class="scene-divider-label">Scene 1 (Image 1)</span>
+                                    <span class="scene-divider-label">Scene 1 (Image ${firstSceneImgIdx + 1})</span>
                                     <span class="scene-divider-hint">Paste your script below</span>
                                 </div>
                             </div>
@@ -1475,9 +1507,16 @@ Example: A realistic vertical video of a professional presenter speaking directl
         
         function setClipMode(sceneIdx, mode){
             // Set clip mode for a scene: 'blend', 'continue', or 'fresh'
+            console.log(`[setClipMode] Called with sceneIdx=${sceneIdx}, mode=${mode}`);
+            console.log(`[setClipMode] sceneBreaks.length=${sceneBreaks.length}`);
+            console.log(`[setClipMode] sceneBreaks=`, JSON.stringify(sceneBreaks));
+            
             if(sceneIdx >= 0 && sceneIdx < sceneBreaks.length){
                 sceneBreaks[sceneIdx].clipMode = mode;
+                console.log(`[setClipMode] Updated sceneBreaks[${sceneIdx}].clipMode to ${mode}`);
                 renderStoryboard();
+            } else {
+                console.log(`[setClipMode] Invalid sceneIdx: ${sceneIdx} not in range [0, ${sceneBreaks.length})`);
             }
         }
         
@@ -1585,7 +1624,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
             // Split and render
             const language = document.getElementById('language').value;
             const wps = SPEAKING_RATES[language] || 2.5;
-            const targetWords = Math.round(wps * 7);
+            const targetWords = Math.round(wps * 6);
             const minWords = Math.round(targetWords * 0.7);
             const maxWords = Math.round(targetWords * 1.3);
             const newLines = smartSplitText(fullText, minWords, targetWords, maxWords);
@@ -1671,7 +1710,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
             // Re-split the text
             const language = document.getElementById('language').value;
             const wps = SPEAKING_RATES[language] || 2.5;
-            const targetWords = Math.round(wps * 7);
+            const targetWords = Math.round(wps * 6);
             const minWords = Math.round(targetWords * 0.7);
             const maxWords = Math.round(targetWords * 1.3);
             const newLines = smartSplitText(fullText, minWords, targetWords, maxWords);
@@ -1868,7 +1907,12 @@ Example: A realistic vertical video of a professional presenter speaking directl
                         // Create/update scene break
                         const existingBreakIdx = sceneBreaks.findIndex(sb => sb.lineIndex === targetLineIndex);
                         if(existingBreakIdx !== -1){
+                            // Update existing scene's image, preserve clipMode
                             sceneBreaks[existingBreakIdx].imgIndex = draggedImageIndex;
+                            // Ensure clipMode exists
+                            if(!sceneBreaks[existingBreakIdx].clipMode){
+                                sceneBreaks[existingBreakIdx].clipMode = 'blend';
+                            }
                         } else {
                             sceneBreaks.push({ 
                                 lineIndex: targetLineIndex, 
@@ -2004,8 +2048,12 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 else if(targetLineIndex > 0){
                     const existingBreakIdx = sceneBreaks.findIndex(sb => sb.lineIndex === targetLineIndex);
                     if(existingBreakIdx !== -1){
-                        // Update existing scene's image
+                        // Update existing scene's image, preserve clipMode
                         sceneBreaks[existingBreakIdx].imgIndex = draggedImageIndex;
+                        // Ensure clipMode exists
+                        if(!sceneBreaks[existingBreakIdx].clipMode){
+                            sceneBreaks[existingBreakIdx].clipMode = 'blend';
+                        }
                     } else {
                         // Add new scene break
                         sceneBreaks.push({ 
@@ -2117,7 +2165,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 // Auto-split the raw text
                 const language = document.getElementById('language').value;
                 const wps = SPEAKING_RATES[language] || 2.5;
-                const targetWords = Math.round(wps * 7);
+                const targetWords = Math.round(wps * 6);
                 const minWords = Math.round(targetWords * 0.7);
                 const maxWords = Math.round(targetWords * 1.3);
                 
@@ -2146,7 +2194,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
             const input=document.getElementById('dialogueInput').value.trim(),container=document.getElementById('lineValidation'),language=document.getElementById('language').value;
             const lines=input.split('\n').filter(l=>l.trim()),formattedLines=lines.filter(l=>/^\d+\|/.test(l.trim()));
             if(!formattedLines.length){container.style.display='none';return;}
-            const wps=SPEAKING_RATES[language]||2.5,targetWords=Math.round(wps*7),minWords=Math.max(8,targetWords-5),maxWords=targetWords+8;
+            const wps=SPEAKING_RATES[language]||2.5,targetWords=Math.round(wps*6),minWords=Math.max(8,targetWords-5),maxWords=targetWords+8;
             
             // Calculate image assignments
             const numImages=uploadedImages.length;
@@ -2215,7 +2263,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
             // Re-split with new language settings
             const language = document.getElementById('language').value;
             const wps = SPEAKING_RATES[language] || 2.5;
-            const targetWords = Math.round(wps * 7);
+            const targetWords = Math.round(wps * 6);
             const minWords = Math.round(targetWords * 0.7);
             const maxWords = Math.round(targetWords * 1.3);
             
@@ -2234,12 +2282,92 @@ Example: A realistic vertical video of a professional presenter speaking directl
             }
         }
         
+        // Estimate speech duration for a line of text
+        function estimateSpeechDuration(text, language){
+            const wps = SPEAKING_RATES[language] || 2.5;
+            const words = text.trim().split(/\s+/).filter(w => w).length;
+            return words / wps;
+        }
+        
+        // Validate all lines are within acceptable duration
+        function validateLineDurations(lines, language, maxDuration = 6.5){
+            const warnings = [];
+            const errors = [];
+            
+            lines.forEach((line, idx) => {
+                // Extract text (remove line number prefix if present)
+                let text = line;
+                const parts = line.split('|');
+                if(parts.length >= 2){
+                    text = parts.slice(1).join('|').trim();
+                }
+                
+                const duration = estimateSpeechDuration(text, language);
+                const wordCount = text.trim().split(/\s+/).filter(w => w).length;
+                
+                if(duration > 7.5){
+                    errors.push({
+                        lineNum: idx + 1,
+                        text: text.substring(0, 50) + (text.length > 50 ? '...' : ''),
+                        duration: duration.toFixed(1),
+                        words: wordCount,
+                        severity: 'error'
+                    });
+                } else if(duration > maxDuration){
+                    warnings.push({
+                        lineNum: idx + 1,
+                        text: text.substring(0, 50) + (text.length > 50 ? '...' : ''),
+                        duration: duration.toFixed(1),
+                        words: wordCount,
+                        severity: 'warning'
+                    });
+                }
+            });
+            
+            return { warnings, errors, hasErrors: errors.length > 0 };
+        }
+        
         async function createJob(){
             const btn=document.getElementById('startBtn');btn.disabled=true;btn.innerHTML='⏳ Starting...';
             try{
                 const numImages = uploadedImages.length;
                 const linesList = document.getElementById('dialogueInput').value.trim().split('\n').filter(l=>l.trim());
                 const numClips = linesList.length;
+                const language = document.getElementById('language').value;
+                
+                // Validate line durations BEFORE sending
+                const validation = validateLineDurations(linesList, language, 6.5);
+                
+                if(validation.hasErrors){
+                    // Hard errors - lines too long, will definitely exceed 7s
+                    const errorMsg = validation.errors.map(e => 
+                        `Line ${e.lineNum}: ~${e.duration}s (${e.words} words)`
+                    ).join('\n');
+                    
+                    alert(`❌ Some lines are too long and will exceed 7 seconds:\n\n${errorMsg}\n\nPlease shorten these lines or re-split the text.`);
+                    btn.disabled = false;
+                    btn.innerHTML = '🚀 Start Generation';
+                    return;
+                }
+                
+                if(validation.warnings.length > 0){
+                    // Soft warnings - lines are borderline
+                    const warnMsg = validation.warnings.map(w => 
+                        `Line ${w.lineNum}: ~${w.duration}s (${w.words} words)`
+                    ).join('\n');
+                    
+                    const proceed = confirm(
+                        `⚠️ Warning: Some lines may exceed 6.5 seconds:\n\n${warnMsg}\n\n` +
+                        `Speech should finish by 7 seconds to leave 1s of silence.\n\n` +
+                        `Continue anyway?`
+                    );
+                    
+                    if(!proceed){
+                        btn.disabled = false;
+                        btn.innerHTML = '🚀 Start Generation';
+                        return;
+                    }
+                }
                 
                 // DEBUG: Log current state
                 console.log('=== CREATE JOB DEBUG ===');

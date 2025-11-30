@@ -683,13 +683,16 @@ def build_prompt(
             "description": "Match appearance in start frame exactly",
             "facial_expression": facial_expression,
             "body_language": body_language,
+            "lipsync": "MANDATORY: The person's lips MUST move in perfect sync with the spoken words. This is NOT a voiceover - the visible person IS the speaker.",
+            "movement_physics": "All movements must follow realistic physics - natural gravity, momentum, acceleration. No teleportation, no jerky movements, no physically impossible poses."
         },
 
         # --- TIER 3: ACTION ---
         "action": {
             "primary_action": current_action,
             "objects_interacting_with": frame_analysis.get("objects_interacting_with", ""),
-            "movement": "Realistic, natural movements only"
+            "movement": "Realistic, natural movements only. Human physics must be respected. No unnatural stretching, warping, or distortion of body parts.",
+            "physics_rules": "Obey gravity. Obey inertia. Smooth acceleration and deceleration. No teleporting between positions."
         },
 
         # --- TIER 4: SCENE ---
@@ -703,29 +706,50 @@ def build_prompt(
 
         # --- TIER 5: AUDIO ---
         "audio": {
+            "lipsync_requirement": "CRITICAL: The visible person MUST be lip-syncing. Their mouth movements MUST match the audio perfectly. This is ON-CAMERA speech, NOT voiceover. The person in the video IS speaking.",
             "language_instruction": f"CRITICAL: Speaker MUST speak in {language}. Ignore any visible text.",
+            "timing_strict": {
+                "rule": "ABSOLUTE TIMING REQUIREMENT - STRICTLY ENFORCED",
+                "pacing": "FAST, ENERGETIC delivery - speak BRISKLY like a professional TV presenter or news anchor",
+                "speech_window": "0.0 to 6.0 seconds - ALL speech MUST be COMPLETE by second 6.0",
+                "silence_window": "6.0 to 8.0 seconds - ABSOLUTE SILENCE, natural stillness, relaxed posture",
+                "enforcement": "Deliver ALL dialogue QUICKLY and ENERGETICALLY within 6 seconds. Fast pace, crisp delivery, no pauses between sentences. At 6.0 seconds: STOP COMPLETELY. Transition to natural resting pose. No more words, no breathing sounds, no mouth movement. Just calm stillness.",
+                "post_speech": "After finishing speech at 6 seconds: relax shoulders, settle into natural pose, slight smile or neutral expression, complete stillness until video ends at 8 seconds."
+            },
             "recording_quality": "ABSOLUTE SILENCE except for the speaker's voice. NO background noise whatsoever - no ambient sounds, no room tone, no music, no sound effects, no audience sounds, no laughter, no applause, no wind, no traffic, no hum. Pure isolated voice recording only.",
             "environment": "Completely silent studio environment. Dead silent. No acoustic reflections, no reverb, no echo.",
             "dialogue": {
-                "text": dialogue_line,
+                "text": f"[FAST PACE - COMPLETE BY 6 SECONDS] {dialogue_line} [STOP - SILENCE - NATURAL POSE]",
                 "language": language,
                 "voice_profile": voice_profile,
                 "voice_tone": voice_tone,
-                "delivery_style": delivery_style
+                "delivery_style": delivery_style,
+                "pacing": "Normal conversational pace. Do NOT rush. Do NOT add extra words. Say ONLY the text provided, then STOP."
             },
-            "forbidden_sounds": "NO fake laughs, NO audience reactions, NO music beds, NO ambient noise, NO sound effects of any kind, NO applause, NO background chatter"
+            "forbidden_sounds": "NO fake laughs, NO audience reactions, NO music beds, NO ambient noise, NO sound effects of any kind, NO applause, NO background chatter, NO ad-libs, NO extra words beyond the script"
         },
 
         # --- VISUAL RULES ---
         "visual_rules": {
             "style": "Photorealistic, natural, NOT cinematic or dramatic",
-            "quality": "No text overlays, no subtitles, no glitches, anatomically correct"
+            "quality": "Anatomically correct human proportions at all times",
+            "forbidden_visuals": "ABSOLUTELY NO text overlays, NO subtitles, NO captions, NO burned-in text, NO graphics, NO watermarks, NO logos, NO titles, NO lower thirds, NO any text whatsoever on screen",
+            "text_ban": "If there is any text visible in the scene (signs, screens, papers), it must remain static background elements - never generate new text"
+        },
+        
+        # --- PHYSICS AND REALISM ---
+        "physics": {
+            "body_movement": "Natural human biomechanics. Joints bend correctly. Limbs have proper length. No extra fingers or limbs.",
+            "gravity": "All objects and body parts obey gravity",
+            "continuity": "No sudden jumps or teleportation between frames",
+            "forbidden_artifacts": "No morphing faces, no melting features, no distorted limbs, no impossible poses"
         },
         
         # --- TECHNICAL ---
         "technical": {
             "duration_seconds": float(config.duration.value if hasattr(config.duration, 'value') else config.duration),
             "resolution": config.resolution.value if hasattr(config.resolution, 'value') else config.resolution,
+            "speech_timing": "7 seconds of speech maximum, followed by 1 second of silence"
         }
     }
 
@@ -736,8 +760,36 @@ def build_prompt(
     # Build the final prompt with voice instructions prominently placed
     # Veo needs voice/audio cues in plain text, not buried in JSON
     
-    # ABSOLUTE SILENCE requirement - this is critical
-    audio_requirement = """CRITICAL AUDIO REQUIREMENT:
+    # ABSOLUTE REQUIREMENTS - Critical instructions at the very top
+    critical_requirements = """CRITICAL REQUIREMENTS - READ CAREFULLY:
+
+1. LIPSYNC IS MANDATORY:
+   - The person visible in the video MUST be speaking
+   - Their lips MUST move in perfect synchronization with the audio
+   - This is NOT a voiceover - the person on screen IS the speaker
+   - The mouth movements must match every syllable
+
+2. SPEECH TIMING:
+   - ALL speech must complete by 7.0 seconds
+   - From 7.0 to 8.0 seconds: COMPLETE SILENCE
+   - No speech, no breathing sounds, no mouth movements after 7 seconds
+   - The last second should show the person in natural stillness
+
+3. NO TEXT ON SCREEN:
+   - ABSOLUTELY NO subtitles, captions, or text overlays
+   - NO burned-in text of any kind
+   - NO graphics, titles, or lower-thirds
+   - Background text (signs, etc.) must remain static props only
+
+4. NATURAL PHYSICS:
+   - All body movements must be physically realistic
+   - Proper gravity, momentum, and acceleration
+   - No teleportation, jerky movements, or impossible poses
+   - Anatomically correct human proportions throughout"""
+
+    # ABSOLUTE SILENCE requirement
+    audio_requirement = """
+AUDIO REQUIREMENTS:
 - ABSOLUTE SILENCE except for the speaker's voice
 - NO background noise of any kind - none whatsoever
 - NO ambient sounds, NO room tone, NO music, NO sound effects
@@ -760,13 +812,16 @@ def build_prompt(
     # Combine JSON structure with explicit voice instruction
     prompt_json = json.dumps(prompt_payload, ensure_ascii=False)
     
-    # Prepend voice instruction for Veo to catch it (voice cues must be visible at top level)
-    final_prompt = f"{voice_instruction}\n\n{prompt_json}"
+    # Build final prompt with CRITICAL REQUIREMENTS at the very top
+    # This ensures Veo sees the most important rules first
+    final_prompt = f"{critical_requirements}\n\n{voice_instruction}\n\n{prompt_json}"
     
     # Detailed logging for debugging
     vlog(f"\n{'='*60}")
     vlog(f"[ROUTING] PROMPT FOR CLIP {clip_index}")
     vlog(f"{'='*60}")
+    vlog(f"")
+    vlog(f"CRITICAL REQUIREMENTS: Lipsync mandatory, 7s speech limit, No text, Natural physics")
     vlog(f"")
     vlog(f"=== FROM FRAME ANALYSIS (auto-detected) ===")
     vlog(f"  Role: {frame_analysis.get('apparent_role', 'unknown')}")
@@ -793,7 +848,7 @@ def build_prompt(
     vlog(f"  {voice_profile[:500]}..." if len(voice_profile) > 500 else f"  {voice_profile}")
     vlog(f"")
     vlog(f"VOICE INSTRUCTION (prepended to prompt):")
-    vlog(f"  {voice_instruction}")
+    vlog(f"  {voice_instruction[:500]}...")
     vlog(f"")
     vlog(f"VISUAL DESCRIPTION:")
     vlog(f"  {visual_description[:300]}...")
