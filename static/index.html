@@ -1758,16 +1758,24 @@ Example: A realistic vertical video of a professional presenter speaking directl
             if(!isDragging) return;
             if(draggedImageIndex === null && draggedSceneIdx === null) return;
             
-            // Show drop indicator
+            // Remove existing indicators and highlights
+            document.querySelectorAll('.drop-indicator-line').forEach(el => el.remove());
+            document.querySelectorAll('.scene-divider.drop-target').forEach(el => el.classList.remove('drop-target'));
+            
+            // Check if over a scene-divider (for replacing image)
+            const sceneDivider = document.elementFromPoint(e.clientX, e.clientY)?.closest('.scene-divider');
+            if(sceneDivider && draggedImageIndex !== null){
+                sceneDivider.classList.add('drop-target');
+                return; // Don't show line indicator if over scene-divider
+            }
+            
+            // Show drop indicator between lines
             const editor = document.getElementById('richEditor');
             if(!editor) return;
             
             const editorRect = editor.getBoundingClientRect();
             const isOverEditor = e.clientX >= editorRect.left && e.clientX <= editorRect.right &&
                                  e.clientY >= editorRect.top && e.clientY <= editorRect.bottom;
-            
-            // Remove existing indicators
-            document.querySelectorAll('.drop-indicator-line').forEach(el => el.remove());
             
             if(isOverEditor){
                 const lines = document.querySelectorAll('.scene-line');
@@ -1808,6 +1816,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
             document.body.classList.remove('is-dragging-image');
             document.querySelectorAll('.being-dragged').forEach(el => el.classList.remove('being-dragged'));
             document.querySelectorAll('.drop-indicator-line').forEach(el => el.remove());
+            document.querySelectorAll('.scene-divider.drop-target').forEach(el => el.classList.remove('drop-target'));
             
             // Check if dropped on editor
             const editor = document.getElementById('richEditor');
@@ -1820,6 +1829,19 @@ Example: A realistic vertical video of a professional presenter speaking directl
             const isOverEditor = e.clientX >= editorRect.left && e.clientX <= editorRect.right &&
                                  e.clientY >= editorRect.top && e.clientY <= editorRect.bottom;
             
+            // First check if dropped on a scene divider (to replace its image)
+            const sceneDivider = document.elementFromPoint(e.clientX, e.clientY)?.closest('.scene-divider');
+            if(sceneDivider && draggedImageIndex !== null){
+                const sceneIdx = parseInt(sceneDivider.dataset.sceneIdx);
+                if(!isNaN(sceneIdx) && sceneIdx >= 0 && sceneIdx < sceneBreaks.length){
+                    sceneBreaks[sceneIdx].imgIndex = draggedImageIndex;
+                    renderStoryboard();
+                    resetDragState();
+                    return;
+                }
+            }
+            
+            // Then check if dropped between lines in the editor
             if(isOverEditor){
                 // Find drop target
                 const lines = document.querySelectorAll('.scene-line');
@@ -1865,16 +1887,6 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 }
                 
                 renderStoryboard();
-            }
-            
-            // Check if dropped on a scene divider (to replace image)
-            const sceneDivider = document.elementFromPoint(e.clientX, e.clientY)?.closest('.scene-divider');
-            if(sceneDivider && draggedImageIndex !== null && !isOverEditor){
-                const sceneIdx = parseInt(sceneDivider.dataset.sceneIdx);
-                if(!isNaN(sceneIdx) && sceneIdx >= 0 && sceneIdx < sceneBreaks.length){
-                    sceneBreaks[sceneIdx].imgIndex = draggedImageIndex;
-                    renderStoryboard();
-                }
             }
             
             resetDragState();
