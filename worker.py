@@ -588,48 +588,99 @@ class JobWorker:
             print(f"[Worker] Clip {i}: scene={info['scene_index']}, mode={info['clip_mode']}, requires_prev={info['requires_previous']}", flush=True)
         
         # Calculate initial frame assignments
+        # 
+        # FRAME ASSIGNMENT LOGIC:
+        # 
+        # For each clip, we need to determine:
+        # 1. START FRAME: Where the clip begins
+        # 2. END FRAME: Where the clip ends (can be None for no interpolation)
+        #
+        # The logic depends on clip_mode and what comes next:
+        #
+        # BLEND mode (standard):
+        #   - Start: assigned image
+        #   - End: depends on NEXT clip
+        #
+        # CONTINUE mode:
+        #   - Start: extracted from previous clip (set at runtime)
+        #   - End: depends on NEXT clip
+        #
+        # FRESH mode:
+        #   - Start: always original image
+        #   - End: depends on NEXT clip
+        #
+        # END FRAME determination (for ALL modes):
+        #   - If LAST clip of video:
+        #     - If Last Frame defined: use Last Frame
+        #     - Else: None (no interpolation)
+        #   - If NEXT clip is in SAME scene:
+        #     - None (no end frame, natural continuation)
+        #   - If NEXT clip is in DIFFERENT scene:
+        #     - If transition = "blend": next scene's image
+        #     - If transition = "cut": None
+        #
         with get_db() as db:
             for i, info in enumerate(clip_info):
                 start_idx = info["image_idx"]
                 clip_mode = info["clip_mode"]
-                scene_transition = info["scene_transition"]  # How THIS clip transitions FROM previous
+                scene_transition = info["scene_transition"]
+                scene_index = info["scene_index"]
                 
-                # Default: start and end on our assigned image
+                # Default start: our assigned image
                 actual_start_idx = start_idx
-                actual_end_idx = start_idx
                 
-                # Determine end frame based on what the NEXT clip wants
-                if i < len(clip_info) - 1:
+                # Determine END FRAME based on what comes AFTER this clip
+                use_end_frame = False
+                actual_end_idx = None
+                end_frame_reason = ""
+                
+                is_last_clip = (i == len(clip_info) - 1)
+                
+                if is_last_clip:
+                    # CASE 1: Last clip of the video
+                    # TODO: Check for Last Frame setting (not yet implemented)
+                    # For now, no end frame for last clip
+                    use_end_frame = False
+                    end_frame_reason = "last clip, no Last Frame defined"
+                else:
                     next_info = clip_info[i + 1]
+                    next_scene = next_info["scene_index"]
                     
-                    if next_info["scene_index"] != info["scene_index"]:
-                        # Next clip is in a DIFFERENT scene
-                        if next_info["scene_transition"] == "blend":
-                            # Next scene wants BLEND transition
-                            # So THIS clip should morph toward next scene's image
+                    if next_scene == scene_index:
+                        # CASE 2: Next clip is in SAME scene
+                        # No end frame - let it continue naturally
+                        use_end_frame = False
+                        end_frame_reason = "same scene, natural continuation"
+                    else:
+                        # CASE 3: Next clip is in DIFFERENT scene
+                        next_transition = next_info["scene_transition"]
+                        
+                        if next_transition == "blend":
+                            # Blend to next scene - morph toward next scene's image
+                            use_end_frame = True
                             actual_end_idx = next_info["image_idx"]
-                            print(f"[Worker] Clip {i}: Will morph to next scene's image {actual_end_idx} (blend transition)", flush=True)
-                        # else: "cut" transition - stay on our image (actual_end_idx = start_idx already)
-                    # else: Same scene - stay on our image for internal motion
+                            end_frame_reason = f"blend to scene {next_scene}"
+                        else:
+                            # Cut to next scene - no end frame needed
+                            use_end_frame = False
+                            end_frame_reason = "cut to next scene"
                 
-                # Handle THIS clip's start based on scene_transition
-                # NOTE: For "blend" transition, the PREVIOUS clip already morphed toward us,
-                # so we should START on our OWN image, not the previous scene's image
-                # The blend happens on the previous clip's END, not this clip's START
-                
-                # For "continue" mode, the start will be overridden at runtime with extracted frame
-                # For "fresh" mode, always use original image
-                # For "blend" mode (within scene), use our assigned image
-                
+                # Set frame names
                 start_frame_name = images[actual_start_idx].name
-                end_frame_name = images[actual_end_idx].name
+                
+                if use_end_frame and actual_end_idx is not None:
+                    end_frame_name = images[actual_end_idx].name
+                else:
+                    end_frame_name = None
+                    actual_end_idx = actual_start_idx  # For compatibility, but won't be used
                 
                 info["start_frame"] = start_frame_name
                 info["end_frame"] = end_frame_name
                 info["start_idx"] = actual_start_idx
-                info["end_idx"] = actual_end_idx
+                info["end_idx"] = actual_end_idx if use_end_frame else None
+                info["use_end_frame"] = use_end_frame
                 
-                print(f"[Worker] Clip {i}: {start_frame_name} → {end_frame_name} (mode={clip_mode}, transition={scene_transition})", flush=True)
+                print(f"[Worker] Clip {i}: {start_frame_name} → {end_frame_name if end_frame_name else 'NONE'} (mode={clip_mode}, reason={end_frame_reason})", flush=True)
                 
                 # Determine initial status
                 # For "continue" mode clips (except first in scene), set to WAITING_APPROVAL
@@ -656,7 +707,12 @@ class JobWorker:
         clip_frames = []
         for i, info in enumerate(clip_info):
             start_frame = images[info["start_idx"]]
-            end_frame = images[info["end_idx"]] if use_interpolation else None
+            
+            # Only set end_frame if this clip should use interpolation
+            if info.get("use_end_frame") and info.get("end_idx") is not None:
+                end_frame = images[info["end_idx"]]
+            else:
+                end_frame = None
             
             clip_frames.append({
                 "start_index": info["start_idx"],
@@ -780,9 +836,9 @@ class JobWorker:
             frames = clip_frames[clip_index]
             
             start_frame = frames["start_frame"]
-            end_frame = frames["end_frame"]
+            end_frame = frames["end_frame"]  # Can be None if no interpolation needed
             start_index = frames["start_index"]
-            end_index = frames["end_index"]
+            end_index = frames["end_index"]  # Can be None if no interpolation needed
             clip_mode = frames.get("clip_mode", "blend")
             
             # Handle "continue" mode - use extracted frame from APPROVED previous clip
@@ -798,6 +854,19 @@ class JobWorker:
                 else:
                     print(f"[Worker] Clip {clip_index}: Approved previous clip video not found, using original image", flush=True)
             
+            # Get frame names for logging/database (handle both Path objects and strings)
+            def get_frame_name(frame):
+                if frame is None:
+                    return None
+                if hasattr(frame, 'name'):
+                    return frame.name
+                if hasattr(frame, 'stem'):
+                    return Path(frame).name
+                return str(frame).split('/')[-1] if '/' in str(frame) else str(frame)
+            
+            start_frame_name = get_frame_name(start_frame)
+            end_frame_name = get_frame_name(end_frame) if end_frame else None
+            
             # Update clip status to generating
             with get_db() as db:
                 clip = db.query(Clip).filter(
@@ -808,26 +877,25 @@ class JobWorker:
                 if clip:
                     clip.status = ClipStatus.GENERATING.value
                     clip.started_at = datetime.utcnow()
-                    clip.start_frame = start_frame.name if hasattr(start_frame, 'name') else str(start_frame)
-                    clip.end_frame = end_frame.name if end_frame else None
+                    clip.start_frame = start_frame_name
+                    clip.end_frame = end_frame_name
                     db.commit()
             
             # Log exact frame assignment for debugging
-            start_name = start_frame.name if hasattr(start_frame, 'name') else str(start_frame)
             print(f"[Worker] CLIP {clip_index} FRAME ASSIGNMENT:", flush=True)
-            print(f"  - start_frame: {start_name} (mode={clip_mode})", flush=True)
-            print(f"  - end_frame: {end_frame.name if end_frame else 'None'}", flush=True)
+            print(f"  - start_frame: {start_frame_name} (mode={clip_mode})", flush=True)
+            print(f"  - end_frame: {end_frame_name if end_frame_name else 'NONE (no interpolation)'}", flush=True)
             
             self._broadcast_event(job_id, {
                 "type": "clip_started",
                 "clip_index": clip_index,
                 "dialogue_id": dialogue_id,
-                "start_frame": start_frame.name,
-                "end_frame": end_frame.name if end_frame else None,
+                "start_frame": start_frame_name,
+                "end_frame": end_frame_name,
             })
             
-            # Check if start frame is blacklisted
-            if start_frame in generator.blacklist:
+            # Check if start frame is blacklisted (only for Path objects, not extracted frames)
+            if hasattr(start_frame, 'exists') and start_frame in generator.blacklist:
                 result = self._get_next_clean_start(generator, images, start_index)
                 if result:
                     start_index, start_frame = result
@@ -849,13 +917,13 @@ class JobWorker:
                 print(f"[Worker] Generating clip {clip_index + 1}/{total_clips} in parallel...", flush=True)
                 result = generator.generate_single_clip(
                     start_frame=start_frame,
-                    end_frame=end_frame,
+                    end_frame=end_frame,  # Can be None
                     dialogue_line=dialogue_text,
                     dialogue_id=dialogue_id,
                     clip_index=clip_index,
                     output_dir=output_dir,
                     images_list=images,
-                    current_end_index=end_index,
+                    current_end_index=end_index if end_index is not None else start_index,
                 )
                 
                 # Log the prompt that was sent to Veo
