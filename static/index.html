@@ -168,6 +168,7 @@
         .scene-divider { display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: var(--bg-elevated); border: 1px solid var(--accent); border-radius: var(--radius-sm); user-select: none; transition: all 0.2s; }
         .scene-divider:hover { border-color: var(--accent); background: rgba(99, 102, 241, 0.1); }
         .scene-divider.dragging { opacity: 0.5; border-style: dashed; }
+        .scene-divider.drop-target { border-color: var(--success); background: rgba(16, 185, 129, 0.2); border-width: 2px; }
         
         /* Image thumbnail */
         .scene-divider-img { width: 40px; height: 40px; border-radius: 4px; object-fit: cover; pointer-events: none; flex-shrink: 0; }
@@ -1390,11 +1391,14 @@ Example: A realistic vertical video of a professional presenter speaking directl
                         `;
                     }
                     
-                    // Scene box
+                    // Scene box - with drop support to replace image
                     htmlContent += `
                         <div class="scene-divider" 
                              contenteditable="false" 
                              data-scene-idx="${sceneIdx}"
+                             ondragover="handleSceneDividerDragOver(event, ${sceneIdx})"
+                             ondragleave="handleSceneDividerDragLeave(event)"
+                             ondrop="handleSceneDividerDrop(event, ${sceneIdx})"
                              ${isDraggable ? `draggable="true" ondragstart="handleSceneDragStart(event, ${sceneIdx})"` : ''}>
                             <img class="scene-divider-img" src="${img.dataUrl}">
                             <div class="clip-mode-toggle">
@@ -1485,6 +1489,33 @@ Example: A realistic vertical video of a professional presenter speaking directl
             // Set clip mode for a scene: 'blend', 'continue', or 'fresh'
             if(sceneIdx >= 0 && sceneIdx < sceneBreaks.length){
                 sceneBreaks[sceneIdx].clipMode = mode;
+                renderStoryboard();
+            }
+        }
+        
+        // Scene divider drop handlers - to replace image of a scene
+        function handleSceneDividerDragOver(e, sceneIdx){
+            if(draggedImageIndex === null) return;
+            e.preventDefault();
+            e.stopPropagation();
+            e.currentTarget.classList.add('drop-target');
+            e.dataTransfer.dropEffect = 'copy';
+        }
+        
+        function handleSceneDividerDragLeave(e){
+            e.currentTarget.classList.remove('drop-target');
+        }
+        
+        function handleSceneDividerDrop(e, sceneIdx){
+            e.preventDefault();
+            e.stopPropagation();
+            e.currentTarget.classList.remove('drop-target');
+            document.querySelectorAll('.drop-indicator-line').forEach(el => el.remove());
+            
+            if(draggedImageIndex !== null && sceneIdx >= 0 && sceneIdx < sceneBreaks.length){
+                // Replace this scene's image
+                sceneBreaks[sceneIdx].imgIndex = draggedImageIndex;
+                draggedImageIndex = null;
                 renderStoryboard();
             }
         }
