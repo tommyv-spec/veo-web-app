@@ -1411,12 +1411,15 @@ Example: A realistic vertical video of a professional presenter speaking directl
                             <img class="scene-divider-img" src="${img.dataUrl}" draggable="false">
                             <div class="clip-mode-toggle">
                                 <button class="clip-mode-btn blend-btn ${clipMode === 'blend' ? 'active' : ''}" 
+                                        onmousedown="event.stopPropagation()"
                                         onclick="event.stopPropagation();setClipMode(${sceneIdx}, 'blend')"
                                         title="Blend: Morph between frames within scene">Blend</button>
                                 <button class="clip-mode-btn continue-btn ${clipMode === 'continue' ? 'active' : ''}" 
+                                        onmousedown="event.stopPropagation()"
                                         onclick="event.stopPropagation();setClipMode(${sceneIdx}, 'continue')"
                                         title="Continue: Use last frame from previous clip">Continue</button>
                                 <button class="clip-mode-btn fresh-btn ${clipMode === 'fresh' ? 'active' : ''}" 
+                                        onmousedown="event.stopPropagation()"
                                         onclick="event.stopPropagation();setClipMode(${sceneIdx}, 'fresh')"
                                         title="Fresh: Always start from original image">Fresh</button>
                             </div>
@@ -1464,12 +1467,15 @@ Example: A realistic vertical video of a professional presenter speaking directl
                                 <img class="scene-divider-img" src="${img.dataUrl}" draggable="false">
                                 <div class="clip-mode-toggle">
                                     <button class="clip-mode-btn blend-btn ${clipMode === 'blend' ? 'active' : ''}" 
+                                            onmousedown="event.stopPropagation()"
                                             onclick="event.stopPropagation();setClipMode(0, 'blend')" 
                                             title="Blend: Morph between frames">Blend</button>
                                     <button class="clip-mode-btn continue-btn ${clipMode === 'continue' ? 'active' : ''}" 
+                                            onmousedown="event.stopPropagation()"
                                             onclick="event.stopPropagation();setClipMode(0, 'continue')" 
                                             title="Continue: Use last frame">Continue</button>
                                     <button class="clip-mode-btn fresh-btn ${clipMode === 'fresh' ? 'active' : ''}" 
+                                            onmousedown="event.stopPropagation()"
                                             onclick="event.stopPropagation();setClipMode(0, 'fresh')" 
                                             title="Fresh: Original image">Fresh</button>
                                 </div>
