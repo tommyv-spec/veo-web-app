@@ -197,9 +197,54 @@
         .toggle-row.disabled .toggle { background: var(--bg-input) !important; }
         .toggle-row.disabled .toggle::after { left: 50% !important; transform: translateX(-50%); }
         
+        /* Last Frame drop zone */
+        .last-frame-zone { margin: 16px 0 8px -28px; padding: 12px; border: 2px dashed var(--border-color); border-radius: var(--radius-sm); transition: all 0.2s; background: var(--bg-input); }
+        .last-frame-zone:hover { border-color: var(--accent); background: rgba(99, 102, 241, 0.05); }
+        .last-frame-zone.drag-over { border-color: var(--success); background: rgba(16, 185, 129, 0.1); border-style: solid; }
+        .last-frame-zone.has-frame { border-style: solid; border-color: var(--success); background: rgba(16, 185, 129, 0.05); }
+        
+        .last-frame-placeholder { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px; }
+        .last-frame-icon { font-size: 20px; opacity: 0.6; }
+        .last-frame-text { font-size: 11px; color: var(--text-secondary); font-weight: 500; }
+        .last-frame-subtext { font-size: 9px; color: var(--text-muted); }
+        
+        .last-frame-content { display: flex; align-items: center; gap: 10px; }
+        .last-frame-img { width: 50px; height: 50px; border-radius: 4px; object-fit: cover; border: 2px solid var(--success); }
+        .last-frame-info { flex: 1; }
+        .last-frame-label { display: block; font-size: 11px; font-weight: 700; color: var(--success); }
+        .last-frame-hint { display: block; font-size: 9px; color: var(--text-muted); margin-top: 2px; }
+        .last-frame-remove { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px; padding: 4px 8px; border-radius: 4px; }
+        .last-frame-remove:hover { color: var(--error); background: rgba(239, 68, 68, 0.1); }
+        
         /* Drop zone indicator between lines */
         .drop-indicator { height: 3px; background: var(--accent); margin: 4px 0; border-radius: 2px; display: none; }
         .drop-indicator.active { display: block; }
+        
+        /* Drop indicator line (appears when dragging between lines) */
+        .drop-indicator-line { 
+            position: absolute; 
+            left: 0; 
+            right: 0; 
+            height: 3px; 
+            background: linear-gradient(90deg, var(--accent), var(--success)); 
+            border-radius: 2px; 
+            pointer-events: none; 
+            z-index: 100; 
+            box-shadow: 0 0 8px var(--accent);
+            display: none;
+        }
+        .drop-indicator-line::before {
+            content: '◆ Insert scene here';
+            position: absolute;
+            left: 0;
+            top: -18px;
+            font-size: 9px;
+            color: var(--accent);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            white-space: nowrap;
+        }
         
         /* Lines with gutter numbers */
         .scene-line { position: relative; padding: 2px 0; min-height: 1.5em; }
@@ -696,6 +741,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
 
     <script>
         let uploadJobId=null, uploadedImages=[], uploadedFilesData=[], selectedJobId=null, lastLogId=0, clipStates={}, hasJobs=false;
+        let lastFrameIndex = null; // Index of image to use as last frame (end of video)
         const API='/api';
         
         function setActiveState(){ const c=document.getElementById('appContainer'); if(!c.classList.contains('state-active')){ c.classList.remove('state-initial'); c.classList.add('state-active'); } document.getElementById('jobsCard').style.display='block'; }
@@ -719,6 +765,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
             renderSimpleEditor();
             // Reset storyboard
             sceneBreaks = [];
+            lastFrameIndex = null;
             editorMode = 'auto-cycle';
             updateUIMode();
         }
@@ -1344,6 +1391,33 @@ Example: A realistic vertical video of a professional presenter speaking directl
                         htmlContent += `<div class="scene-line" data-line="${lineNum}" data-line-idx="${scene.lineIndex + i}">${line}</div>`;
                     });
                 });
+                
+                // Add Last Frame drop zone after all lines
+                const lastFrameImg = lastFrameIndex !== null ? uploadedFilesData[lastFrameIndex] : null;
+                htmlContent += `
+                    <div class="last-frame-zone ${lastFrameImg ? 'has-frame' : ''}" 
+                         data-drop-zone="last-frame"
+                         ondragover="handleLastFrameDragOver(event)"
+                         ondragleave="handleLastFrameDragLeave(event)"
+                         ondrop="handleLastFrameDrop(event)">
+                        ${lastFrameImg ? `
+                            <div class="last-frame-content">
+                                <img class="last-frame-img" src="${lastFrameImg.dataUrl}">
+                                <div class="last-frame-info">
+                                    <span class="last-frame-label">🏁 End Frame</span>
+                                    <span class="last-frame-hint">Video ends on this image</span>
+                                </div>
+                                <button class="last-frame-remove" onclick="removeLastFrame()">✕</button>
+                            </div>
+                        ` : `
+                            <div class="last-frame-placeholder">
+                                <span class="last-frame-icon">🏁</span>
+                                <span class="last-frame-text">Drop image here for End Frame</span>
+                                <span class="last-frame-subtext">Last clip will morph to this image</span>
+                            </div>
+                        `}
+                    </div>
+                `;
             } else {
                 // No text yet
                 if(numImages > 0){
@@ -1395,6 +1469,39 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 sceneBreaks[sceneIdx].clipMode = mode;
                 renderStoryboard();
             }
+        }
+        
+        // Last Frame drop zone handlers
+        function handleLastFrameDragOver(e){
+            e.preventDefault();
+            e.stopPropagation();
+            if(draggedImageIndex !== null){
+                e.currentTarget.classList.add('drag-over');
+                e.dataTransfer.dropEffect = 'copy';
+            }
+        }
+        
+        function handleLastFrameDragLeave(e){
+            e.preventDefault();
+            e.stopPropagation();
+            e.currentTarget.classList.remove('drag-over');
+        }
+        
+        function handleLastFrameDrop(e){
+            e.preventDefault();
+            e.stopPropagation();
+            e.currentTarget.classList.remove('drag-over');
+            
+            if(draggedImageIndex !== null){
+                lastFrameIndex = draggedImageIndex;
+                draggedImageIndex = null;
+                renderStoryboard();
+            }
+        }
+        
+        function removeLastFrame(){
+            lastFrameIndex = null;
+            renderStoryboard();
         }
         
         function syncFromRichEditor(){
@@ -1582,6 +1689,11 @@ Example: A realistic vertical video of a professional presenter speaking directl
             draggedSceneIdx = null;
             e.dataTransfer.effectAllowed = 'copy';
             e.dataTransfer.setData('text/plain', 'image:' + imgIndex);
+            
+            // Remove the default drag preview (the large image tooltip)
+            const emptyImg = document.createElement('img');
+            emptyImg.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+            e.dataTransfer.setDragImage(emptyImg, 0, 0);
         }
         
         function handleSceneDragStart(e, sceneIdx){
@@ -1591,6 +1703,11 @@ Example: A realistic vertical video of a professional presenter speaking directl
             e.dataTransfer.effectAllowed = 'move';
             e.dataTransfer.setData('text/plain', 'scene:' + sceneIdx);
             e.target.classList.add('dragging');
+            
+            // Remove the default drag preview
+            const emptyImg = document.createElement('img');
+            emptyImg.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+            e.dataTransfer.setDragImage(emptyImg, 0, 0);
         }
         
         function handleEditorDragOver(e){
@@ -1599,33 +1716,60 @@ Example: A realistic vertical video of a professional presenter speaking directl
             e.dataTransfer.dropEffect = draggedSceneIdx !== null ? 'move' : 'copy';
             document.getElementById('richEditor').classList.add('drag-over');
             
-            // Highlight the target line
+            // Show drop indicator BETWEEN lines, not on the line
             const lines = document.querySelectorAll('.scene-line');
             const dropY = e.clientY;
-            lines.forEach(line => {
+            
+            // Remove all existing indicators
+            document.querySelectorAll('.drop-indicator-line').forEach(el => el.remove());
+            
+            // Find which gap we're hovering over
+            let insertAfterLine = null;
+            let insertBeforeRect = null;
+            
+            lines.forEach((line, idx) => {
                 const rect = line.getBoundingClientRect();
-                const isTarget = dropY >= rect.top && dropY <= rect.bottom;
-                line.style.background = isTarget ? 'rgba(99, 102, 241, 0.2)' : '';
+                const lineMiddle = rect.top + rect.height / 2;
+                
+                if(dropY > lineMiddle) {
+                    insertAfterLine = line;
+                }
             });
+            
+            // Create and position the drop indicator
+            if(insertAfterLine) {
+                const rect = insertAfterLine.getBoundingClientRect();
+                const editorRect = document.getElementById('richEditor').getBoundingClientRect();
+                
+                // Create indicator if doesn't exist
+                let indicator = document.querySelector('.drop-indicator-line');
+                if(!indicator) {
+                    indicator = document.createElement('div');
+                    indicator.className = 'drop-indicator-line';
+                    document.getElementById('richEditor').appendChild(indicator);
+                }
+                
+                // Position it after the line
+                indicator.style.top = (rect.bottom - editorRect.top + document.getElementById('richEditor').scrollTop) + 'px';
+                indicator.style.display = 'block';
+            }
         }
         
         function handleEditorDragLeave(e){
             document.getElementById('richEditor').classList.remove('drag-over');
-            // Clear line highlights
-            document.querySelectorAll('.scene-line').forEach(line => {
-                line.style.background = '';
-            });
+            // Remove drop indicator
+            document.querySelectorAll('.drop-indicator-line').forEach(el => el.remove());
         }
         
         function handleEditorDrop(e){
             e.preventDefault();
             document.getElementById('richEditor').classList.remove('drag-over');
-            document.querySelectorAll('.scene-line').forEach(line => line.style.background = '');
+            document.querySelectorAll('.drop-indicator-line').forEach(el => el.remove());
             document.querySelectorAll('.scene-divider.dragging').forEach(el => el.classList.remove('dragging'));
             
             if(editorMode !== 'storyboard') return;
             
-            // Find which line we're dropping on
+            // Find which line we're dropping AFTER (insert point between lines)
             const editor = document.getElementById('richEditor');
             const lines = editor.querySelectorAll('.scene-line');
             let targetLineIndex = 0;
@@ -1633,18 +1777,23 @@ Example: A realistic vertical video of a professional presenter speaking directl
             const dropY = e.clientY;
             lines.forEach((line) => {
                 const rect = line.getBoundingClientRect();
+                const lineMiddle = rect.top + rect.height / 2;
                 const lineIdx = parseInt(line.dataset.lineIdx);
-                if(!isNaN(lineIdx) && dropY > rect.top){
-                    targetLineIndex = lineIdx;
+                
+                // If we're past the middle of this line, insert after it
+                if(!isNaN(lineIdx) && dropY > lineMiddle){
+                    targetLineIndex = lineIdx + 1; // Insert AFTER this line
                 }
             });
+            
+            // Ensure targetLineIndex is valid (at least 1, since scene 0 is always first)
+            targetLineIndex = Math.max(1, targetLineIndex);
             
             if(draggedSceneIdx !== null){
                 // Moving an existing scene divider
                 if(draggedSceneIdx > 0 && draggedSceneIdx < sceneBreaks.length){
                     // Can't move to line 0 (that's always first scene)
-                    // Can't move to same position
-                    if(targetLineIndex > 0 && targetLineIndex !== sceneBreaks[draggedSceneIdx].lineIndex){
+                    if(targetLineIndex !== sceneBreaks[draggedSceneIdx].lineIndex){
                         sceneBreaks[draggedSceneIdx].lineIndex = targetLineIndex;
                     }
                 }
@@ -1655,7 +1804,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 if(existingBreak){
                     existingBreak.imgIndex = draggedImageIndex;
                 } else if(targetLineIndex > 0){
-                    // Only add new breaks after line 0 - default interpolate to true
+                    // Add new scene break at this position
                     sceneBreaks.push({ lineIndex: targetLineIndex, imgIndex: draggedImageIndex, interpolate: true });
                 } else if(targetLineIndex === 0 && sceneBreaks.length > 0){
                     // Update first scene's image
@@ -1974,6 +2123,9 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 
                 const payload = {config:cfg, dialogue_lines:lines, api_keys:{gemini_keys:[],openai_key:null}, job_id:uploadJobId};
                 if(scenesPayload) payload.scenes = scenesPayload;
+                if(lastFrameIndex !== null) payload.last_frame_index = lastFrameIndex;
+                
+                console.log('Last frame index:', lastFrameIndex);
                 
                 const r=await fetch(`${API}/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
                 if(!r.ok){const e=await r.json();throw new Error(e.detail?.errors?.join(', ')||e.detail||'Failed');}
