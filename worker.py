@@ -960,7 +960,8 @@ class JobWorker:
             }
         
         # Process clips with queue-based approach
-        while pending_clips and not generator.cancelled:
+        # Continue while there are pending clips OR waiting clips (approval pending)
+        while (pending_clips or waiting_clips) and not generator.cancelled:
             # Check if keys are available before starting batch
             if not check_keys_available():
                 no_keys_retries += 1
