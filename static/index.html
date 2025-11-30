@@ -221,35 +221,22 @@
         
         /* Drop indicator line (appears when dragging between lines) */
         .drop-indicator-line { 
-            position: absolute; 
-            left: 0; 
-            right: 0; 
-            height: 3px; 
-            background: linear-gradient(90deg, var(--accent), var(--accent)); 
-            border-radius: 2px; 
+            height: 24px;
+            margin: 4px 0 4px -28px;
+            padding: 4px 12px;
+            background: linear-gradient(90deg, var(--accent), rgba(99, 102, 241, 0.3)); 
+            border-radius: 4px; 
             pointer-events: none; 
-            z-index: 100; 
-            box-shadow: 0 0 8px var(--accent);
-            display: none;
-        }
-        .drop-indicator-line::before {
-            content: attr(data-label);
-            position: absolute;
-            left: 0;
-            top: -16px;
             font-size: 9px;
-            color: var(--accent);
             font-weight: 600;
+            color: white;
             text-transform: uppercase;
-            letter-spacing: 0.3px;
-            white-space: nowrap;
+            letter-spacing: 0.5px;
+            display: flex;
+            align-items: center;
         }
         .drop-indicator-line.end-frame {
-            background: linear-gradient(90deg, var(--success), var(--success));
-            box-shadow: 0 0 8px var(--success);
-        }
-        .drop-indicator-line.end-frame::before {
-            color: var(--success);
+            background: linear-gradient(90deg, var(--success), rgba(16, 185, 129, 0.3));
         }
         
         /* Lines with gutter numbers */
@@ -1764,9 +1751,10 @@ Example: A realistic vertical video of a professional presenter speaking directl
             if(draggedImageIndex === null && draggedSceneIdx === null) return;
             
             e.preventDefault();
+            e.stopPropagation();
             e.dataTransfer.dropEffect = draggedSceneIdx !== null ? 'move' : 'copy';
             
-            // Show drop indicator BETWEEN lines
+            // Get all lines
             const lines = document.querySelectorAll('.scene-line');
             const numLines = lines.length;
             const dropY = e.clientY;
@@ -1774,7 +1762,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
             // Remove all existing indicators
             document.querySelectorAll('.drop-indicator-line').forEach(el => el.remove());
             
-            // Find which gap we're hovering over (between which lines)
+            // Find which line we're after
             let insertAfterLineIdx = -1;
             let insertAfterLine = null;
             
@@ -1789,28 +1777,17 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 }
             });
             
-            // Create and position the drop indicator
-            const editor = document.getElementById('richEditor');
-            const editorRect = editor.getBoundingClientRect();
-            
+            // Create indicator and insert it after the target line
             if(insertAfterLine) {
-                const rect = insertAfterLine.getBoundingClientRect();
+                const targetLineIndex = insertAfterLineIdx + 1;
+                const isEndFrame = targetLineIndex >= numLines && draggedImageIndex !== null;
                 
                 let indicator = document.createElement('div');
-                indicator.className = 'drop-indicator-line';
-                indicator.style.top = (rect.bottom - editorRect.top + editor.scrollTop) + 'px';
-                indicator.style.display = 'block';
+                indicator.className = 'drop-indicator-line' + (isEndFrame ? ' end-frame' : '');
+                indicator.textContent = isEndFrame ? '🏁 Set as End Frame' : '◆ Insert scene here';
                 
-                // Check if this is after the last line (for End Frame)
-                const targetLineIndex = insertAfterLineIdx + 1;
-                if(targetLineIndex >= numLines && draggedImageIndex !== null){
-                    indicator.setAttribute('data-label', '🏁 Set as End Frame');
-                    indicator.classList.add('end-frame');
-                } else if(targetLineIndex > 0){
-                    indicator.setAttribute('data-label', '◆ Insert scene here');
-                }
-                
-                editor.appendChild(indicator);
+                // Insert after the target line
+                insertAfterLine.parentNode.insertBefore(indicator, insertAfterLine.nextSibling);
             }
         }
         
