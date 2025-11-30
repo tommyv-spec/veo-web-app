@@ -439,6 +439,9 @@
     </style>
 </head>
 <body>
+    <!-- Hidden 1x1 transparent image for drag preview -->
+    <img id="emptyDragImage" src="data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==" style="position:absolute;top:-9999px;left:-9999px;width:1px;height:1px;">
+    
     <div class="app-container state-initial" id="appContainer">
         <header class="header">
             <div class="logo">
@@ -1718,11 +1721,6 @@ Example: A realistic vertical video of a professional presenter speaking directl
         // Drag and drop handlers for storyboard mode
         let draggedSceneIdx = null;
         
-        // Create invisible drag image once (1x1 transparent pixel)
-        const invisibleDragImg = document.createElement('canvas');
-        invisibleDragImg.width = 1;
-        invisibleDragImg.height = 1;
-        
         function handleImageDragStart(e, imgIndex){
             if(editorMode !== 'storyboard') return;
             draggedImageIndex = imgIndex;
@@ -1730,8 +1728,9 @@ Example: A realistic vertical video of a professional presenter speaking directl
             e.dataTransfer.effectAllowed = 'copy';
             e.dataTransfer.setData('text/plain', 'image:' + imgIndex);
             
-            // Hide the default drag preview completely
-            e.dataTransfer.setDragImage(invisibleDragImg, 0, 0);
+            // Use pre-loaded transparent image to hide drag preview
+            const emptyImg = document.getElementById('emptyDragImage');
+            if(emptyImg) e.dataTransfer.setDragImage(emptyImg, 0, 0);
         }
         
         function handleSceneDragStart(e, sceneIdx){
@@ -1742,8 +1741,9 @@ Example: A realistic vertical video of a professional presenter speaking directl
             e.dataTransfer.setData('text/plain', 'scene:' + sceneIdx);
             e.target.classList.add('dragging');
             
-            // Hide the default drag preview completely
-            e.dataTransfer.setDragImage(invisibleDragImg, 0, 0);
+            // Use pre-loaded transparent image to hide drag preview
+            const emptyImg = document.getElementById('emptyDragImage');
+            if(emptyImg) e.dataTransfer.setDragImage(emptyImg, 0, 0);
         }
         
         function handleEditorDragOver(e){
