@@ -1,1361 +1,1365 @@
 # -*- coding: utf-8 -*-
 """
-Background Worker for Veo Web App
+Veo 3.1 Professional Generator
+Implements "Enrichment -> Translation -> Routing" Workflow
 
-Handles:
-- Job queue processing
-- Progress updates
-- Error recovery
-- Graceful shutdown
+Architecture:
+1. ENRICHMENT: Expand brief user context into forensic details
+2. TRANSLATION: Rewrite visual description with context as primary anchor
+3. ROUTING: Map enriched details to specific JSON Blueprint slots
+
+This ensures user context is the DOMINANT driver of all generation.
 """
 
-import json
-import threading
+import os
+import re
 import time
-from datetime import datetime
+import random
+import hashlib
+import mimetypes
+import base64
+import json
+import sys
+from functools import lru_cache
 from pathlib import Path
-from typing import Dict, Optional, List, Set
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from queue import Queue, Empty
-import traceback
+from typing import List, Optional, Tuple, Dict, Set, Any, Callable
+from datetime import datetime
+
+def vlog(msg):
+    """Log with immediate flush"""
+    print(msg, flush=True)
+
+# Google GenAI - Optional import
+try:
+    from google import genai
+    from google.genai import types
+    GENAI_AVAILABLE = True
+except ImportError:
+    genai = None
+    types = None
+    GENAI_AVAILABLE = False
+    print("[WARNING] google-genai not installed. Video generation disabled.")
 
 from config import (
-    JobStatus, ClipStatus, VideoConfig, APIKeysConfig, 
-    DialogueLine, app_config, get_gemini_keys_from_env, get_openai_key_from_env,
-    api_keys_config  # Global singleton for persistent key blocking
+    VideoConfig, APIKeysConfig, DialogueLine,
+    VEO_MODEL, OPENAI_MODEL, SUPPORTED_IMAGE_FORMATS,
+    BASE_PROMPT, NO_TEXT_INSTRUCTION, AUDIO_TIMING_INSTRUCTION,
+    AUDIO_QUALITY_INSTRUCTION, PRONUNCIATION_TEMPLATE,
+    ErrorCode, ClipStatus
 )
-from models import (
-    get_db, Job, Clip, JobLog, BlacklistEntry, GenerationLog,
-    add_job_log, update_job_progress
-)
-from veo_generator import VeoGenerator, list_images, GENAI_AVAILABLE
-from error_handler import VeoError, error_handler
+from error_handler import ErrorHandler, VeoError, error_handler
+
+# ===================== OPENAI CLIENT =====================
+
+_openai_client = None
+
+try:
+    from openai import OpenAI
+except ImportError:
+    OpenAI = None
 
 
-def get_api_keys_with_fallback(api_keys_json: str = None) -> APIKeysConfig:
-    """Get API keys - uses global singleton to persist blocked keys state."""
-    global api_keys_config
+def get_openai_client(api_key: Optional[str] = None):
+    """Get or create OpenAI client"""
+    global _openai_client
     
-    api_keys_data = json.loads(api_keys_json) if api_keys_json else {}
-    gemini_keys = api_keys_data.get("gemini_keys", [])
-    openai_key = api_keys_data.get("openai_key")
+    if OpenAI is None:
+        return None
     
-    # If job provides keys, update the global config (but keep blocked state)
-    if gemini_keys:
-        # Only update if different keys provided
-        if gemini_keys != api_keys_config.gemini_api_keys:
-            api_keys_config.gemini_api_keys = gemini_keys
-            print(f"[Worker] Updated Gemini keys from job: {len(gemini_keys)} keys", flush=True)
+    if api_key is None:
+        api_key = os.environ.get("OPENAI_API_KEY")
     
-    if openai_key:
-        api_keys_config.openai_api_key = openai_key
+    if not api_key:
+        return None
     
-    # Log current state
-    available = api_keys_config.get_available_key_count()
-    blocked = len(api_keys_config.blocked_keys)
-    print(f"[Worker] API Keys: {available} available, {blocked} blocked", flush=True)
-    
-    return api_keys_config
-
-class JobWorker:
-    """
-    Background worker that processes video generation jobs.
-    
-    Features:
-    - Configurable worker pool
-    - Real-time progress updates
-    - Graceful shutdown
-    - Error recovery
-    """
-    
-    def __init__(self, max_workers: int = 3):
-        self.max_workers = max_workers
-        self.executor: Optional[ThreadPoolExecutor] = None
-        self.running_jobs: Dict[str, VeoGenerator] = {}
-        self.job_queue: Queue = Queue()
-        self.shutdown_event = threading.Event()
-        self.worker_thread: Optional[threading.Thread] = None
-        
-        # SSE subscribers (job_id -> list of queues)
-        self.subscribers: Dict[str, List[Queue]] = {}
-        self.subscribers_lock = threading.Lock()
-    
-    def start(self):
-        """Start the worker"""
-        if self.executor is not None:
-            return
-        
-        self.shutdown_event.clear()
-        self.executor = ThreadPoolExecutor(max_workers=self.max_workers)
-        
-        # Start job processor thread
-        self.worker_thread = threading.Thread(target=self._process_jobs, daemon=True)
-        self.worker_thread.start()
-        
-        print(f"[Worker] Started with {self.max_workers} workers")
-    
-    def stop(self):
-        """Stop the worker gracefully"""
-        print("[Worker] Shutting down...")
-        self.shutdown_event.set()
-        
-        # Cancel all running jobs
-        for job_id, generator in list(self.running_jobs.items()):
-            generator.cancel()
-        
-        if self.executor:
-            self.executor.shutdown(wait=True)
-            self.executor = None
-        
-        print("[Worker] Shutdown complete")
-    
-    def _process_jobs(self):
-        """Main job processing loop"""
-        while not self.shutdown_event.is_set():
-            try:
-                # Check for pending jobs in database
-                self._check_pending_jobs()
-                
-                # Check for redo requests
-                self._check_redo_queue()
-                
-                time.sleep(app_config.worker_poll_interval)
-            except Exception as e:
-                print(f"[Worker] Error in job processor: {e}")
-                traceback.print_exc()
-                time.sleep(5)
-    
-    def _check_redo_queue(self):
-        """Check for clips that need redo and process them"""
-        with get_db() as db:
-            # Get clips queued for redo
-            redo_clips = db.query(Clip).filter(
-                Clip.status == ClipStatus.REDO_QUEUED.value
-            ).order_by(Clip.id.asc()).limit(5).all()
-            
-            for clip in redo_clips:
-                if len(self.running_jobs) >= self.max_workers:
-                    break
-                
-                # Check if job is already being processed
-                if clip.job_id not in self.running_jobs:
-                    self._start_redo(clip.job_id, clip.id)
-    
-    def _start_redo(self, job_id: str, clip_id: int):
-        """Start processing a single clip redo"""
-        if self.executor is None:
-            return
-        
-        self.executor.submit(self._run_redo, job_id, clip_id)
-    
-    def _check_pending_jobs(self):
-        """Check for and start pending jobs"""
-        if len(self.running_jobs) >= self.max_workers:
-            return
-        
-        with get_db() as db:
-            # Get pending jobs
-            pending = db.query(Job).filter(
-                Job.status == JobStatus.PENDING.value
-            ).order_by(Job.created_at.asc()).limit(
-                self.max_workers - len(self.running_jobs)
-            ).all()
-            
-            for job in pending:
-                if job.id not in self.running_jobs:
-                    self._start_job(job.id)
-    
-    def _start_job(self, job_id: str):
-        """Start processing a job"""
-        if self.executor is None:
-            return
-        
-        self.executor.submit(self._run_job, job_id)
-    
-    def _run_redo(self, job_id: str, clip_id: int):
-        """Run a single clip redo"""
-        generator = None
-        
+    if _openai_client is None:
         try:
-            with get_db() as db:
-                clip = db.query(Clip).filter(Clip.id == clip_id).first()
-                job = db.query(Job).filter(Job.id == job_id).first()
-                
-                if not clip or not job:
-                    return
-                
-                # Update clip status
-                clip.status = ClipStatus.GENERATING.value
-                clip.started_at = datetime.utcnow()
-                db.commit()
-                
-                add_job_log(
-                    db, job_id, 
-                    f"Starting redo for clip {clip.clip_index + 1} (attempt {clip.generation_attempt}/3)",
-                    "INFO", "redo"
+            _openai_client = OpenAI(api_key=api_key)
+        except Exception:
+            return None
+    
+    return _openai_client
+
+
+# ===================== STEP 1: ENRICHMENT ENGINE =====================
+
+def process_user_context(
+    user_context: str,
+    language: str,
+    openai_key: Optional[str] = None
+) -> dict:
+    """
+    STEP 1: ENRICHMENT
+    
+    Takes brief user input (e.g., "he is very angry" or "news anchor reporting") 
+    and EXPANDS it into forensic details for each Expert Network (Visual, Audio, Motion).
+    
+    This is the KEY function - it transforms simple directions into
+    specific, actionable instructions that Veo can follow.
+    
+    Now also extracts SPEAKER ROLE for voice casting.
+    """
+    if not user_context or not user_context.strip():
+        return {}
+
+    client = get_openai_client(openai_key)
+    if client is None:
+        # Fallback: map raw text to all fields
+        return {
+            "subject_action": user_context,
+            "facial_expression": user_context,
+            "voice_tone": user_context,
+            "delivery_style": user_context,
+            "atmosphere": user_context,
+            "body_language": user_context,
+            "background_action": "",
+            "camera_motion": "",
+            "speaker_role": "",
+        }
+
+    try:
+        system_msg = """You are a Director for Veo 3.1 (Google's AI Video Generator).
+
+Your job is to EXPAND brief user directions into SPECIFIC, REALISTIC details.
+
+The user might say something simple like "he is angry" or "nervous interview" or "fitness coach explaining".
+You must expand this into detailed instructions for EACH aspect of the video.
+
+CRITICAL: Be SPECIFIC and REALISTIC. Describe what you would actually SEE in real life.
+- Don't say "intense cinematic gaze" - say "narrowed eyes, looking directly at camera"
+- Don't say "dramatic tension" - say "shoulders raised, jaw tight"
+
+SPEAKER ROLE EXTRACTION:
+Look for any profession, role, or archetype in the user's description:
+- "news anchor" → formal, authoritative delivery
+- "fitness influencer" → energetic, motivational, upbeat
+- "doctor explaining" → calm, reassuring, professional
+- "teacher" → clear, patient, educational
+- "salesperson" → enthusiastic, persuasive
+- "meditation guide" → soft, calm, soothing
+If no specific role mentioned, use "natural speaker"
+
+OUTPUT JSON with these fields:
+{
+  "speaker_role": "The role/profession/archetype (e.g., 'news anchor', 'fitness coach', 'doctor', 'natural speaker')",
+  "subject_action": "What the person physically does (e.g., 'leaning forward, pointing finger', 'sitting still, hands folded')",
+  "facial_expression": "Realistic facial details (e.g., 'furrowed brow, tight lips, narrowed eyes')",
+  "voice_tone": "How the voice sounds - MUST match the speaker_role (e.g., news anchor = 'clear, authoritative, measured', fitness coach = 'energetic, loud, motivational')",
+  "delivery_style": "How they speak - MUST match the speaker_role (e.g., news anchor = 'formal pacing, clear enunciation', fitness coach = 'fast-paced, encouraging, punchy')",
+  "body_language": "Posture and gestures (e.g., 'arms crossed, leaning back' or 'hands gesturing while talking')",
+  "background_action": "What happens in background (e.g., 'nothing, static background')",
+  "camera_motion": "Camera movement (e.g., 'static, no movement' or 'slight zoom')",
+  "atmosphere": "Lighting (e.g., 'normal indoor lighting' or 'bright daylight')"
+}
+
+Keep it REALISTIC and NATURAL. No dramatic or cinematic language."""
+
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": f"USER DIRECTION: {user_context}\nLANGUAGE: {language}\n\nExpand this into detailed video production instructions. Be sure to identify the speaker_role."}
+            ],
+            temperature=0.7,  # Higher temp for creative expansion
+            response_format={"type": "json_object"}
+        )
+        
+        result = json.loads(resp.choices[0].message.content)
+        vlog(f"[ENRICHMENT] Expanded '{user_context}' into: {json.dumps(result, indent=2)[:500]}...")
+        return result
+
+    except Exception as e:
+        vlog(f"[ENRICHMENT] Error: {e}")
+        return {
+            "subject_action": user_context,
+            "facial_expression": user_context,
+            "voice_tone": user_context,
+            "atmosphere": user_context,
+            "speaker_role": "",
+        }
+
+
+# ===================== STEP 2: FRAME ANALYSIS =====================
+
+def analyze_frame(image_path: str, openai_key: Optional[str] = None) -> dict:
+    """
+    COMPREHENSIVE FRAME ANALYSIS
+    
+    Extracts EVERYTHING needed from the image automatically:
+    - Subject: age, gender, appearance, clothing
+    - Role: detected profession/archetype based on visual cues
+    - Action: what they're doing, interacting with
+    - Objects: microphone, props, items they're holding/using
+    - Setting: location, environment, context
+    - Mood: apparent emotional state from expression/body language
+    - Voice suggestion: appropriate voice based on all of the above
+    
+    This is the DEFAULT - works without any user input.
+    User context can ADD to or OVERRIDE any of these.
+    """
+    client = get_openai_client(openai_key)
+    
+    # Default fallback
+    default_result = {
+        # Subject
+        "subject_age": "adult",
+        "subject_gender": "neutral",
+        "subject_appearance": "person in frame",
+        "subject_clothing": "",
+        
+        # Role & Action
+        "apparent_role": "natural speaker",
+        "current_action": "speaking to camera",
+        "body_language": "neutral posture",
+        "facial_expression": "neutral expression",
+        
+        # Objects & Interaction
+        "objects_in_scene": "",
+        "objects_interacting_with": "",
+        "props": "",
+        
+        # Setting & Environment
+        "setting_location": "indoor",
+        "setting_type": "unknown",
+        "background_description": "",
+        "lighting": "natural lighting",
+        "atmosphere": "neutral",
+        
+        # Voice Suggestions (auto-generated)
+        "suggested_voice_tone": "clear, natural, conversational",
+        "suggested_delivery": "measured pace, professional",
+        "suggested_energy": "moderate",
+        
+        # Meta
+        "visual_description": "",
+        "confidence": "low"
+    }
+    
+    if client is None:
+        return default_result
+    
+    path = Path(image_path)
+    if not path.exists():
+        return default_result
+    
+    try:
+        with open(path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("utf-8")
+        
+        system_msg = """You are an expert Scene Analyst for video production.
+
+Analyze this frame and extract EVERYTHING needed for video generation.
+
+=== WHAT TO ANALYZE ===
+
+1. SUBJECT (the person):
+   - Age range (young adult, middle-aged, older adult, etc.)
+   - Gender
+   - Appearance (hair, facial features, build)
+   - Clothing (what they're wearing - this helps identify role)
+   - Facial expression (specific: furrowed brow, slight smile, etc.)
+   - Body language (posture, hand position, stance)
+
+2. ROLE DETECTION (based on visual cues):
+   Look at clothing + setting + props to determine role:
+   - Suit + office = corporate professional / business executive
+   - Suit + news desk = news anchor
+   - Scrubs + medical setting = doctor / nurse
+   - Workout clothes = fitness instructor / athlete
+   - Casual + ring light = influencer / vlogger
+   - Uniform = specific profession
+   - Outdoor + microphone = reporter / street interview
+   - Casual street clothes + being interviewed = man on street / interviewee
+   
+3. ACTION & OBJECTS:
+   - What are they doing right now?
+   - What objects are visible? (microphone, desk, equipment, props)
+   - What are they interacting with or holding?
+   - Any relevant props?
+
+4. SETTING & ENVIRONMENT:
+   - Where is this? (studio, office, gym, outdoor, home, street, etc.)
+   - What's in the background?
+   - Lighting quality and type
+   - Overall atmosphere/mood of the scene
+
+5. VOICE SUGGESTIONS:
+   Based on ALL of the above, suggest:
+   - Voice tone that would match this person and role
+   - Delivery style appropriate for the context
+   - Energy level (calm, moderate, high energy)
+
+=== OUTPUT JSON ===
+{
+  "subject_age": "specific age range",
+  "subject_gender": "male / female",
+  "subject_appearance": "brief description of how they look",
+  "subject_clothing": "what they're wearing",
+  "facial_expression": "specific expression details",
+  "body_language": "posture and stance",
+  
+  "apparent_role": "detected role/profession based on visual cues",
+  "current_action": "what they appear to be doing",
+  
+  "objects_in_scene": "list of visible objects",
+  "objects_interacting_with": "what they're holding or using",
+  "props": "any notable props",
+  
+  "setting_location": "indoor / outdoor / studio",
+  "setting_type": "specific type (office, gym, street, news studio, etc.)",
+  "background_description": "what's behind them",
+  "lighting": "lighting description",
+  "atmosphere": "mood/feel of the scene",
+  
+  "suggested_voice_tone": "voice quality that matches this person and role",
+  "suggested_delivery": "speaking style appropriate for context",
+  "suggested_energy": "low / moderate / high",
+  
+  "visual_description": "50-word summary of the entire scene",
+  "confidence": "high / medium / low - confidence in role detection"
+}
+
+Be SPECIFIC. Don't say "professional" - say "news anchor" or "corporate executive".
+Don't say "nice clothes" - say "dark blue suit with red tie"."""
+
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": [
+                    {"type": "text", "text": "Analyze this frame completely. Extract all details for video generation."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                ]},
+            ],
+            max_tokens=800,
+            response_format={"type": "json_object"}
+        )
+        
+        result = json.loads(resp.choices[0].message.content)
+        
+        # Log the analysis
+        vlog(f"\n[FRAME ANALYSIS] === Auto-detected from image ===")
+        vlog(f"  Subject: {result.get('subject_age', '?')} {result.get('subject_gender', '?')}")
+        vlog(f"  Clothing: {result.get('subject_clothing', '?')}")
+        vlog(f"  Role: {result.get('apparent_role', '?')} (confidence: {result.get('confidence', '?')})")
+        vlog(f"  Action: {result.get('current_action', '?')}")
+        vlog(f"  Setting: {result.get('setting_type', '?')} ({result.get('setting_location', '?')})")
+        vlog(f"  Objects: {result.get('objects_in_scene', '?')}")
+        vlog(f"  Expression: {result.get('facial_expression', '?')}")
+        vlog(f"  Voice suggestion: {result.get('suggested_voice_tone', '?')}")
+        
+        return result
+        
+    except Exception as e:
+        vlog(f"[FRAME ANALYSIS] Error: {e}")
+        return default_result
+
+
+# Legacy function for backward compatibility
+@lru_cache(maxsize=512)
+def describe_frame(image_path: str, openai_key: Optional[str] = None) -> str:
+    """Legacy: Simple frame description. Use analyze_frame() for full analysis."""
+    analysis = analyze_frame(image_path, openai_key)
+    return analysis.get('visual_description', '')
+
+
+# ===================== STEP 3: VISUAL TRANSLATION =====================
+
+def build_visual_description(
+    base_prompt: str,
+    frame_desc: str,
+    enriched_context: dict,
+    dialogue_line: str,
+    language: str,
+    openai_key: Optional[str] = None
+) -> str:
+    """
+    STEP 2: TRANSLATION
+    
+    Rewrites the visual description to ensure USER CONTEXT is the
+    DOMINANT anchor. Focuses on REALISTIC, NATURAL output.
+    """
+    client = get_openai_client(openai_key)
+    if client is None:
+        # Fallback: combine base with context
+        action = enriched_context.get('subject_action', '')
+        expression = enriched_context.get('facial_expression', '')
+        return f"{base_prompt}. {action}. {expression}."
+    
+    try:
+        system_msg = """You are writing a shot description for Veo 3.1 video generation.
+
+Write a SINGLE paragraph (50-70 words) describing what happens in the video.
+
+CRITICAL RULES:
+1. Write for REALISTIC, NATURAL output - NOT cinematic or dramatic
+2. Describe exactly what you see: the person, their expression, their action
+3. Use simple, direct language - no film terminology
+4. Focus on: What the person looks like, what they're doing, their expression
+5. The ENRICHED CONTEXT details MUST be included
+
+DO NOT use words like: cinematic, dramatic, atmospheric, moody, artistic
+DO use words like: natural, realistic, authentic, genuine, real
+
+Example good output:
+"A middle-aged man in a blue shirt sits at a desk. His brow is furrowed and jaw clenched, showing frustration. He speaks directly to camera with an intense expression, gesturing with his hands occasionally."
+
+Example bad output:
+"A dramatic close-up captures the raw intensity of a weathered businessman, shadows dancing across his chiseled features as emotion pours from his soul."
+"""
+
+        user_msg = f"""BASE DESCRIPTION: {base_prompt}
+FRAME: {frame_desc}
+DIALOGUE: "{dialogue_line}"
+
+=== ENRICHED CONTEXT (MUST INCLUDE) ===
+ACTION: {enriched_context.get('subject_action', 'Speaking naturally')}
+EXPRESSION: {enriched_context.get('facial_expression', 'Natural')}
+BODY LANGUAGE: {enriched_context.get('body_language', 'Natural')}
+
+Write a realistic, natural description. No cinematic language."""
+
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.5,
+            max_tokens=200,
+        )
+        
+        result = resp.choices[0].message.content.strip()
+        vlog(f"[TRANSLATION] Visual description: {result[:200]}...")
+        return result
+        
+    except Exception as e:
+        vlog(f"[TRANSLATION] Error: {e}")
+        return base_prompt
+
+
+# ===================== STEP 4: VOICE PROFILE =====================
+
+def generate_voice_profile(
+    frame_analysis: dict,
+    language: str,
+    user_context_enriched: dict,
+    openai_key: Optional[str] = None
+) -> str:
+    """
+    Generate voice profile using:
+    1. FRAME ANALYSIS (DEFAULT) - auto-detected from image: age, gender, apparent role
+    2. USER CONTEXT (OVERRIDE) - when provided, takes priority over auto-detected
+    3. Always PROFESSIONAL STUDIO quality
+    
+    Priority: User context > Frame analysis > Defaults
+    """
+    client = get_openai_client(openai_key)
+    
+    # === EXTRACT FROM FRAME ANALYSIS (defaults) ===
+    auto_age = frame_analysis.get('subject_age', 'adult')
+    auto_gender = frame_analysis.get('subject_gender', 'neutral')
+    auto_role = frame_analysis.get('apparent_role', 'natural speaker')
+    auto_voice_tone = frame_analysis.get('suggested_voice_tone', 'clear, natural')
+    auto_delivery = frame_analysis.get('suggested_delivery', 'measured pace')
+    visual_desc = frame_analysis.get('visual_description', '')
+    detection_confidence = frame_analysis.get('confidence', 'low')
+    
+    # === EXTRACT FROM USER CONTEXT (overrides) ===
+    user_role = user_context_enriched.get('speaker_role', '')
+    user_voice_tone = user_context_enriched.get('voice_tone', '')
+    user_delivery = user_context_enriched.get('delivery_style', '')
+    
+    # === MERGE: User context overrides auto-detected ===
+    final_role = user_role if user_role else auto_role
+    final_voice_tone = user_voice_tone if user_voice_tone else auto_voice_tone
+    final_delivery = user_delivery if user_delivery else auto_delivery
+    
+    # Studio quality is ALWAYS required - non-negotiable
+    studio_quality = (
+        "Professional studio recording quality: crystal clear audio, no background noise, "
+        "no room reverb, no echo, broadcast-grade microphone, perfect clarity."
+    )
+    
+    # Log the merge decision
+    vlog(f"[VOICE CASTING] Auto-detected role: {auto_role} (confidence: {detection_confidence})")
+    if user_role:
+        vlog(f"[VOICE CASTING] User override role: {user_role} (USING THIS)")
+    vlog(f"[VOICE CASTING] Final role: {final_role}")
+    
+    if client is None:
+        base = f"{auto_age} {auto_gender} {language} speaker. {final_role} style. {studio_quality}"
+        return f"{base} Voice: {final_voice_tone}. Delivery: {final_delivery}."
+    
+    try:
+        system_msg = f"""You are a Voice Casting Director for professional video production.
+
+Your job: Cast the PERFECT voice for a {language} speaker.
+
+=== ROLE-BASED VOICE PROFILES ===
+
+NEWS ANCHOR / REPORTER:
+- Authoritative, measured pace, clear enunciation
+- Formal tone, confident, trustworthy, even-paced
+
+FITNESS COACH / INFLUENCER:
+- High energy, enthusiastic, loud, motivational
+- Fast-paced, punchy, encouraging, upbeat
+
+DOCTOR / MEDICAL PROFESSIONAL:
+- Calm, reassuring, clear, precise
+- Patient, measured, professional but warm
+
+TEACHER / EDUCATOR:
+- Clear, patient, engaging, educational
+- Slightly varied pace, encouraging
+
+SALESPERSON / MARKETER:
+- Enthusiastic, persuasive, dynamic
+- Friendly, approachable, confident
+
+MEDITATION / WELLNESS GUIDE:
+- Soft, calm, soothing, slow
+- Gentle, peaceful, warm, nurturing
+
+CORPORATE / BUSINESS EXECUTIVE:
+- Professional, polished, clear, confident
+- Measured pace, authoritative but approachable
+
+VLOGGER / INFLUENCER (CASUAL):
+- Natural, conversational, relaxed
+- Friendly, authentic, personable
+
+STREET INTERVIEW / MAN ON STREET:
+- Natural, unrehearsed quality
+- Conversational, authentic, varied pace
+
+=== CRITICAL RULES ===
+1. Voice MUST match the subject's age and gender
+2. Voice MUST sound like the specified role
+3. Scene location does NOT affect voice quality (ignore surroundings)
+4. Voice MUST be professional studio quality - ALWAYS
+5. Apply any emotional overlay specified
+
+OUTPUT: 4-5 sentences describing the exact voice to use."""
+
+        user_msg = f"""=== SUBJECT FROM FRAME ===
+Age: {auto_age}
+Gender: {auto_gender}
+Visual: {visual_desc}
+
+=== FINAL VOICE CASTING ===
+Role: {final_role}
+Voice Tone: {final_voice_tone}
+Delivery Style: {final_delivery}
+Language: {language}
+
+Cast this voice. Remember:
+- Match the age/gender exactly
+- Sound like a {final_role} would sound
+- {studio_quality}"""
+
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": system_msg},
+                {"role": "user", "content": user_msg},
+            ],
+            temperature=0.4,
+            max_tokens=300,
+        )
+        
+        result = resp.choices[0].message.content.strip()
+        
+        # Ensure studio quality is mentioned
+        if "studio" not in result.lower() and "professional" not in result.lower():
+            result = f"{result} {studio_quality}"
+        
+        return result
+        
+    except Exception as e:
+        vlog(f"[VOICE PROFILE] Error: {e}")
+        return f"{auto_age} {auto_gender} {language} speaker in {final_role} style. {final_voice_tone}. {final_delivery}. {studio_quality}"
+
+
+def get_default_voice_profile(language: str, user_context: str = "") -> str:
+    """Default voice profile - always studio quality"""
+    studio_quality = (
+        "Professional studio recording quality: crystal clear audio, no background noise, "
+        "no room reverb, broadcast-grade microphone."
+    )
+    base = f"Natural {language} voice with clear diction and native accent. {studio_quality}"
+    if user_context:
+        return f"{base} Context: {user_context}."
+    return base
+
+
+# ===================== STEP 5: PROMPT ASSEMBLY (ROUTING) =====================
+
+def build_prompt(
+    dialogue_line: str,
+    start_frame_path: Path,
+    end_frame_path: Optional[Path],
+    clip_index: int,
+    language: str,
+    voice_profile: str,
+    config: VideoConfig,
+    openai_key: Optional[str] = None,
+    frame_analysis: Optional[dict] = None,
+    user_context_override: Optional[dict] = None,
+) -> str:
+    """
+    PROMPT ASSEMBLY
+    
+    Builds the final prompt using:
+    1. FRAME ANALYSIS (default) - auto-detected from image
+    2. USER CONTEXT (override) - adds to or overrides frame analysis
+    
+    Priority: User context > Frame analysis > Defaults
+    """
+    vlog(f"[ROUTING] Building prompt for clip {clip_index}...")
+
+    # === 1. GET DEFAULTS FROM FRAME ANALYSIS ===
+    if frame_analysis is None:
+        frame_analysis = {}
+    
+    if user_context_override is None:
+        user_context_override = {}
+    
+    # === 2. MERGE: User context overrides frame analysis ===
+    def get_value(key, frame_key=None, default=""):
+        """Get value with priority: user_context > frame_analysis > default"""
+        if frame_key is None:
+            frame_key = key
+        user_val = user_context_override.get(key, "")
+        frame_val = frame_analysis.get(frame_key, "")
+        return user_val if user_val else (frame_val if frame_val else default)
+    
+    # Subject details
+    facial_expression = get_value("facial_expression", "facial_expression", "Natural expression")
+    body_language = get_value("body_language", "body_language", "Natural posture")
+    
+    # Action
+    current_action = get_value("subject_action", "current_action", "Speaking naturally to camera")
+    
+    # Scene/atmosphere
+    atmosphere = get_value("atmosphere", "atmosphere", "Natural lighting")
+    background = get_value("background_action", "background_description", "Static background")
+    setting = frame_analysis.get("setting_type", "indoor setting")
+    
+    # Voice
+    voice_tone = get_value("voice_tone", "suggested_voice_tone", "Natural speaking voice")
+    delivery_style = get_value("delivery_style", "suggested_delivery", "Natural conversation")
+    
+    # Camera
+    camera_motion = get_value("camera_motion", "camera_motion", "Static or minimal movement")
+    
+    # === 3. BUILD VISUAL DESCRIPTION ===
+    user_context_raw = getattr(config, 'user_context', '') or ''
+    
+    if config.use_frame_vision and config.use_openai_prompt_tuning:
+        start_desc = frame_analysis.get("visual_description", "")
+    else:
+        start_desc = ""
+    
+    visual_description = build_visual_description(
+        BASE_PROMPT, start_desc, 
+        {**frame_analysis, **user_context_override},  # Merged context
+        dialogue_line, language, openai_key
+    ) if config.use_openai_prompt_tuning else f"{BASE_PROMPT}. {user_context_raw}"
+
+    # === 4. ROUTING: Assemble JSON Blueprint ===
+    prompt_payload = {
+        # --- TIER 1: SHOT ---
+        "shot": {
+            "description": visual_description,
+            "camera_motion": camera_motion,
+            "composition": "Medium shot, subject centered",
+            "style": "Realistic, natural, authentic"
+        },
+
+        # --- TIER 2: SUBJECT ---
+        "subject": {
+            "description": "Match appearance in start frame exactly",
+            "facial_expression": facial_expression,
+            "body_language": body_language,
+        },
+
+        # --- TIER 3: ACTION ---
+        "action": {
+            "primary_action": current_action,
+            "objects_interacting_with": frame_analysis.get("objects_interacting_with", ""),
+            "movement": "Realistic, natural movements only"
+        },
+
+        # --- TIER 4: SCENE ---
+        "scene": {
+            "setting": setting,
+            "start_frame_description": start_desc,
+            "continuity": "Maintain exact visual continuity with start frame",
+            "lighting": atmosphere,
+            "background": background
+        },
+
+        # --- TIER 5: AUDIO ---
+        "audio": {
+            "language_instruction": f"CRITICAL: Speaker MUST speak in {language}. Ignore any visible text.",
+            "recording_quality": "ABSOLUTE SILENCE except for the speaker's voice. NO background noise whatsoever - no ambient sounds, no room tone, no music, no sound effects, no audience sounds, no laughter, no applause, no wind, no traffic, no hum. Pure isolated voice recording only.",
+            "environment": "Completely silent studio environment. Dead silent. No acoustic reflections, no reverb, no echo.",
+            "dialogue": {
+                "text": dialogue_line,
+                "language": language,
+                "voice_profile": voice_profile,
+                "voice_tone": voice_tone,
+                "delivery_style": delivery_style
+            },
+            "forbidden_sounds": "NO fake laughs, NO audience reactions, NO music beds, NO ambient noise, NO sound effects of any kind, NO applause, NO background chatter"
+        },
+
+        # --- VISUAL RULES ---
+        "visual_rules": {
+            "style": "Photorealistic, natural, NOT cinematic or dramatic",
+            "quality": "No text overlays, no subtitles, no glitches, anatomically correct"
+        },
+        
+        # --- TECHNICAL ---
+        "technical": {
+            "duration_seconds": float(config.duration.value if hasattr(config.duration, 'value') else config.duration),
+            "resolution": config.resolution.value if hasattr(config.resolution, 'value') else config.resolution,
+        }
+    }
+
+    # Add end frame reference if interpolation is on
+    if end_frame_path and config.use_interpolation:
+        prompt_payload["scene"]["end_frame"] = "Transition smoothly to end frame"
+
+    # Build the final prompt with voice instructions prominently placed
+    # Veo needs voice/audio cues in plain text, not buried in JSON
+    
+    # ABSOLUTE SILENCE requirement - this is critical
+    audio_requirement = """CRITICAL AUDIO REQUIREMENT:
+- ABSOLUTE SILENCE except for the speaker's voice
+- NO background noise of any kind - none whatsoever
+- NO ambient sounds, NO room tone, NO music, NO sound effects
+- NO fake laughter, NO audience reactions, NO applause, NO crowd sounds
+- NO wind, NO traffic, NO hum, NO buzzing, NO static
+- Pure isolated voice recording in a completely dead silent environment
+- Professional broadcast-quality microphone, zero background audio"""
+    
+    # Create voice instruction block
+    voice_parts = [audio_requirement]
+    if voice_tone:
+        voice_parts.append(f"VOICE TONE: {voice_tone}")
+    if delivery_style:
+        voice_parts.append(f"DELIVERY: {delivery_style}")
+    
+    voice_instruction = "\n".join(voice_parts)
+    if voice_tone or delivery_style:
+        voice_instruction += "\nThe speaker's voice MUST match this emotional direction throughout."
+    
+    # Combine JSON structure with explicit voice instruction
+    prompt_json = json.dumps(prompt_payload, ensure_ascii=False)
+    
+    # Prepend voice instruction for Veo to catch it (voice cues must be visible at top level)
+    final_prompt = f"{voice_instruction}\n\n{prompt_json}"
+    
+    # Detailed logging for debugging
+    vlog(f"\n{'='*60}")
+    vlog(f"[ROUTING] PROMPT FOR CLIP {clip_index}")
+    vlog(f"{'='*60}")
+    vlog(f"")
+    vlog(f"=== FROM FRAME ANALYSIS (auto-detected) ===")
+    vlog(f"  Role: {frame_analysis.get('apparent_role', 'unknown')}")
+    vlog(f"  Setting: {frame_analysis.get('setting_type', 'unknown')}")
+    vlog(f"  Action: {frame_analysis.get('current_action', 'unknown')}")
+    vlog(f"  Expression: {frame_analysis.get('facial_expression', 'unknown')}")
+    vlog(f"  Objects: {frame_analysis.get('objects_interacting_with', 'none')}")
+    vlog(f"")
+    if user_context_raw:
+        vlog(f"=== FROM USER CONTEXT (override) ===")
+        vlog(f"  Raw: '{user_context_raw}'")
+        vlog(f"  Role override: {user_context_override.get('speaker_role', '(none)')}")
+        vlog(f"  Action override: {user_context_override.get('subject_action', '(none)')}")
+        vlog(f"  Voice override: {user_context_override.get('voice_tone', '(none)')}")
+        vlog(f"")
+    vlog(f"=== FINAL VALUES (merged) ===")
+    vlog(f"  Action: {current_action}")
+    vlog(f"  Expression: {facial_expression}")
+    vlog(f"  Body Language: {body_language}")
+    vlog(f"  Voice Tone: {voice_tone}")
+    vlog(f"  Delivery: {delivery_style}")
+    vlog(f"")
+    vlog(f"VOICE PROFILE:")
+    vlog(f"  {voice_profile[:500]}..." if len(voice_profile) > 500 else f"  {voice_profile}")
+    vlog(f"")
+    vlog(f"VOICE INSTRUCTION (prepended to prompt):")
+    vlog(f"  {voice_instruction}")
+    vlog(f"")
+    vlog(f"VISUAL DESCRIPTION:")
+    vlog(f"  {visual_description[:300]}...")
+    vlog(f"")
+    vlog(f"FULL JSON PROMPT:")
+    vlog(json.dumps(prompt_payload, indent=2, ensure_ascii=False)[:2000])
+    vlog(f"{'='*60}\n")
+    
+    return final_prompt
+
+
+# ===================== HELPERS =====================
+
+def list_images(images_dir: Path, config: VideoConfig) -> List[Path]:
+    """List and sort images in directory"""
+    files = [
+        p for p in images_dir.iterdir() 
+        if p.suffix.lower() in SUPPORTED_IMAGE_FORMATS
+    ]
+    
+    if config.images_sort_key == "date":
+        files.sort(key=lambda p: p.stat().st_mtime, reverse=config.images_sort_reverse)
+    else:
+        files.sort(key=lambda p: p.name.lower(), reverse=config.images_sort_reverse)
+    
+    return files
+
+
+def get_mime_type(path: Path) -> str:
+    """Get MIME type for image"""
+    mime, _ = mimetypes.guess_type(str(path))
+    return mime or "image/png"
+
+
+def is_rate_limit_error(exception: Exception) -> bool:
+    """Check if exception is a rate limit error"""
+    s = str(exception)
+    return "429" in s or "RESOURCE_EXHAUSTED" in s
+
+
+def is_celebrity_error(operation) -> bool:
+    """Check if operation failed due to celebrity filter"""
+    try:
+        op_str = str(operation).lower()
+        keywords = ["celebrity", "likenesses", "rai_media_filtered", "filtered_reasons"]
+        
+        if any(kw in op_str for kw in keywords):
+            return True
+        
+        resp = getattr(operation, "response", None)
+        if resp:
+            if getattr(resp, "rai_media_filtered_count", 0) > 0:
+                return True
+            if getattr(resp, "rai_media_filtered_reasons", None):
+                return True
+    except Exception:
+        pass
+    
+    return False
+
+
+def get_next_clean_image(
+    current_index: int,
+    images_list: List[Path],
+    blacklist: Set[Path],
+    max_attempts: int = 10
+) -> Optional[Tuple[int, Path]]:
+    """Find next non-blacklisted image"""
+    if not images_list:
+        return None
+    
+    total = len(images_list)
+    
+    for offset in range(1, min(max_attempts + 1, total + 1)):
+        new_index = (current_index + offset) % total
+        candidate = images_list[new_index]
+        
+        if candidate not in blacklist:
+            return (new_index, candidate)
+    
+    return None
+
+
+def generate_output_filename(
+    idx: int, 
+    start_img: Path, 
+    end_img: Optional[Path],
+    timestamp: str = ""
+) -> str:
+    """Generate safe output filename"""
+    def slugify(s: str) -> str:
+        return re.sub(r"[^\w\-.]+", "_", s).strip("._")
+    
+    def short_stem(p: Path, n: int = 40) -> str:
+        return slugify(p.stem)[:n]
+    
+    idx_str = str(idx)
+    s1 = short_stem(start_img, 40)
+    s2 = short_stem(end_img, 40) if end_img else ""
+    
+    base = f"{idx_str}_{s1}" + (f"_to_{s2}" if s2 else "")
+    if timestamp:
+        base = f"{base}_{timestamp}"
+    
+    base = slugify(base)
+    if len(base) > 120:
+        h = hashlib.md5(base.encode("utf-8")).hexdigest()[:8]
+        base = f"{idx_str}_{s1[:40]}" + (f"_to_{s2[:40]}" if s2 else "") + f"_{h}"
+    
+    return f"{base}.mp4"
+
+
+# ===================== CALLBACK TYPE =====================
+
+ProgressCallback = Callable[[int, str, str, Optional[Dict]], None]
+
+
+# ===================== MAIN GENERATOR CLASS =====================
+
+class VeoGenerator:
+    """
+    Video generator with Enrichment -> Translation -> Routing workflow.
+    
+    Usage:
+        generator = VeoGenerator(config, api_keys)
+        generator.on_progress = my_callback_function
+        result = generator.generate_single_clip(...)
+    """
+    
+    def __init__(
+        self,
+        config: VideoConfig,
+        api_keys: APIKeysConfig,
+        openai_key: Optional[str] = None
+    ):
+        self.config = config
+        self.api_keys = api_keys
+        self.openai_key = openai_key
+        
+        self.blacklist: Set[Path] = set()
+        self.voice_profile: Optional[str] = None
+        self.voice_profile_id: Optional[str] = None  # Short ID for logging
+        self.frame_analysis: Optional[dict] = None  # Auto-detected from frame (age, gender, role)
+        self.enriched_context: Optional[dict] = None  # From user context (override)
+        self.client: Optional[genai.Client] = None
+        
+        # Callbacks
+        self.on_progress: Optional[ProgressCallback] = None
+        self.on_error: Optional[Callable[[VeoError], None]] = None
+        
+        # State
+        self.cancelled = False
+        self.paused = False
+    
+    def initialize_voice_profile(self, reference_frame: Path) -> str:
+        """
+        Initialize voice profile ONCE per job. Must be called before generating clips.
+        Returns a voice profile ID for tracking.
+        """
+        import hashlib
+        
+        user_context = getattr(self.config, 'user_context', '') or ''
+        
+        # === STEP 1: ANALYZE FRAME (auto-detect age, gender, role) ===
+        # This is the DEFAULT - works even without user context
+        if self.config.use_openai_prompt_tuning:
+            self.frame_analysis = analyze_frame(str(reference_frame), self.openai_key)
+        else:
+            self.frame_analysis = {
+                "subject_age": "adult",
+                "subject_gender": "neutral", 
+                "apparent_role": "natural speaker",
+                "suggested_voice_tone": "natural, conversational",
+                "suggested_delivery": "clear, measured",
+                "visual_description": "",
+                "confidence": "low"
+            }
+        
+        # === STEP 2: ENRICH USER CONTEXT (if provided - this is the OVERRIDE) ===
+        if user_context:
+            self.enriched_context = process_user_context(
+                user_context, self.config.language, self.openai_key
+            )
+        else:
+            self.enriched_context = {}
+        
+        # === STEP 3: GENERATE VOICE PROFILE (frame analysis + user override) ===
+        if self.config.use_openai_prompt_tuning:
+            self.voice_profile = generate_voice_profile(
+                self.frame_analysis,  # Auto-detected defaults
+                self.config.language,
+                self.enriched_context,  # User overrides (if any)
+                self.openai_key
+            )
+        else:
+            self.voice_profile = get_default_voice_profile(self.config.language, user_context)
+        
+        # Create a short ID based on the profile content
+        profile_hash = hashlib.md5(self.voice_profile.encode()).hexdigest()[:8]
+        self.voice_profile_id = f"VP-{profile_hash.upper()}"
+        
+        # === LOG EVERYTHING ===
+        auto_role = self.frame_analysis.get('apparent_role', 'unknown')
+        user_role = self.enriched_context.get('speaker_role', '')
+        final_role = user_role if user_role else auto_role
+        
+        vlog(f"\n{'='*60}")
+        vlog(f"[VOICE PROFILE INITIALIZED]")
+        vlog(f"{'='*60}")
+        vlog(f"Voice ID: {self.voice_profile_id}")
+        vlog(f"")
+        vlog(f"=== FRAME ANALYSIS (auto-detected) ===")
+        vlog(f"  Subject: {self.frame_analysis.get('subject_age', '?')} {self.frame_analysis.get('subject_gender', '?')}")
+        vlog(f"  Auto Role: {auto_role} (confidence: {self.frame_analysis.get('confidence', '?')})")
+        vlog(f"  Auto Voice: {self.frame_analysis.get('suggested_voice_tone', '?')}")
+        vlog(f"  Auto Delivery: {self.frame_analysis.get('suggested_delivery', '?')}")
+        vlog(f"")
+        if user_context:
+            vlog(f"=== USER CONTEXT (override) ===")
+            vlog(f"  Raw: '{user_context}'")
+            vlog(f"  User Role: {user_role or '(not specified)'}")
+            vlog(f"  User Voice: {self.enriched_context.get('voice_tone', '(not specified)')}")
+            vlog(f"  User Delivery: {self.enriched_context.get('delivery_style', '(not specified)')}")
+            vlog(f"")
+        else:
+            vlog(f"=== USER CONTEXT: None (using auto-detected) ===")
+            vlog(f"")
+        vlog(f"=== FINAL VOICE CASTING ===")
+        vlog(f"  Final Role: {final_role}")
+        vlog(f"")
+        vlog(f"Generated Profile:")
+        vlog(f"  {self.voice_profile}")
+        vlog(f"{'='*60}\n")
+        
+        return self.voice_profile_id
+    
+    def _get_client(self) -> 'genai.Client':
+        """Get or create Gemini client"""
+        if not GENAI_AVAILABLE:
+            raise RuntimeError("google-genai package not installed.")
+        
+        api_key = self.api_keys.get_current_gemini_key()
+        if not api_key:
+            raise ValueError("No Gemini API key available")
+        return genai.Client(api_key=api_key)
+    
+    def _rotate_key(self, block_current: bool = True):
+        """Rotate to next API key"""
+        old_index = self.api_keys.current_key_index
+        old_key = self.api_keys.get_current_gemini_key()
+        old_suffix = old_key[-8:] if old_key else "?"
+        num_keys = len(self.api_keys.gemini_api_keys)
+        
+        self.api_keys.rotate_key(block_current=block_current)
+        
+        new_index = self.api_keys.current_key_index
+        new_key = self.api_keys.get_current_gemini_key()
+        
+        if new_key:
+            new_suffix = new_key[-8:]
+            available = self.api_keys.get_available_key_count()
+            blocked = len(self.api_keys.blocked_keys)
+            vlog(f"[VeoGenerator] 🔄 KEY ROTATION: {old_index+1}(...{old_suffix}) -> {new_index+1}(...{new_suffix})")
+            vlog(f"[VeoGenerator]    Available: {available}/{num_keys}, Blocked: {blocked}")
+        else:
+            vlog(f"[VeoGenerator] ⚠️ ALL KEYS BLOCKED!")
+        
+        self.client = None
+    
+    def _emit_progress(self, clip_index: int, status: str, message: str, details: Dict = None):
+        """Emit progress update"""
+        if self.on_progress:
+            self.on_progress(clip_index, status, message, details)
+    
+    def _emit_error(self, error: VeoError):
+        """Emit error"""
+        if self.on_error:
+            self.on_error(error)
+    
+    def generate_single_clip(
+        self,
+        start_frame: Path,
+        end_frame: Optional[Path],
+        dialogue_line: str,
+        dialogue_id: int,
+        clip_index: int,
+        output_dir: Path,
+        images_list: List[Path],
+        current_end_index: int,
+    ) -> Dict[str, Any]:
+        """Generate a single video clip with retry logic."""
+        
+        vlog(f"[VeoGenerator] Generating clip {clip_index}: '{dialogue_line[:50]}...'")
+        
+        result = {
+            "success": False,
+            "output_path": None,
+            "end_frame_used": None,
+            "end_index": current_end_index,
+            "error": None,
+            "prompt_text": None,
+        }
+        
+        if not GENAI_AVAILABLE:
+            result["error"] = VeoError(
+                code=ErrorCode.UNKNOWN,
+                message="google-genai not installed",
+                user_message="Video generation library not available",
+                details={},
+                recoverable=False,
+                suggestion="Contact administrator to install google-genai"
+            )
+            return result
+        
+        # Initialize voice profile if not already done
+        # This should be called by the worker before generating clips, but fallback here
+        if self.voice_profile is None:
+            vlog(f"[WARNING] Voice profile not pre-initialized, initializing now for clip {clip_index}")
+            self.initialize_voice_profile(start_frame)
+        
+        # Log voice ID for this clip
+        vlog(f"[Clip {clip_index}] Using Voice ID: {self.voice_profile_id}")
+        
+        failed_end_frames = []
+        attempts = 0
+        current_attempt_end_index = current_end_index
+        
+        while attempts < self.config.max_retries_per_clip:
+            if self.cancelled:
+                result["error"] = VeoError(
+                    code=ErrorCode.UNKNOWN, 
+                    message="Cancelled", 
+                    user_message="Generation was cancelled",
+                    details={},
+                    recoverable=False,
+                    suggestion="Start a new job"
                 )
-                
-                # Parse configuration
-                config_data = json.loads(job.config_json)
-                config = VideoConfig(
-                    aspect_ratio=config_data.get("aspect_ratio", "9:16"),
-                    resolution=config_data.get("resolution", "720p"),
-                    duration=config_data.get("duration", "8"),
-                    language=config_data.get("language", "English"),
-                    use_interpolation=config_data.get("use_interpolation", True),
-                    use_openai_prompt_tuning=config_data.get("use_openai_prompt_tuning", True),
-                    use_frame_vision=config_data.get("use_frame_vision", True),
-                    max_retries_per_clip=config_data.get("max_retries_per_clip", 5),
-                    custom_prompt=config_data.get("custom_prompt", ""),
-                    user_context=config_data.get("user_context", ""),
-                    single_image_mode=config_data.get("single_image_mode", False),
-                )
-                
-                # Parse API keys (with env fallback)
-                api_keys = get_api_keys_with_fallback(job.api_keys_json)
-                
-                # Get images
-                images_dir = Path(job.images_dir)
-                output_dir = Path(job.output_dir)
-                
-                images = list_images(images_dir, config)
-                if not images:
-                    raise ValueError(f"No images found in {images_dir}")
-                
-                # Create generator
-                generator = VeoGenerator(
-                    config=config,
-                    api_keys=api_keys,
-                    openai_key=api_keys.openai_api_key,
-                )
-                
-                # Set up callbacks
-                def on_progress(clip_index, status, message, details):
-                    self._handle_progress(job_id, clip_index, status, message, details)
-                
-                def on_error(error):
-                    self._handle_error(job_id, error)
-                
-                generator.on_progress = on_progress
-                generator.on_error = on_error
-                
-                # Find frames
-                start_frame = None
-                end_frame = None
-                start_index = 0
-                end_index = 0
-                
-                for i, img in enumerate(images):
-                    if img.name == clip.start_frame:
-                        start_frame = img
-                        start_index = i
-                    if clip.end_frame and img.name == clip.end_frame:
-                        end_frame = img
-                        end_index = i
-                
-                if not start_frame:
-                    # Use first image as fallback
-                    start_frame = images[0]
-                    start_index = 0
-                
-                # For interpolation: use the stored end_frame, or same image if not set
-                if config.use_interpolation:
-                    if end_frame:
-                        # Use the stored end frame
-                        pass
-                    elif clip.end_frame:
-                        # end_frame name is stored but file not found - try to find it
-                        for i, img in enumerate(images):
-                            if img.name == clip.end_frame:
-                                end_frame = img
-                                end_index = i
-                                break
-                    
-                    if not end_frame:
-                        # No specific end frame - use same image for interpolation
-                        end_frame = start_frame
-                        end_index = start_index
-                else:
-                    # No interpolation - no end frame needed
-                    end_frame = None
-                    end_index = start_index
-                
-                # Initialize voice profile for consistency
-                voice_id = generator.initialize_voice_profile(start_frame)
-                add_job_log(db, job_id, f"Voice Profile for redo: {voice_id}", "INFO", "voice")
-                
-                # Determine prompt to use
-                prompt_text = None
-                if clip.use_logged_params and clip.prompt_text:
-                    prompt_text = clip.prompt_text
-                    add_job_log(db, job_id, f"Using logged parameters for redo", "INFO", "redo")
-                else:
-                    add_job_log(db, job_id, f"Using fresh parameters for redo", "INFO", "redo")
-                
-                self._broadcast_event(job_id, {
-                    "type": "redo_started",
-                    "clip_id": clip_id,
-                    "clip_index": clip.clip_index,
-                    "attempt": clip.generation_attempt,
-                    "use_logged_params": clip.use_logged_params,
-                })
+                return result
             
-            # Generate clip (outside db context to avoid long transactions)
-            result = generator.generate_single_clip(
-                start_frame=start_frame,
-                end_frame=end_frame,
-                dialogue_line=clip.dialogue_text,
-                dialogue_id=clip.dialogue_id,
-                clip_index=clip.clip_index,
-                output_dir=output_dir,
-                images_list=images,
-                current_end_index=end_index,
+            while self.paused:
+                time.sleep(1)
+                if self.cancelled:
+                    return result
+            
+            attempts += 1
+            
+            # Determine end frame - ALWAYS use the assigned end_frame if provided
+            # Only try alternate end frames if the original is blacklisted
+            if end_frame:
+                if end_frame not in self.blacklist:
+                    actual_end_frame = end_frame
+                    actual_end_index = current_end_index
+                else:
+                    # End frame is blacklisted, try to find alternative
+                    next_result = get_next_clean_image(
+                        current_end_index, images_list, self.blacklist, self.config.max_image_attempts
+                    )
+                    
+                    if next_result is None:
+                        if len(failed_end_frames) >= 2:
+                            self.blacklist.add(start_frame)
+                        return result
+                    
+                    actual_end_index, actual_end_frame = next_result
+                    current_attempt_end_index = actual_end_index
+            else:
+                # No end frame specified (single image mode or no interpolation)
+                actual_end_frame = None
+                actual_end_index = current_end_index
+            
+            # Build prompt using frame analysis + user context override
+            try:
+                prompt_text = build_prompt(
+                    dialogue_line, start_frame, actual_end_frame, clip_index,
+                    self.config.language, self.voice_profile, self.config, self.openai_key,
+                    frame_analysis=self.frame_analysis,  # Auto-detected defaults
+                    user_context_override=self.enriched_context  # User overrides (if any)
+                )
+                result["prompt_text"] = prompt_text
+            except Exception as e:
+                error = error_handler.classify_exception(e, {"stage": "prompt_building"})
+                self._emit_error(error)
+                result["error"] = error
+                return result
+            
+            # Prepare images
+            try:
+                with open(start_frame, "rb") as f:
+                    start_bytes = f.read()
+                start_image = types.Image(
+                    image_bytes=start_bytes,
+                    mime_type=get_mime_type(start_frame)
+                )
+                
+                end_image = None
+                if actual_end_frame and self.config.use_interpolation:
+                    with open(actual_end_frame, "rb") as f:
+                        end_bytes = f.read()
+                    end_image = types.Image(
+                        image_bytes=end_bytes,
+                        mime_type=get_mime_type(actual_end_frame)
+                    )
+            except Exception as e:
+                error = error_handler.classify_exception(e, {"stage": "image_loading"})
+                result["error"] = error
+                return result
+            
+            self._emit_progress(
+                clip_index, "generating",
+                f"Generating: {start_frame.name} → {actual_end_frame.name if actual_end_frame else 'none'}",
+                {"start": start_frame.name, "end": actual_end_frame.name if actual_end_frame else None}
             )
             
-            # Update clip with result
-            with get_db() as db:
-                clip = db.query(Clip).filter(Clip.id == clip_id).first()
-                
-                if clip:
-                    clip.completed_at = datetime.utcnow()
+            # Submit to Veo API
+            operation = None
+            for submit_attempt in range(1, self.config.max_retries_submit + 1):
+                try:
+                    # Log which key we're about to use
+                    key_index = self.api_keys.current_key_index
+                    current_key = self.api_keys.get_current_gemini_key()
+                    key_suffix = current_key[-8:] if current_key else "NONE"
+                    available = self.api_keys.get_available_key_count()
+                    blocked = len(self.api_keys.blocked_keys)
+                    vlog(f"[VeoGenerator] Using key {key_index + 1} (...{key_suffix}) - {available} available, {blocked} blocked")
                     
-                    if clip.started_at:
-                        clip.duration_seconds = (clip.completed_at - clip.started_at).total_seconds()
+                    client = self._get_client()
                     
-                    if result["success"]:
-                        new_filename = result["output_path"].name if result["output_path"] else None
-                        
-                        # Add to versions history (avoid duplicates)
-                        versions = json.loads(clip.versions_json) if clip.versions_json else []
-                        existing_attempts = [v.get('attempt') for v in versions]
-                        
-                        if clip.generation_attempt not in existing_attempts:
-                            versions.append({
-                                "attempt": clip.generation_attempt,
-                                "filename": new_filename,
-                                "generated_at": datetime.utcnow().isoformat(),
-                            })
-                            clip.versions_json = json.dumps(versions)
-                        
-                        # Update current output and select new variant
-                        clip.status = ClipStatus.COMPLETED.value
-                        clip.output_filename = new_filename
-                        clip.selected_variant = clip.generation_attempt
-                        clip.prompt_text = result.get("prompt_text")
-                        clip.approval_status = "pending_review"  # Reset to pending review
-                        clip.error_code = None
-                        clip.error_message = None
-                        
-                        if result.get("end_frame_used"):
-                            clip.end_frame = result["end_frame_used"].name
-                        
-                        add_job_log(
-                            db, job_id,
-                            f"Redo completed for clip {clip.clip_index + 1} (attempt {clip.generation_attempt}/3)",
-                            "INFO", "redo"
-                        )
-                    else:
-                        clip.status = ClipStatus.FAILED.value
-                        if result["error"]:
-                            clip.error_code = result["error"].code.value
-                            clip.error_message = result["error"].message
-                        
-                        add_job_log(
-                            db, job_id,
-                            f"Redo failed for clip {clip.clip_index + 1}: {result.get('error', 'Unknown error')}",
-                            "ERROR", "redo"
-                        )
+                    aspect = self.config.aspect_ratio.value if hasattr(self.config.aspect_ratio, 'value') else self.config.aspect_ratio
+                    res = self.config.resolution.value if hasattr(self.config.resolution, 'value') else self.config.resolution
+                    dur = self.config.duration.value if hasattr(self.config.duration, 'value') else self.config.duration
                     
-                    db.commit()
-                
-                self._broadcast_event(job_id, {
-                    "type": "redo_completed",
-                    "clip_id": clip_id,
-                    "clip_index": clip.clip_index,
-                    "success": result["success"],
-                    "attempt": clip.generation_attempt,
-                    "output": result["output_path"].name if result.get("output_path") else None,
-                })
-                
-        except Exception as e:
-            error = error_handler.classify_exception(e, {"job_id": job_id, "clip_id": clip_id})
-            self._handle_error(job_id, error)
-            
-            with get_db() as db:
-                clip = db.query(Clip).filter(Clip.id == clip_id).first()
-                if clip:
-                    clip.status = ClipStatus.FAILED.value
-                    clip.error_code = error.code.value
-                    clip.error_message = error.message
-                    db.commit()
-    
-    def _run_job(self, job_id: str):
-        """Run a single job"""
-        generator = None
-        
-        try:
-            with get_db() as db:
-                job = db.query(Job).filter(Job.id == job_id).first()
-                if not job:
-                    return
-                
-                # Update status
-                job.status = JobStatus.RUNNING.value
-                job.started_at = datetime.utcnow()
-                db.commit()
-                
-                add_job_log(db, job_id, "Job started", "INFO", "system")
-                
-                # Parse configuration
-                config_data = json.loads(job.config_json)
-                print(f"[Worker] Job {job_id[:8]}: Raw config_data = {config_data}")
-                print(f"[Worker] Job {job_id[:8]}: Language from config = {config_data.get('language')}")
-                
-                config = VideoConfig(
-                    aspect_ratio=config_data.get("aspect_ratio", "9:16"),
-                    resolution=config_data.get("resolution", "720p"),
-                    duration=config_data.get("duration", "8"),
-                    language=config_data.get("language", "English"),
-                    use_interpolation=config_data.get("use_interpolation", True),
-                    use_openai_prompt_tuning=config_data.get("use_openai_prompt_tuning", True),
-                    use_frame_vision=config_data.get("use_frame_vision", True),
-                    max_retries_per_clip=config_data.get("max_retries_per_clip", 5),
-                    custom_prompt=config_data.get("custom_prompt", ""),
-                    user_context=config_data.get("user_context", ""),
-                    single_image_mode=config_data.get("single_image_mode", False),
-                )
-                
-                add_job_log(db, job_id, f"Language: {config.language}", "INFO", "config")
-                
-                # Parse API keys (with env fallback)
-                api_keys = get_api_keys_with_fallback(job.api_keys_json)
-                
-                # Parse dialogue data (new format includes scenes)
-                dialogue_raw = json.loads(job.dialogue_json)
-                
-                # Handle both old format (list) and new format (dict with lines/scenes)
-                if isinstance(dialogue_raw, list):
-                    # Old format: just a list of lines
-                    dialogue_data = dialogue_raw
-                    scenes_data = None
-                else:
-                    # New format: {lines: [...], scenes: [...]}
-                    dialogue_data = dialogue_raw.get("lines", [])
-                    scenes_data = dialogue_raw.get("scenes", None)
-                
-                # Store scenes data for processing
-                storyboard_mode = config_data.get("storyboard_mode", False)
-                print(f"[Worker] Storyboard mode: {storyboard_mode}", flush=True)
-                if scenes_data:
-                    print(f"[Worker] Scenes: {json.dumps(scenes_data, indent=2)}", flush=True)
-                
-                # Get images
-                images_dir = Path(job.images_dir)
-                output_dir = Path(job.output_dir)
-                output_dir.mkdir(parents=True, exist_ok=True)
-                
-                images = list_images(images_dir, config)
-                if not images:
-                    raise ValueError(f"No images found in {images_dir}")
-                
-                # Log image order for debugging
-                print(f"[Worker] Loaded {len(images)} images in order:", flush=True)
-                for idx, img in enumerate(images):
-                    print(f"  [{idx}] {img.name}", flush=True)
-                
-                # Create generator
-                generator = VeoGenerator(
-                    config=config,
-                    api_keys=api_keys,
-                    openai_key=api_keys.openai_api_key,
-                )
-                
-                # Set up callbacks
-                def on_progress(clip_index, status, message, details):
-                    self._handle_progress(job_id, clip_index, status, message, details)
-                
-                def on_error(error: VeoError):
-                    self._handle_error(job_id, error)
-                
-                generator.on_progress = on_progress
-                generator.on_error = on_error
-                
-                # Initialize voice profile ONCE for entire job (use first image as reference)
-                voice_id = generator.initialize_voice_profile(images[0])
-                add_job_log(db, job_id, f"Voice Profile initialized: {voice_id}", "INFO", "voice")
-                
-                self.running_jobs[job_id] = generator
-            
-            # Process clips (pass scenes_data for storyboard mode)
-            self._process_clips(job_id, generator, dialogue_data, images, output_dir, scenes_data)
-            
-        except Exception as e:
-            error = error_handler.classify_exception(e, {"job_id": job_id})
-            self._handle_error(job_id, error)
-            
-            # Only mark as failed if no clips succeeded
-            with get_db() as db:
-                job = db.query(Job).filter(Job.id == job_id).first()
-                if job:
-                    clips = db.query(Clip).filter(Clip.job_id == job_id).all()
-                    successful = sum(1 for c in clips if c.status == ClipStatus.COMPLETED.value)
-                    
-                    if successful == 0:
-                        # No clips succeeded - mark job as failed
-                        job.status = JobStatus.FAILED.value
-                    else:
-                        # Some clips succeeded - mark as completed with failures
-                        job.status = JobStatus.COMPLETED.value
-                    
-                    job.completed_at = datetime.utcnow()
-                    db.commit()
-                    
-                    add_job_log(
-                        db, job_id, 
-                        f"Job ended with error: {error.message}", 
-                        "ERROR", "system",
-                        details=error.to_dict()
+                    cfg = types.GenerateVideosConfig(
+                        aspect_ratio=aspect,
+                        resolution=res,
+                        duration_seconds=dur,
                     )
-        
-        finally:
-            if job_id in self.running_jobs:
-                del self.running_jobs[job_id]
-    
-    def _process_clips(
-        self,
-        job_id: str,
-        generator: VeoGenerator,
-        dialogue_data: List[Dict],
-        images: List[Path],
-        output_dir: Path,
-        scenes_data: Optional[List[Dict]] = None,
-    ):
-        """Process all clips for a job - with parallel generation support and scene-aware sequencing"""
-        from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
-        import subprocess
-        
-        # Check for single image mode
-        single_image_mode = getattr(generator.config, 'single_image_mode', False) or len(images) == 1
-        
-        images_dir_str = str(images[0].parent)
-        
-        total_clips = len(dialogue_data)
-        completed = 0
-        failed = 0
-        skipped = 0
-        
-        # Get parallel clip count from config (default 3)
-        parallel_clips = getattr(generator.config, 'parallel_clips', 3)
-        
-        # Key exhaustion tracking
-        no_keys_retries = 0
-        max_no_keys_retries = 3
-        no_keys_wait_seconds = 300  # 5 minutes
-        
-        # === BUILD SCENE-AWARE CLIP STRUCTURE ===
-        num_images = len(images)
-        use_interpolation = getattr(generator.config, 'use_interpolation', True)
-        
-        print(f"[Worker] Processing {total_clips} clips with {num_images} images", flush=True)
-        print(f"[Worker] Scenes data: {scenes_data}", flush=True)
-        
-        # Build clip info with scene awareness
-        clip_info = []  # List of dicts with all clip metadata
-        
-        for i, line_data in enumerate(dialogue_data):
-            info = {
-                "index": i,
-                "text": line_data["text"],
-                "dialogue_id": line_data["id"],
-                "image_idx": line_data.get("start_image_idx", i % num_images) if not single_image_mode else 0,
-                "scene_index": line_data.get("scene_index", 0),
-                "clip_mode": line_data.get("clip_mode", "blend"),  # 'blend' | 'continue' | 'fresh'
-                "scene_transition": line_data.get("scene_transition"),  # 'blend' | 'cut' | None
-                "requires_previous": False,  # Will be set below
-                "start_frame": None,  # Will be set or calculated
-                "end_frame": None,    # Will be set or calculated
-            }
-            
-            # Determine if this clip requires the previous clip to complete first
-            # This happens when clip_mode is 'continue' AND it's not the first clip in its scene
-            if info["clip_mode"] == "continue" and i > 0:
-                prev_scene = dialogue_data[i-1].get("scene_index", 0)
-                if prev_scene == info["scene_index"]:
-                    # Same scene, continue mode - must wait for previous clip
-                    info["requires_previous"] = True
-            
-            clip_info.append(info)
-            print(f"[Worker] Clip {i}: scene={info['scene_index']}, mode={info['clip_mode']}, requires_prev={info['requires_previous']}", flush=True)
-        
-        # Calculate initial frame assignments
-        with get_db() as db:
-            for i, info in enumerate(clip_info):
-                start_idx = info["image_idx"]
-                clip_mode = info["clip_mode"]
-                scene_transition = info["scene_transition"]  # How THIS clip transitions FROM previous
-                
-                # Default: start and end on our assigned image
-                actual_start_idx = start_idx
-                actual_end_idx = start_idx
-                
-                # Determine end frame based on what the NEXT clip wants
-                if i < len(clip_info) - 1:
-                    next_info = clip_info[i + 1]
                     
-                    if next_info["scene_index"] != info["scene_index"]:
-                        # Next clip is in a DIFFERENT scene
-                        if next_info["scene_transition"] == "blend":
-                            # Next scene wants BLEND transition
-                            # So THIS clip should morph toward next scene's image
-                            actual_end_idx = next_info["image_idx"]
-                            print(f"[Worker] Clip {i}: Will morph to next scene's image {actual_end_idx} (blend transition)", flush=True)
-                        # else: "cut" transition - stay on our image (actual_end_idx = start_idx already)
-                    # else: Same scene - stay on our image for internal motion
-                
-                # Handle THIS clip's start based on scene_transition
-                # NOTE: For "blend" transition, the PREVIOUS clip already morphed toward us,
-                # so we should START on our OWN image, not the previous scene's image
-                # The blend happens on the previous clip's END, not this clip's START
-                
-                # For "continue" mode, the start will be overridden at runtime with extracted frame
-                # For "fresh" mode, always use original image
-                # For "blend" mode (within scene), use our assigned image
-                
-                start_frame_name = images[actual_start_idx].name
-                end_frame_name = images[actual_end_idx].name
-                
-                info["start_frame"] = start_frame_name
-                info["end_frame"] = end_frame_name
-                info["start_idx"] = actual_start_idx
-                info["end_idx"] = actual_end_idx
-                
-                print(f"[Worker] Clip {i}: {start_frame_name} → {end_frame_name} (mode={clip_mode}, transition={scene_transition})", flush=True)
-                
-                # Determine initial status
-                # For "continue" mode clips (except first in scene), set to WAITING_APPROVAL
-                initial_status = ClipStatus.PENDING.value
-                if info["requires_previous"]:
-                    initial_status = ClipStatus.WAITING_APPROVAL.value
-                    print(f"[Worker] Clip {i}: Set to WAITING_APPROVAL (requires previous clip approval)", flush=True)
-                
-                # Create clip record
-                clip = Clip(
-                    job_id=job_id,
-                    clip_index=i,
-                    dialogue_id=info["dialogue_id"],
-                    dialogue_text=info["text"],
-                    status=initial_status,
-                    start_frame=start_frame_name,
-                    end_frame=end_frame_name,
-                )
-                db.add(clip)
-            
-            db.commit()
-        
-        # Build clip_frames list for processing
-        clip_frames = []
-        for i, info in enumerate(clip_info):
-            start_frame = images[info["start_idx"]]
-            end_frame = images[info["end_idx"]] if use_interpolation else None
-            
-            clip_frames.append({
-                "start_index": info["start_idx"],
-                "start_frame": start_frame,
-                "end_index": info["end_idx"],
-                "end_frame": end_frame,
-                "clip_mode": info["clip_mode"],
-                "requires_previous": info["requires_previous"],
-            })
-        
-        # Track completed AND APPROVED clips for 'continue' mode frame extraction
-        approved_clip_videos = {}  # clip_index -> video_path (only approved ones)
-        completed_clip_videos = {}  # clip_index -> video_path (all completed, for tracking)
-        
-        # Queue of pending clip indices (only PENDING status, not WAITING_APPROVAL)
-        pending_clips = [i for i, info in enumerate(clip_info) if not info["requires_previous"]]
-        waiting_clips = [i for i, info in enumerate(clip_info) if info["requires_previous"]]
-        
-        print(f"[Worker] Initial queue: {len(pending_clips)} pending, {len(waiting_clips)} waiting for approval", flush=True)
-        
-        def check_keys_available():
-            """Check if any API keys are available"""
-            available = generator.api_keys.get_available_key_count()
-            return available > 0
-        
-        def send_no_keys_alert(job_id: str, retry_count: int):
-            """Alert admin that keys are exhausted"""
-            alert_msg = f"🚨 API KEYS EXHAUSTED - Job {job_id[:8]} paused (retry {retry_count}/{max_no_keys_retries})"
-            print(f"\n{'='*60}", flush=True)
-            print(alert_msg, flush=True)
-            print(f"{'='*60}\n", flush=True)
-            
-            # Log to database
-            with get_db() as db:
-                add_job_log(
-                    db, job_id,
-                    f"⚠️ All API keys exhausted! Waiting {no_keys_wait_seconds}s before retry {retry_count}/{max_no_keys_retries}",
-                    "WARNING", "system",
-                    details={"keys_status": generator.api_keys.get_status()}
-                )
-            
-            # Broadcast to UI
-            self._broadcast_event(job_id, {
-                "type": "keys_exhausted",
-                "retry_count": retry_count,
-                "max_retries": max_no_keys_retries,
-                "wait_seconds": no_keys_wait_seconds,
-                "message": f"All API keys exhausted. Waiting {no_keys_wait_seconds//60} minutes... (attempt {retry_count}/{max_no_keys_retries})"
-            })
-            
-            # TODO: Add webhook/email alert here
-            # self._send_admin_alert(alert_msg, job_id)
-        
-        def extract_frame_from_video(video_path: Path, frame_offset: int = -8) -> Optional[Path]:
-            """Extract a frame from video. frame_offset=-8 means 8 frames from the end."""
-            try:
-                # Get video duration
-                probe_cmd = [
-                    "ffprobe", "-v", "error", "-select_streams", "v:0",
-                    "-show_entries", "stream=duration,r_frame_rate",
-                    "-of", "csv=p=0", str(video_path)
-                ]
-                probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
-                if probe_result.returncode != 0:
-                    print(f"[Worker] ffprobe failed: {probe_result.stderr}", flush=True)
-                    return None
-                
-                # Parse duration and fps
-                parts = probe_result.stdout.strip().split(',')
-                if len(parts) < 2:
-                    print(f"[Worker] Could not parse ffprobe output: {probe_result.stdout}", flush=True)
-                    return None
+                    if end_image is not None and hasattr(cfg, "last_frame"):
+                        cfg.last_frame = end_image
                     
-                fps_str = parts[0]
-                duration_str = parts[1] if len(parts) > 1 else "8"
-                
-                # Calculate fps from fraction (e.g., "30000/1001" or "30/1")
-                if '/' in fps_str:
-                    num, den = fps_str.split('/')
-                    fps = float(num) / float(den)
-                else:
-                    fps = float(fps_str) if fps_str else 30.0
-                
-                duration = float(duration_str) if duration_str else 8.0
-                
-                # Calculate timestamp for frame_offset from end
-                # frame_offset = -8 means 8 frames before end
-                frames_from_end = abs(frame_offset)
-                seconds_from_end = frames_from_end / fps
-                timestamp = max(0, duration - seconds_from_end)
-                
-                print(f"[Worker] Extracting frame at {timestamp:.3f}s (fps={fps:.2f}, duration={duration:.2f}s, offset={frame_offset})", flush=True)
-                
-                # Extract frame
-                output_frame = video_path.parent / f"{video_path.stem}_lastframe.jpg"
-                extract_cmd = [
-                    "ffmpeg", "-y", "-ss", str(timestamp), "-i", str(video_path),
-                    "-frames:v", "1", "-q:v", "2", str(output_frame)
-                ]
-                extract_result = subprocess.run(extract_cmd, capture_output=True, text=True)
-                
-                if extract_result.returncode == 0 and output_frame.exists():
-                    print(f"[Worker] Extracted frame to {output_frame.name}", flush=True)
-                    return output_frame
-                else:
-                    print(f"[Worker] ffmpeg frame extraction failed: {extract_result.stderr}", flush=True)
-                    return None
+                    try:
+                        pg = self.config.person_generation.value if hasattr(self.config.person_generation, 'value') else self.config.person_generation
+                        cfg.person_generation = pg
+                    except Exception:
+                        pass
                     
-            except Exception as e:
-                print(f"[Worker] Frame extraction error: {e}", flush=True)
-                return None
-        
-        def process_single_clip(clip_index: int):
-            """Process a single clip - runs in thread"""
-            if generator.cancelled:
-                return {"clip_index": clip_index, "success": False, "skipped": True}
-            
-            line_data = dialogue_data[clip_index]
-            dialogue_id = line_data["id"]
-            dialogue_text = line_data["text"]
-            frames = clip_frames[clip_index]
-            
-            start_frame = frames["start_frame"]
-            end_frame = frames["end_frame"]
-            start_index = frames["start_index"]
-            end_index = frames["end_index"]
-            clip_mode = frames.get("clip_mode", "blend")
-            
-            # Handle "continue" mode - use extracted frame from APPROVED previous clip
-            if clip_mode == "continue" and clip_index > 0:
-                prev_video = approved_clip_videos.get(clip_index - 1)
-                if prev_video and Path(prev_video).exists():
-                    extracted = extract_frame_from_video(Path(prev_video), frame_offset=-8)
-                    if extracted:
-                        start_frame = extracted
-                        print(f"[Worker] Clip {clip_index}: Using extracted frame from APPROVED clip {clip_index - 1}", flush=True)
-                    else:
-                        print(f"[Worker] Clip {clip_index}: Frame extraction failed, using original image", flush=True)
-                else:
-                    print(f"[Worker] Clip {clip_index}: Approved previous clip video not found, using original image", flush=True)
-            
-            # Update clip status to generating
-            with get_db() as db:
-                clip = db.query(Clip).filter(
-                    Clip.job_id == job_id,
-                    Clip.clip_index == clip_index
-                ).first()
-                
-                if clip:
-                    clip.status = ClipStatus.GENERATING.value
-                    clip.started_at = datetime.utcnow()
-                    clip.start_frame = start_frame.name if hasattr(start_frame, 'name') else str(start_frame)
-                    clip.end_frame = end_frame.name if end_frame else None
-                    db.commit()
-            
-            # Log exact frame assignment for debugging
-            start_name = start_frame.name if hasattr(start_frame, 'name') else str(start_frame)
-            print(f"[Worker] CLIP {clip_index} FRAME ASSIGNMENT:", flush=True)
-            print(f"  - start_frame: {start_name} (mode={clip_mode})", flush=True)
-            print(f"  - end_frame: {end_frame.name if end_frame else 'None'}", flush=True)
-            
-            self._broadcast_event(job_id, {
-                "type": "clip_started",
-                "clip_index": clip_index,
-                "dialogue_id": dialogue_id,
-                "start_frame": start_frame.name,
-                "end_frame": end_frame.name if end_frame else None,
-            })
-            
-            # Check if start frame is blacklisted
-            if start_frame in generator.blacklist:
-                result = self._get_next_clean_start(generator, images, start_index)
-                if result:
-                    start_index, start_frame = result
-                else:
-                    with get_db() as db:
-                        clip = db.query(Clip).filter(
-                            Clip.job_id == job_id,
-                            Clip.clip_index == clip_index
-                        ).first()
-                        if clip:
-                            clip.status = ClipStatus.FAILED.value
-                            clip.error_code = "ALL_IMAGES_BLACKLISTED"
-                            clip.error_message = "No clean images available"
-                            db.commit()
-                    return {"clip_index": clip_index, "success": False, "failed": True}
-            
-            # Generate clip
-            try:
-                print(f"[Worker] Generating clip {clip_index + 1}/{total_clips} in parallel...", flush=True)
-                result = generator.generate_single_clip(
-                    start_frame=start_frame,
-                    end_frame=end_frame,
-                    dialogue_line=dialogue_text,
-                    dialogue_id=dialogue_id,
-                    clip_index=clip_index,
-                    output_dir=output_dir,
-                    images_list=images,
-                    current_end_index=end_index,
-                )
-                
-                # Log the prompt that was sent to Veo
-                if result.get("prompt_text"):
-                    prompt_preview = result["prompt_text"][:500] + "..." if len(result.get("prompt_text", "")) > 500 else result.get("prompt_text", "")
-                    with get_db() as db:
-                        add_job_log(
-                            db, job_id,
-                            f"📝 Prompt for clip {clip_index + 1}: {prompt_preview}",
-                            "INFO", "prompt"
-                        )
-                
-                # Check if failed due to no keys
-                if not result["success"]:
-                    error = result.get("error")
-                    if error and hasattr(error, 'code'):
-                        if error.code.value in ["API_KEY_INVALID", "API_QUOTA_EXCEEDED", "RATE_LIMIT_429"]:
-                            return {"clip_index": clip_index, "success": False, "no_keys": True, "result": result}
-                
-            except Exception as gen_error:
-                print(f"[Worker] Clip {clip_index} CRASHED: {type(gen_error).__name__}: {str(gen_error)[:200]}", flush=True)
-                result = {
-                    "success": False,
-                    "error": gen_error,
-                    "output_path": None,
-                    "end_frame_used": None,
-                    "end_index": end_index,
-                }
-            
-            # Update clip record
-            try:
-                with get_db() as db:
-                    clip = db.query(Clip).filter(
-                        Clip.job_id == job_id,
-                        Clip.clip_index == clip_index
-                    ).first()
-                    
-                    if clip:
-                        clip.completed_at = datetime.utcnow()
-                        
-                        if clip.started_at:
-                            clip.duration_seconds = (
-                                clip.completed_at - clip.started_at
-                            ).total_seconds()
-                        
-                        if result["success"]:
-                            new_filename = result["output_path"].name if result.get("output_path") else None
-                            
-                            versions = [{
-                                "attempt": 1,
-                                "filename": new_filename,
-                                "generated_at": datetime.utcnow().isoformat(),
-                            }]
-                            clip.versions_json = json.dumps(versions)
-                            clip.selected_variant = 1
-                            
-                            clip.status = ClipStatus.COMPLETED.value
-                            clip.approval_status = "pending_review"
-                            clip.output_filename = new_filename
-                            clip.prompt_text = result.get("prompt_text")
-                        else:
-                            clip.status = ClipStatus.FAILED.value
-                            error_obj = result.get("error")
-                            if error_obj:
-                                clip.error_code = error_obj.code.value if hasattr(error_obj, 'code') else "UNKNOWN"
-                                clip.error_message = str(error_obj.message if hasattr(error_obj, 'message') else error_obj)[:500]
-                        
-                        db.commit()
-                    
-                    # Save generation log if successful
-                    if result.get("success") and result.get("output_path"):
-                        gen_log = GenerationLog(
-                            job_id=job_id,
-                            video_id=dialogue_id,
-                            images_dir=images_dir_str,
-                            start_frame=start_frame.name,
-                            end_frame=result["end_frame_used"].name if result.get("end_frame_used") else end_frame.name,
-                            dialogue_line=dialogue_text,
-                            language=generator.config.language,
-                            prompt_text=result.get("prompt_text", ""),
-                            video_filename=result["output_path"].name,
-                            aspect_ratio=generator.config.aspect_ratio if isinstance(generator.config.aspect_ratio, str) else generator.config.aspect_ratio.value,
-                            resolution=generator.config.resolution if isinstance(generator.config.resolution, str) else generator.config.resolution.value,
-                            duration=generator.config.duration if isinstance(generator.config.duration, str) else generator.config.duration.value,
-                        )
-                        db.add(gen_log)
-                        db.commit()
-            except Exception as db_error:
-                print(f"[Worker] DB error updating clip {clip_index}: {db_error}")
-            
-            self._broadcast_event(job_id, {
-                "type": "clip_completed",
-                "clip_index": clip_index,
-                "success": result["success"],
-                "output": result["output_path"].name if result.get("output_path") else None,
-            })
-            
-            return {
-                "clip_index": clip_index,
-                "success": result["success"],
-                "result": result,
-            }
-        
-        # Process clips with queue-based approach
-        # Continue while there are pending clips OR waiting clips (approval pending)
-        while (pending_clips or waiting_clips) and not generator.cancelled:
-            # Check if keys are available before starting batch
-            if not check_keys_available():
-                no_keys_retries += 1
-                
-                if no_keys_retries > max_no_keys_retries:
-                    # Max retries reached - fail job with contact support message
-                    error_msg = "All API keys exhausted. Please contact support for assistance."
-                    
-                    with get_db() as db:
-                        # Mark remaining clips as failed
-                        for clip_idx in pending_clips:
-                            clip = db.query(Clip).filter(
-                                Clip.job_id == job_id,
-                                Clip.clip_index == clip_idx
-                            ).first()
-                            if clip:
-                                clip.status = ClipStatus.FAILED.value
-                                clip.error_code = "API_KEYS_EXHAUSTED"
-                                clip.error_message = error_msg
-                        db.commit()
-                        
-                        add_job_log(
-                            db, job_id,
-                            f"❌ Job failed: {error_msg}",
-                            "ERROR", "system"
-                        )
-                    
-                    self._broadcast_event(job_id, {
-                        "type": "job_failed_no_keys",
-                        "message": error_msg,
-                        "contact": "Please contact support to resolve this issue."
-                    })
-                    
-                    failed += len(pending_clips)
+                    vlog(f"[VeoGenerator] Submitting to Veo (attempt {submit_attempt})...")
+                    operation = client.models.generate_videos(
+                        model=VEO_MODEL,
+                        prompt=prompt_text,
+                        image=start_image,
+                        config=cfg,
+                    )
+                    vlog(f"[VeoGenerator] Submit OK!")
                     break
-                
-                # Alert and wait
-                send_no_keys_alert(job_id, no_keys_retries)
-                
-                # Wait with periodic checks (allow cancellation)
-                wait_end = time.time() + no_keys_wait_seconds
-                while time.time() < wait_end and not generator.cancelled:
-                    if check_keys_available():
-                        print(f"[Worker] ✅ Keys available again, resuming...", flush=True)
-                        with get_db() as db:
-                            add_job_log(db, job_id, "✅ API keys available, resuming generation", "INFO", "system")
-                        break
-                    time.sleep(10)  # Check every 10 seconds
-                
-                continue  # Re-check keys at top of loop
-            
-            # Reset retry counter when keys are available
-            no_keys_retries = 0
-            
-            # Determine batch size based on available keys
-            available_keys = generator.api_keys.get_available_key_count()
-            
-            # For continue mode clips in waiting_clips, check if previous clip is APPROVED
-            newly_ready = []
-            still_waiting = []
-            
-            for clip_idx in waiting_clips:
-                prev_idx = clip_idx - 1
-                # Check if previous clip is approved
-                if prev_idx in approved_clip_videos:
-                    # Previous clip is approved, move this to pending
-                    newly_ready.append(clip_idx)
-                    # Update clip status from WAITING_APPROVAL to PENDING
-                    with get_db() as db:
-                        clip = db.query(Clip).filter(
-                            Clip.job_id == job_id,
-                            Clip.clip_index == clip_idx
-                        ).first()
-                        if clip and clip.status == ClipStatus.WAITING_APPROVAL.value:
-                            clip.status = ClipStatus.PENDING.value
-                            db.commit()
-                            print(f"[Worker] Clip {clip_idx}: Previous approved, moved to PENDING", flush=True)
-                else:
-                    still_waiting.append(clip_idx)
-            
-            # Update waiting_clips
-            waiting_clips = still_waiting
-            
-            # Add newly ready clips to pending
-            if newly_ready:
-                pending_clips.extend(newly_ready)
-                print(f"[Worker] {len(newly_ready)} clips now ready after approval", flush=True)
-            
-            # All pending clips are ready (no dependency check needed anymore - that's handled by waiting_clips)
-            ready_clips = pending_clips.copy()
-            
-            if not ready_clips:
-                # No clips ready - check if we're waiting for approvals
-                if waiting_clips:
-                    # Still have clips waiting for approval - pause job processing
-                    print(f"[Worker] {len(waiting_clips)} clips waiting for user approval", flush=True)
-                    time.sleep(2)  # Check every 2 seconds for approvals
                     
-                    # Check database for any approved clips
-                    with get_db() as db:
-                        for clip_idx in waiting_clips:
-                            prev_idx = clip_idx - 1
-                            prev_clip = db.query(Clip).filter(
-                                Clip.job_id == job_id,
-                                Clip.clip_index == prev_idx
-                            ).first()
-                            if prev_clip and prev_clip.approval_status == "approved":
-                                # Found an approval! Add to approved_clip_videos
-                                if prev_idx not in approved_clip_videos:
-                                    video_path = None
-                                    if prev_clip.output_filename:
-                                        video_path = str(output_dir / prev_clip.output_filename)
-                                    approved_clip_videos[prev_idx] = video_path
-                                    print(f"[Worker] Detected approval for clip {prev_idx}", flush=True)
+                except Exception as e:
+                    vlog(f"[VeoGenerator] Submit error: {str(e)[:200]}")
+                    if is_rate_limit_error(e) and submit_attempt < self.config.max_retries_submit:
+                        if self.api_keys.rotate_keys_on_429:
+                            self._rotate_key(block_current=True)
+                        
+                        available = self.api_keys.get_available_key_count()
+                        if available == 0:
+                            error = VeoError(
+                                code=ErrorCode.RATE_LIMIT, 
+                                message="All keys blocked", 
+                                user_message="All API keys are temporarily blocked",
+                                details={"blocked_count": len(self.api_keys.blocked_keys)},
+                                recoverable=True,
+                                suggestion="Wait a few minutes for keys to unblock"
+                            )
+                            self._emit_error(error)
+                            break
+                        
+                        blocked = len(self.api_keys.blocked_keys)
+                        self._emit_progress(
+                            clip_index, "rate_limited",
+                            f"Key blocked, trying next... ({available} available, {blocked} blocked)",
+                            {"available": available, "blocked": blocked}
+                        )
+                        continue
                     
-                    continue
-                else:
-                    # Nothing pending and nothing waiting - we're done
+                    failed_end_frames.append(actual_end_frame)
                     break
             
-            batch_size = min(parallel_clips, available_keys, len(ready_clips))
-            
-            if batch_size == 0:
+            if operation is None:
                 continue
             
-            # Get next batch of clips
-            batch = ready_clips[:batch_size]
-            # Remove processed clips from pending
-            pending_clips = [c for c in pending_clips if c not in batch]
+            # Poll for completion
+            try:
+                client = self._get_client()
+                while not operation.done:
+                    if self.cancelled:
+                        return result
+                    time.sleep(self.config.poll_interval_sec)
+                    operation = client.operations.get(operation)
+            except Exception as e:
+                failed_end_frames.append(actual_end_frame)
+                continue
             
-            print(f"[Worker] Processing batch of {batch_size} clips ({available_keys} keys available, {len(waiting_clips)} awaiting approval)", flush=True)
-            
-            # Process batch in parallel
-            with ThreadPoolExecutor(max_workers=batch_size) as clip_executor:
-                futures = {
-                    clip_executor.submit(process_single_clip, i): i 
-                    for i in batch
-                }
-                
-                requeue_clips = []
-                
-                for future in as_completed(futures):
-                    clip_index = futures[future]
-                    try:
-                        result = future.result()
-                        
-                        if result.get("no_keys"):
-                            # Re-queue this clip for later
-                            requeue_clips.append(clip_index)
-                            print(f"[Worker] Clip {clip_index} failed due to no keys, re-queuing", flush=True)
-                        elif result.get("success"):
-                            completed += 1
-                            # Track completed video for "continue" mode
-                            inner_result = result.get("result", {})
-                            if inner_result.get("output_path"):
-                                completed_clip_videos[clip_index] = str(inner_result["output_path"])
-                                print(f"[Worker] Tracked completed video for clip {clip_index}: {inner_result['output_path'].name}", flush=True)
-                        elif result.get("skipped"):
-                            skipped += 1
-                        else:
-                            failed += 1
-                            # For failed clips, still mark as "done" so dependent clips can fall back
-                            completed_clip_videos[clip_index] = None
-                        
-                        # Update job progress
-                        with get_db() as db:
-                            job = db.query(Job).filter(Job.id == job_id).first()
-                            if job:
-                                job.completed_clips = completed
-                                job.failed_clips = failed
-                                job.skipped_clips = skipped
-                                processed = completed + failed + skipped
-                                job.progress_percent = (processed / total_clips) * 100 if total_clips > 0 else 0
-                                db.commit()
-                        
-                    except Exception as e:
-                        print(f"[Worker] Future error for clip {clip_index}: {e}")
-                        failed += 1
-                        # Mark as done so dependents can proceed
-                        completed_clip_videos[clip_index] = None
-                
-                # Add re-queued clips back to pending
-                if requeue_clips:
-                    pending_clips = requeue_clips + pending_clips
-                    print(f"[Worker] Re-queued {len(requeue_clips)} clips, {len(pending_clips)} pending", flush=True)
-        
-        # Job completed - calculate status from actual clip data
-        actual_completed = 0
-        actual_failed = 0
-        actual_skipped = 0
-        final_status = "unknown"
-        
-        with get_db() as db:
-            job = db.query(Job).filter(Job.id == job_id).first()
-            if job:
-                # Recalculate stats from actual clips in database
-                clips = db.query(Clip).filter(Clip.job_id == job_id).all()
-                actual_completed = sum(1 for c in clips if c.status == ClipStatus.COMPLETED.value)
-                actual_failed = sum(1 for c in clips if c.status == ClipStatus.FAILED.value)
-                actual_skipped = sum(1 for c in clips if c.status == ClipStatus.SKIPPED.value)
-                
-                job.completed_clips = actual_completed
-                job.failed_clips = actual_failed
-                job.skipped_clips = actual_skipped
-                job.progress_percent = 100.0
-                
-                if generator.cancelled:
-                    job.status = JobStatus.CANCELLED.value
-                elif actual_completed == 0 and actual_failed > 0:
-                    job.status = JobStatus.FAILED.value
-                else:
-                    job.status = JobStatus.COMPLETED.value
-                
-                job.completed_at = datetime.utcnow()
-                final_status = job.status
-                db.commit()
-                
-                add_job_log(
-                    db, job_id,
-                    f"Job completed: {actual_completed} success, {actual_failed} failed, {actual_skipped} skipped",
-                    "INFO", "system"
-                )
-            
-            # Save blacklist
-            for img_path in generator.blacklist:
-                entry = BlacklistEntry(
-                    job_id=job_id,
-                    image_filename=img_path.name,
-                    reason="generation_failed",
-                )
-                db.add(entry)
-            db.commit()
-        
-        self._broadcast_event(job_id, {
-            "type": "job_completed",
-            "status": final_status,
-            "completed": actual_completed,
-            "failed": actual_failed,
-            "skipped": actual_skipped,
-        })
-    
-    def _get_next_clean_image(
-        self,
-        generator: VeoGenerator,
-        images: List[Path],
-        current_index: int,
-    ) -> Optional[tuple]:
-        """Get next non-blacklisted image"""
-        total = len(images)
-        
-        for offset in range(1, min(generator.config.max_image_attempts + 1, total + 1)):
-            new_index = (current_index + offset) % total
-            candidate = images[new_index]
-            
-            if candidate not in generator.blacklist:
-                return (new_index, candidate)
-        
-        return None
-    
-    def _get_next_clean_start(
-        self,
-        generator: VeoGenerator,
-        images: List[Path],
-        current_index: int,
-    ) -> Optional[tuple]:
-        """Get next non-blacklisted start frame"""
-        return self._get_next_clean_image(generator, images, current_index)
-    
-    def _handle_progress(
-        self,
-        job_id: str,
-        clip_index: int,
-        status: str,
-        message: str,
-        details: Optional[Dict],
-    ):
-        """Handle progress update from generator"""
-        with get_db() as db:
-            add_job_log(
-                db, job_id, message,
-                level="INFO" if status != "error" else "ERROR",
-                category="clip",
-                clip_index=clip_index,
-                details=details
+            # Check for errors
+            veo_error = error_handler.classify_veo_operation(
+                operation, {"clip_index": clip_index}
             )
-        
-        self._broadcast_event(job_id, {
-            "type": "progress",
-            "clip_index": clip_index,
-            "status": status,
-            "message": message,
-            "details": details,
-        })
-    
-    def _handle_error(self, job_id: str, error: VeoError):
-        """Handle error from generator"""
-        with get_db() as db:
-            add_job_log(
-                db, job_id,
-                error.message,
-                level="ERROR",
-                category="error",
-                details=error.to_dict()
-            )
-        
-        self._broadcast_event(job_id, {
-            "type": "error",
-            "error": error.to_dict(),
-        })
-    
-    # ============ SSE Subscription Management ============
-    
-    def subscribe(self, job_id: str) -> Queue:
-        """Subscribe to job events"""
-        event_queue = Queue()
-        
-        with self.subscribers_lock:
-            if job_id not in self.subscribers:
-                self.subscribers[job_id] = []
-            self.subscribers[job_id].append(event_queue)
-            print(f"[Worker] Subscribed to job {job_id[:8]}, total subscribers: {len(self.subscribers[job_id])}", flush=True)
-        
-        return event_queue
-    
-    def unsubscribe(self, job_id: str, event_queue: Queue):
-        """Unsubscribe from job events"""
-        with self.subscribers_lock:
-            if job_id in self.subscribers:
-                if event_queue in self.subscribers[job_id]:
-                    self.subscribers[job_id].remove(event_queue)
-                    print(f"[Worker] Unsubscribed from job {job_id[:8]}, remaining: {len(self.subscribers[job_id])}", flush=True)
-                if not self.subscribers[job_id]:
-                    del self.subscribers[job_id]
-    
-    def _broadcast_event(self, job_id: str, event: Dict):
-        """Broadcast event to all subscribers"""
-        print(f"[Worker] Broadcasting event: {event.get('type')} for job {job_id[:8]}", flush=True)
-        with self.subscribers_lock:
-            if job_id in self.subscribers:
-                subscriber_count = len(self.subscribers[job_id])
-                print(f"[Worker] Broadcasting to {subscriber_count} subscribers", flush=True)
-                for queue in self.subscribers[job_id]:
-                    try:
-                        queue.put_nowait(event)
-                    except Exception as e:
-                        print(f"[Worker] Failed to broadcast: {e}", flush=True)
-            else:
-                print(f"[Worker] No subscribers for job {job_id[:8]}", flush=True)
-    
-    # ============ Job Control ============
-    
-    def cancel_job(self, job_id: str) -> bool:
-        """Cancel a running job"""
-        if job_id in self.running_jobs:
-            self.running_jobs[job_id].cancel()
-            return True
-        return False
-    
-    def pause_job(self, job_id: str) -> bool:
-        """Pause a running job"""
-        if job_id in self.running_jobs:
-            self.running_jobs[job_id].pause()
             
-            with get_db() as db:
-                job = db.query(Job).filter(Job.id == job_id).first()
-                if job:
-                    job.status = JobStatus.PAUSED.value
-                    db.commit()
+            if veo_error:
+                self._emit_error(veo_error)
+                if veo_error.code == ErrorCode.CELEBRITY_FILTER and actual_end_frame:
+                    self.blacklist.add(actual_end_frame)
+                failed_end_frames.append(actual_end_frame)
+                continue
             
-            return True
-        return False
+            # Success! Download video
+            try:
+                resp = getattr(operation, "response", None)
+                vids = getattr(resp, "generated_videos", None) if resp else None
+                
+                if not vids:
+                    failed_end_frames.append(actual_end_frame)
+                    continue
+                
+                video = vids[0]
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S") if self.config.timestamp_names else ""
+                output_filename = generate_output_filename(dialogue_id, start_frame, actual_end_frame, timestamp)
+                output_path = output_dir / output_filename
+                
+                client = self._get_client()
+                client.files.download(file=video.video)
+                video.video.save(str(output_path))
+                
+                result["success"] = True
+                result["output_path"] = output_path
+                result["end_frame_used"] = actual_end_frame
+                result["end_index"] = actual_end_index
+                
+                self._emit_progress(clip_index, "completed", f"Saved: {output_filename}", {"output": output_filename})
+                return result
+                
+            except Exception as e:
+                failed_end_frames.append(actual_end_frame)
+                continue
+        
+        # Exhausted retries
+        if len(failed_end_frames) >= 2:
+            self.blacklist.add(start_frame)
+        
+        result["error"] = VeoError(
+            code=ErrorCode.VIDEO_GENERATION_FAILED,
+            message=f"Failed after {self.config.max_retries_per_clip} attempts",
+            user_message="Video generation failed after multiple attempts",
+            details={"attempts": self.config.max_retries_per_clip, "failed_frames": len(failed_end_frames)},
+            recoverable=True,
+            suggestion="Try regenerating the clip or use a different image"
+        )
+        
+        return result
     
-    def resume_job(self, job_id: str) -> bool:
-        """Resume a paused job"""
-        if job_id in self.running_jobs:
-            self.running_jobs[job_id].resume()
-            
-            with get_db() as db:
-                job = db.query(Job).filter(Job.id == job_id).first()
-                if job:
-                    job.status = JobStatus.RUNNING.value
-                    db.commit()
-            
-            return True
-        return False
+    def cancel(self):
+        """Cancel generation"""
+        self.cancelled = True
     
-    def get_job_status(self, job_id: str) -> Optional[Dict]:
-        """Get current job status"""
-        with get_db() as db:
-            job = db.query(Job).filter(Job.id == job_id).first()
-            if job:
-                return job.to_dict()
-        return None
-
-
-# Singleton worker instance
-worker = JobWorker(max_workers=app_config.max_workers)
+    def pause(self):
+        """Pause generation"""
+        self.paused = True
+    
+    def resume(self):
+        """Resume generation"""
+        self.paused = False
