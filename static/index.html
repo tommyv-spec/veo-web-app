@@ -147,10 +147,9 @@
         /* Rich Editor */
         .storyboard-editor-col { flex: 1; display: flex; flex-direction: column; }
         
-        .storyboard-editor { width: 100%; min-height: 280px; max-height: 450px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 12px 12px 12px 40px; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.7; color: var(--text-primary); overflow-y: auto; outline: none; }
+        .storyboard-editor { width: 100%; min-height: 280px; max-height: 450px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: var(--radius-sm); padding: 12px 12px 12px 40px; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.7; color: var(--text-primary); overflow-y: auto; outline: none; position: relative; }
         .storyboard-editor:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
         .storyboard-editor.drag-over { background: rgba(99, 102, 241, 0.05); border-color: var(--accent); }
-        .storyboard-editor.drag-over::after { content: 'Drop image here to create scene break'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); background: var(--accent); color: white; padding: 8px 16px; border-radius: var(--radius-sm); font-size: 11px; pointer-events: none; }
         
         /* Scene Divider - for Storyboard mode */
         .scene-divider-wrapper { margin: 12px 0 6px -28px; }
@@ -1731,7 +1730,11 @@ Example: A realistic vertical video of a professional presenter speaking directl
         
         // Drag and drop handlers for storyboard mode
         let draggedSceneIdx = null;
-        let dragPreviewElement = null;
+        
+        // Create invisible drag image once (1x1 transparent pixel)
+        const invisibleDragImg = document.createElement('canvas');
+        invisibleDragImg.width = 1;
+        invisibleDragImg.height = 1;
         
         function handleImageDragStart(e, imgIndex){
             if(editorMode !== 'storyboard') return;
@@ -1740,14 +1743,8 @@ Example: A realistic vertical video of a professional presenter speaking directl
             e.dataTransfer.effectAllowed = 'copy';
             e.dataTransfer.setData('text/plain', 'image:' + imgIndex);
             
-            // Create a small custom drag image instead of hiding completely
-            if(!dragPreviewElement){
-                dragPreviewElement = document.createElement('div');
-                dragPreviewElement.style.cssText = 'width:40px;height:40px;background:var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-size:14px;font-weight:bold;position:fixed;top:-100px;left:-100px;pointer-events:none;z-index:9999;';
-                document.body.appendChild(dragPreviewElement);
-            }
-            dragPreviewElement.textContent = imgIndex + 1;
-            e.dataTransfer.setDragImage(dragPreviewElement, 20, 20);
+            // Hide the default drag preview completely
+            e.dataTransfer.setDragImage(invisibleDragImg, 0, 0);
         }
         
         function handleSceneDragStart(e, sceneIdx){
@@ -1758,14 +1755,8 @@ Example: A realistic vertical video of a professional presenter speaking directl
             e.dataTransfer.setData('text/plain', 'scene:' + sceneIdx);
             e.target.classList.add('dragging');
             
-            // Use same small drag preview
-            if(!dragPreviewElement){
-                dragPreviewElement = document.createElement('div');
-                dragPreviewElement.style.cssText = 'width:40px;height:40px;background:var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-size:14px;font-weight:bold;position:fixed;top:-100px;left:-100px;pointer-events:none;z-index:9999;';
-                document.body.appendChild(dragPreviewElement);
-            }
-            dragPreviewElement.textContent = '↕';
-            e.dataTransfer.setDragImage(dragPreviewElement, 20, 20);
+            // Hide the default drag preview completely
+            e.dataTransfer.setDragImage(invisibleDragImg, 0, 0);
         }
         
         function handleEditorDragOver(e){
