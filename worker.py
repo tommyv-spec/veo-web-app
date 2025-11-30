@@ -438,16 +438,20 @@ class JobWorker:
                     # Old format: just a list of lines
                     dialogue_data = dialogue_raw
                     scenes_data = None
+                    last_frame_index = None
                 else:
-                    # New format: {lines: [...], scenes: [...]}
+                    # New format: {lines: [...], scenes: [...], last_frame_index: ...}
                     dialogue_data = dialogue_raw.get("lines", [])
                     scenes_data = dialogue_raw.get("scenes", None)
+                    last_frame_index = dialogue_raw.get("last_frame_index", None)
                 
                 # Store scenes data for processing
                 storyboard_mode = config_data.get("storyboard_mode", False)
                 print(f"[Worker] Storyboard mode: {storyboard_mode}", flush=True)
                 if scenes_data:
                     print(f"[Worker] Scenes: {json.dumps(scenes_data, indent=2)}", flush=True)
+                if last_frame_index is not None:
+                    print(f"[Worker] Last frame index: {last_frame_index}", flush=True)
                 
                 # Get images
                 images_dir = Path(job.images_dir)
@@ -487,7 +491,7 @@ class JobWorker:
                 self.running_jobs[job_id] = generator
             
             # Process clips (pass scenes_data for storyboard mode)
-            self._process_clips(job_id, generator, dialogue_data, images, output_dir, scenes_data)
+            self._process_clips(job_id, generator, dialogue_data, images, output_dir, scenes_data, last_frame_index)
             
         except Exception as e:
             error = error_handler.classify_exception(e, {"job_id": job_id})
@@ -529,6 +533,7 @@ class JobWorker:
         images: List[Path],
         output_dir: Path,
         scenes_data: Optional[List[Dict]] = None,
+        last_frame_index: Optional[int] = None,
     ):
         """Process all clips for a job - with parallel generation support and scene-aware sequencing"""
         from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
@@ -551,6 +556,10 @@ class JobWorker:
         no_keys_retries = 0
         max_no_keys_retries = 3
         no_keys_wait_seconds = 300  # 5 minutes
+        
+        # Log last frame
+        if last_frame_index is not None:
+            print(f"[Worker] Last frame index set: {last_frame_index} ({images[last_frame_index].name if last_frame_index < len(images) else 'INVALID'})", flush=True)
         
         # === BUILD SCENE-AWARE CLIP STRUCTURE ===
         num_images = len(images)
@@ -638,10 +647,15 @@ class JobWorker:
                 
                 if is_last_clip:
                     # CASE 1: Last clip of the video
-                    # TODO: Check for Last Frame setting (not yet implemented)
-                    # For now, no end frame for last clip
-                    use_end_frame = False
-                    end_frame_reason = "last clip, no Last Frame defined"
+                    if last_frame_index is not None and last_frame_index < num_images:
+                        # Last Frame is defined - use it
+                        use_end_frame = True
+                        actual_end_idx = last_frame_index
+                        end_frame_reason = f"last clip, using Last Frame (image {last_frame_index + 1})"
+                    else:
+                        # No Last Frame defined - no end frame
+                        use_end_frame = False
+                        end_frame_reason = "last clip, no Last Frame defined"
                 else:
                     next_info = clip_info[i + 1]
                     next_scene = next_info["scene_index"]
@@ -722,6 +736,29 @@ class JobWorker:
                 "clip_mode": info["clip_mode"],
                 "requires_previous": info["requires_previous"],
             })
+        
+        # Log complete frame assignment summary
+        print(f"\n{'='*70}", flush=True)
+        print(f"[Worker] FRAME ASSIGNMENT SUMMARY", flush=True)
+        print(f"{'='*70}", flush=True)
+        print(f"Total clips: {len(clip_frames)}", flush=True)
+        print(f"Last Frame Index: {last_frame_index}", flush=True)
+        print(f"", flush=True)
+        for i, cf in enumerate(clip_frames):
+            mode = cf["clip_mode"]
+            req_prev = cf["requires_previous"]
+            start = cf["start_frame"].name if hasattr(cf["start_frame"], 'name') else str(cf["start_frame"])
+            end = cf["end_frame"].name if cf["end_frame"] and hasattr(cf["end_frame"], 'name') else ("NONE" if cf["end_frame"] is None else str(cf["end_frame"]))
+            status = "WAITING_APPROVAL" if req_prev else "PENDING"
+            
+            print(f"  Clip {i}: [{mode.upper()}] {start} → {end}", flush=True)
+            print(f"           requires_previous={req_prev}, status={status}", flush=True)
+            if mode == "continue":
+                if req_prev:
+                    print(f"           → Will extract start frame from clip {i-1} at runtime", flush=True)
+                else:
+                    print(f"           → First of scene, will use original image", flush=True)
+        print(f"{'='*70}\n", flush=True)
         
         # Track completed AND APPROVED clips for 'continue' mode frame extraction
         approved_clip_videos = {}  # clip_index -> video_path (only approved ones)
@@ -840,9 +877,11 @@ class JobWorker:
             start_index = frames["start_index"]
             end_index = frames["end_index"]  # Can be None if no interpolation needed
             clip_mode = frames.get("clip_mode", "blend")
+            requires_previous = frames.get("requires_previous", False)
             
             # Handle "continue" mode - use extracted frame from APPROVED previous clip
-            if clip_mode == "continue" and clip_index > 0:
+            # ONLY if requires_previous is True (meaning previous clip is in SAME scene)
+            if clip_mode == "continue" and requires_previous and clip_index > 0:
                 prev_video = approved_clip_videos.get(clip_index - 1)
                 if prev_video and Path(prev_video).exists():
                     extracted = extract_frame_from_video(Path(prev_video), frame_offset=-8)
@@ -853,6 +892,9 @@ class JobWorker:
                         print(f"[Worker] Clip {clip_index}: Frame extraction failed, using original image", flush=True)
                 else:
                     print(f"[Worker] Clip {clip_index}: Approved previous clip video not found, using original image", flush=True)
+            elif clip_mode == "continue" and not requires_previous:
+                # First clip of scene in Continue mode - use original image
+                print(f"[Worker] Clip {clip_index}: Continue mode but first of scene, using original image", flush=True)
             
             # Get frame names for logging/database (handle both Path objects and strings)
             def get_frame_name(frame):

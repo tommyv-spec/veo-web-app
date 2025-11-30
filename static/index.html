@@ -197,24 +197,23 @@
         .toggle-row.disabled .toggle { background: var(--bg-input) !important; }
         .toggle-row.disabled .toggle::after { left: 50% !important; transform: translateX(-50%); }
         
-        /* Last Frame drop zone */
-        .last-frame-zone { margin: 16px 0 8px -28px; padding: 12px; border: 2px dashed var(--border-color); border-radius: var(--radius-sm); transition: all 0.2s; background: var(--bg-input); }
-        .last-frame-zone:hover { border-color: var(--accent); background: rgba(99, 102, 241, 0.05); }
-        .last-frame-zone.drag-over { border-color: var(--success); background: rgba(16, 185, 129, 0.1); border-style: solid; }
-        .last-frame-zone.has-frame { border-style: solid; border-color: var(--success); background: rgba(16, 185, 129, 0.05); }
+        /* Last Frame drop zone - OLD LARGE VERSION REMOVED */
         
-        .last-frame-placeholder { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px; }
-        .last-frame-icon { font-size: 20px; opacity: 0.6; }
-        .last-frame-text { font-size: 11px; color: var(--text-secondary); font-weight: 500; }
-        .last-frame-subtext { font-size: 9px; color: var(--text-muted); }
-        
-        .last-frame-content { display: flex; align-items: center; gap: 10px; }
-        .last-frame-img { width: 50px; height: 50px; border-radius: 4px; object-fit: cover; border: 2px solid var(--success); }
-        .last-frame-info { flex: 1; }
-        .last-frame-label { display: block; font-size: 11px; font-weight: 700; color: var(--success); }
-        .last-frame-hint { display: block; font-size: 9px; color: var(--text-muted); margin-top: 2px; }
-        .last-frame-remove { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 14px; padding: 4px 8px; border-radius: 4px; }
-        .last-frame-remove:hover { color: var(--error); background: rgba(239, 68, 68, 0.1); }
+        /* Compact Last Frame indicator (shown when set) */
+        .last-frame-indicator { 
+            display: flex; 
+            align-items: center; 
+            gap: 8px; 
+            margin: 12px 0 4px -28px; 
+            padding: 6px 10px; 
+            background: rgba(16, 185, 129, 0.1); 
+            border: 1px solid var(--success); 
+            border-radius: var(--radius-sm); 
+        }
+        .last-frame-thumb { width: 28px; height: 28px; border-radius: 4px; object-fit: cover; }
+        .last-frame-indicator .last-frame-text { font-size: 10px; color: var(--success); font-weight: 600; flex: 1; }
+        .last-frame-remove-btn { background: transparent; border: none; color: var(--text-muted); cursor: pointer; font-size: 12px; padding: 2px 6px; border-radius: 3px; }
+        .last-frame-remove-btn:hover { color: var(--error); background: rgba(239, 68, 68, 0.1); }
         
         /* Drop zone indicator between lines */
         .drop-indicator { height: 3px; background: var(--accent); margin: 4px 0; border-radius: 2px; display: none; }
@@ -226,7 +225,7 @@
             left: 0; 
             right: 0; 
             height: 3px; 
-            background: linear-gradient(90deg, var(--accent), var(--success)); 
+            background: linear-gradient(90deg, var(--accent), var(--accent)); 
             border-radius: 2px; 
             pointer-events: none; 
             z-index: 100; 
@@ -234,16 +233,23 @@
             display: none;
         }
         .drop-indicator-line::before {
-            content: '◆ Insert scene here';
+            content: attr(data-label);
             position: absolute;
             left: 0;
-            top: -18px;
+            top: -16px;
             font-size: 9px;
             color: var(--accent);
             font-weight: 600;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 0.3px;
             white-space: nowrap;
+        }
+        .drop-indicator-line.end-frame {
+            background: linear-gradient(90deg, var(--success), var(--success));
+            box-shadow: 0 0 8px var(--success);
+        }
+        .drop-indicator-line.end-frame::before {
+            color: var(--success);
         }
         
         /* Lines with gutter numbers */
@@ -1287,7 +1293,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 sceneBreaks = sceneBreaks.filter(sb => sb.lineIndex < numLines);
             }
             if(sceneBreaks.length === 0 && numImages > 0){
-                sceneBreaks = [{ lineIndex: 0, imgIndex: 0 }];
+                sceneBreaks = [{ lineIndex: 0, imgIndex: 0, clipMode: 'blend' }];
             }
             
             // Sort scene breaks by line index
@@ -1298,12 +1304,39 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 sceneBreaks[0].lineIndex = 0;
             }
             
+            // Calculate which clips each image covers
+            const imageClipRanges = {};
+            sceneBreaks.forEach((scene, sceneIdx) => {
+                const nextScene = sceneBreaks[sceneIdx + 1];
+                const startClip = scene.lineIndex + 1; // 1-indexed for display
+                const endClip = nextScene ? nextScene.lineIndex : numLines;
+                
+                if(!imageClipRanges[scene.imgIndex]){
+                    imageClipRanges[scene.imgIndex] = [];
+                }
+                if(endClip > scene.lineIndex){
+                    if(startClip === endClip){
+                        imageClipRanges[scene.imgIndex].push(`#${startClip}`);
+                    } else {
+                        imageClipRanges[scene.imgIndex].push(`#${startClip}-${endClip}`);
+                    }
+                }
+            });
+            
+            // Also check if image is used as Last Frame
+            if(lastFrameIndex !== null){
+                if(!imageClipRanges[lastFrameIndex]){
+                    imageClipRanges[lastFrameIndex] = [];
+                }
+                imageClipRanges[lastFrameIndex].push('End');
+            }
+            
             // Sidebar: Draggable images
             let sidebarHtml = '';
             uploadedFilesData.forEach((img, i) => {
-                const usedInScenes = sceneBreaks.filter(sb => sb.imgIndex === i);
-                const usageText = usedInScenes.length > 0 
-                    ? usedInScenes.map(sb => `from #${sb.lineIndex + 1}`).join(', ')
+                const clips = imageClipRanges[i];
+                const usageText = clips && clips.length > 0 
+                    ? clips.join(', ')
                     : 'drag to use';
                 
                 sidebarHtml += `
@@ -1392,32 +1425,17 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     });
                 });
                 
-                // Add Last Frame drop zone after all lines
-                const lastFrameImg = lastFrameIndex !== null ? uploadedFilesData[lastFrameIndex] : null;
-                htmlContent += `
-                    <div class="last-frame-zone ${lastFrameImg ? 'has-frame' : ''}" 
-                         data-drop-zone="last-frame"
-                         ondragover="handleLastFrameDragOver(event)"
-                         ondragleave="handleLastFrameDragLeave(event)"
-                         ondrop="handleLastFrameDrop(event)">
-                        ${lastFrameImg ? `
-                            <div class="last-frame-content">
-                                <img class="last-frame-img" src="${lastFrameImg.dataUrl}">
-                                <div class="last-frame-info">
-                                    <span class="last-frame-label">🏁 End Frame</span>
-                                    <span class="last-frame-hint">Video ends on this image</span>
-                                </div>
-                                <button class="last-frame-remove" onclick="removeLastFrame()">✕</button>
-                            </div>
-                        ` : `
-                            <div class="last-frame-placeholder">
-                                <span class="last-frame-icon">🏁</span>
-                                <span class="last-frame-text">Drop image here for End Frame</span>
-                                <span class="last-frame-subtext">Last clip will morph to this image</span>
-                            </div>
-                        `}
-                    </div>
-                `;
+                // Add compact Last Frame indicator (only if set)
+                if(lastFrameIndex !== null && uploadedFilesData[lastFrameIndex]){
+                    const lastFrameImg = uploadedFilesData[lastFrameIndex];
+                    htmlContent += `
+                        <div class="last-frame-indicator">
+                            <img class="last-frame-thumb" src="${lastFrameImg.dataUrl}">
+                            <span class="last-frame-text">🏁 End Frame (Image ${lastFrameIndex + 1})</span>
+                            <button class="last-frame-remove-btn" onclick="removeLastFrame()">✕</button>
+                        </div>
+                    `;
+                }
             } else {
                 // No text yet
                 if(numImages > 0){
@@ -1682,6 +1700,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
         
         // Drag and drop handlers for storyboard mode
         let draggedSceneIdx = null;
+        let dragPreviewElement = null;
         
         function handleImageDragStart(e, imgIndex){
             if(editorMode !== 'storyboard') return;
@@ -1690,10 +1709,14 @@ Example: A realistic vertical video of a professional presenter speaking directl
             e.dataTransfer.effectAllowed = 'copy';
             e.dataTransfer.setData('text/plain', 'image:' + imgIndex);
             
-            // Remove the default drag preview (the large image tooltip)
-            const emptyImg = document.createElement('img');
-            emptyImg.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-            e.dataTransfer.setDragImage(emptyImg, 0, 0);
+            // Create a small custom drag image instead of hiding completely
+            if(!dragPreviewElement){
+                dragPreviewElement = document.createElement('div');
+                dragPreviewElement.style.cssText = 'width:40px;height:40px;background:var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-size:14px;font-weight:bold;position:fixed;top:-100px;left:-100px;pointer-events:none;z-index:9999;';
+                document.body.appendChild(dragPreviewElement);
+            }
+            dragPreviewElement.textContent = imgIndex + 1;
+            e.dataTransfer.setDragImage(dragPreviewElement, 20, 20);
         }
         
         function handleSceneDragStart(e, sceneIdx){
@@ -1704,74 +1727,92 @@ Example: A realistic vertical video of a professional presenter speaking directl
             e.dataTransfer.setData('text/plain', 'scene:' + sceneIdx);
             e.target.classList.add('dragging');
             
-            // Remove the default drag preview
-            const emptyImg = document.createElement('img');
-            emptyImg.src = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
-            e.dataTransfer.setDragImage(emptyImg, 0, 0);
+            // Use same small drag preview
+            if(!dragPreviewElement){
+                dragPreviewElement = document.createElement('div');
+                dragPreviewElement.style.cssText = 'width:40px;height:40px;background:var(--accent);border-radius:8px;display:flex;align-items:center;justify-content:center;color:white;font-size:14px;font-weight:bold;position:fixed;top:-100px;left:-100px;pointer-events:none;z-index:9999;';
+                document.body.appendChild(dragPreviewElement);
+            }
+            dragPreviewElement.textContent = '↕';
+            e.dataTransfer.setDragImage(dragPreviewElement, 20, 20);
         }
         
         function handleEditorDragOver(e){
             if(editorMode !== 'storyboard') return;
+            if(draggedImageIndex === null && draggedSceneIdx === null) return;
+            
             e.preventDefault();
             e.dataTransfer.dropEffect = draggedSceneIdx !== null ? 'move' : 'copy';
-            document.getElementById('richEditor').classList.add('drag-over');
             
-            // Show drop indicator BETWEEN lines, not on the line
+            // Show drop indicator BETWEEN lines
             const lines = document.querySelectorAll('.scene-line');
+            const numLines = lines.length;
             const dropY = e.clientY;
             
             // Remove all existing indicators
             document.querySelectorAll('.drop-indicator-line').forEach(el => el.remove());
             
-            // Find which gap we're hovering over
+            // Find which gap we're hovering over (between which lines)
+            let insertAfterLineIdx = -1;
             let insertAfterLine = null;
-            let insertBeforeRect = null;
             
-            lines.forEach((line, idx) => {
+            lines.forEach((line) => {
                 const rect = line.getBoundingClientRect();
                 const lineMiddle = rect.top + rect.height / 2;
+                const lineIdx = parseInt(line.dataset.lineIdx);
                 
-                if(dropY > lineMiddle) {
+                if(!isNaN(lineIdx) && dropY > lineMiddle) {
+                    insertAfterLineIdx = lineIdx;
                     insertAfterLine = line;
                 }
             });
             
             // Create and position the drop indicator
+            const editor = document.getElementById('richEditor');
+            const editorRect = editor.getBoundingClientRect();
+            
             if(insertAfterLine) {
                 const rect = insertAfterLine.getBoundingClientRect();
-                const editorRect = document.getElementById('richEditor').getBoundingClientRect();
                 
-                // Create indicator if doesn't exist
-                let indicator = document.querySelector('.drop-indicator-line');
-                if(!indicator) {
-                    indicator = document.createElement('div');
-                    indicator.className = 'drop-indicator-line';
-                    document.getElementById('richEditor').appendChild(indicator);
+                let indicator = document.createElement('div');
+                indicator.className = 'drop-indicator-line';
+                indicator.style.top = (rect.bottom - editorRect.top + editor.scrollTop) + 'px';
+                indicator.style.display = 'block';
+                
+                // Check if this is after the last line (for End Frame)
+                const targetLineIndex = insertAfterLineIdx + 1;
+                if(targetLineIndex >= numLines && draggedImageIndex !== null){
+                    indicator.setAttribute('data-label', '🏁 Set as End Frame');
+                    indicator.classList.add('end-frame');
+                } else if(targetLineIndex > 0){
+                    indicator.setAttribute('data-label', '◆ Insert scene here');
                 }
                 
-                // Position it after the line
-                indicator.style.top = (rect.bottom - editorRect.top + document.getElementById('richEditor').scrollTop) + 'px';
-                indicator.style.display = 'block';
+                editor.appendChild(indicator);
             }
         }
         
         function handleEditorDragLeave(e){
-            document.getElementById('richEditor').classList.remove('drag-over');
-            // Remove drop indicator
-            document.querySelectorAll('.drop-indicator-line').forEach(el => el.remove());
+            // Only remove if actually leaving the editor (not entering a child)
+            const editor = document.getElementById('richEditor');
+            const rect = editor.getBoundingClientRect();
+            if(e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom){
+                document.querySelectorAll('.drop-indicator-line').forEach(el => el.remove());
+            }
         }
         
         function handleEditorDrop(e){
             e.preventDefault();
-            document.getElementById('richEditor').classList.remove('drag-over');
             document.querySelectorAll('.drop-indicator-line').forEach(el => el.remove());
             document.querySelectorAll('.scene-divider.dragging').forEach(el => el.classList.remove('dragging'));
             
             if(editorMode !== 'storyboard') return;
+            if(draggedImageIndex === null && draggedSceneIdx === null) return;
             
             // Find which line we're dropping AFTER (insert point between lines)
             const editor = document.getElementById('richEditor');
             const lines = editor.querySelectorAll('.scene-line');
+            const numLines = lines.length;
             let targetLineIndex = 0;
             
             const dropY = e.clientY;
@@ -1786,30 +1827,42 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 }
             });
             
-            // Ensure targetLineIndex is valid (at least 1, since scene 0 is always first)
-            targetLineIndex = Math.max(1, targetLineIndex);
-            
             if(draggedSceneIdx !== null){
                 // Moving an existing scene divider
-                if(draggedSceneIdx > 0 && draggedSceneIdx < sceneBreaks.length){
-                    // Can't move to line 0 (that's always first scene)
+                if(draggedSceneIdx > 0 && draggedSceneIdx < sceneBreaks.length && targetLineIndex > 0 && targetLineIndex < numLines){
+                    // Can't move to line 0 (first scene is fixed there)
+                    // Can't move beyond last line
                     if(targetLineIndex !== sceneBreaks[draggedSceneIdx].lineIndex){
                         sceneBreaks[draggedSceneIdx].lineIndex = targetLineIndex;
                     }
                 }
                 draggedSceneIdx = null;
             } else if(draggedImageIndex !== null){
-                // Dropping a new image from sidebar
-                const existingBreak = sceneBreaks.find(sb => sb.lineIndex === targetLineIndex);
-                if(existingBreak){
-                    existingBreak.imgIndex = draggedImageIndex;
-                } else if(targetLineIndex > 0){
-                    // Add new scene break at this position
-                    sceneBreaks.push({ lineIndex: targetLineIndex, imgIndex: draggedImageIndex, interpolate: true });
-                } else if(targetLineIndex === 0 && sceneBreaks.length > 0){
-                    // Update first scene's image
-                    sceneBreaks[0].imgIndex = draggedImageIndex;
+                // Dropping image from sidebar
+                
+                // Check if dropping AFTER the last line - this sets the Last Frame
+                if(targetLineIndex >= numLines && numLines > 0){
+                    lastFrameIndex = draggedImageIndex;
+                    console.log('Set Last Frame to image', draggedImageIndex);
+                } 
+                // Dropping between lines - creates/updates scene break
+                else if(targetLineIndex > 0){
+                    const existingBreakIdx = sceneBreaks.findIndex(sb => sb.lineIndex === targetLineIndex);
+                    if(existingBreakIdx !== -1){
+                        // Update existing scene's image
+                        sceneBreaks[existingBreakIdx].imgIndex = draggedImageIndex;
+                    } else {
+                        // Add new scene break
+                        sceneBreaks.push({ 
+                            lineIndex: targetLineIndex, 
+                            imgIndex: draggedImageIndex, 
+                            clipMode: 'blend',
+                            transition: 'blend'
+                        });
+                    }
                 }
+                // targetLineIndex === 0 means drop before first line - ignore
+                
                 draggedImageIndex = null;
             }
             
