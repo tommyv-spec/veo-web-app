@@ -135,6 +135,9 @@
         .storyboard-sidebar-image.draggable { cursor: grab; }
         .storyboard-sidebar-image.draggable:hover { border-color: var(--accent); }
         .storyboard-sidebar-image.draggable:active { cursor: grabbing; }
+        .storyboard-sidebar-image.being-dragged { opacity: 0.4; border-color: var(--accent); }
+        body.is-dragging-image { cursor: grabbing !important; }
+        body.is-dragging-image * { cursor: grabbing !important; }
         .storyboard-sidebar-image img { width: 100%; height: 50px; object-fit: cover; display: block; }
         .storyboard-sidebar-image .img-index { position: absolute; top: 4px; left: 4px; background: rgba(0,0,0,0.85); color: white; font-size: 9px; padding: 1px 5px; border-radius: 3px; font-weight: 600; }
         .storyboard-sidebar-image .img-range { font-size: 8px; color: var(--text-muted); text-align: center; padding: 3px 2px; background: var(--bg-elevated); }
@@ -1331,13 +1334,12 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 
                 sidebarHtml += `
                     <div class="storyboard-sidebar-image draggable" 
-                         draggable="true"
-                         ondragstart="handleImageDragStart(event, ${i})"
+                         onmousedown="handleImageMouseDown(event, ${i})"
                          title="${img.name}">
-                        <img src="${img.dataUrl}">
+                        <img src="${img.dataUrl}" draggable="false">
                         <div class="img-index">${i + 1}</div>
                         <div class="img-range">${usageText}</div>
-                        <div class="img-remove" onclick="removeImage(${i})">✕</div>
+                        <div class="img-remove" onclick="event.stopPropagation();removeImage(${i})">✕</div>
                     </div>
                 `;
             });
@@ -1385,11 +1387,8 @@ Example: A realistic vertical video of a professional presenter speaking directl
                         <div class="scene-divider" 
                              contenteditable="false" 
                              data-scene-idx="${sceneIdx}"
-                             ondragover="handleSceneDividerDragOver(event, ${sceneIdx})"
-                             ondragleave="handleSceneDividerDragLeave(event)"
-                             ondrop="handleSceneDividerDrop(event, ${sceneIdx})"
-                             ${isDraggable ? `draggable="true" ondragstart="handleSceneDragStart(event, ${sceneIdx})"` : ''}>
-                            <img class="scene-divider-img" src="${img.dataUrl}">
+                             ${isDraggable ? `onmousedown="handleSceneMouseDown(event, ${sceneIdx})"` : ''}>
+                            <img class="scene-divider-img" src="${img.dataUrl}" draggable="false">
                             <div class="clip-mode-toggle">
                                 <button class="clip-mode-btn blend-btn ${clipMode === 'blend' ? 'active' : ''}" 
                                         onclick="event.stopPropagation();setClipMode(${sceneIdx}, 'blend')"
@@ -1718,33 +1717,178 @@ Example: A realistic vertical video of a professional presenter speaking directl
             }, 600);
         }
         
-        // Drag and drop handlers for storyboard mode
+        // Drag and drop handlers for storyboard mode - using mouse events instead of native drag
         let draggedSceneIdx = null;
+        let isDragging = false;
+        let dragStartY = 0;
         
-        function handleImageDragStart(e, imgIndex){
+        function handleImageMouseDown(e, imgIndex){
             if(editorMode !== 'storyboard') return;
+            e.preventDefault();
+            
             draggedImageIndex = imgIndex;
             draggedSceneIdx = null;
-            e.dataTransfer.effectAllowed = 'copy';
-            e.dataTransfer.setData('text/plain', 'image:' + imgIndex);
+            isDragging = true;
+            dragStartY = e.clientY;
             
-            // Use pre-loaded transparent image to hide drag preview
-            const emptyImg = document.getElementById('emptyDragImage');
-            if(emptyImg) e.dataTransfer.setDragImage(emptyImg, 0, 0);
+            // Add dragging class to body to change cursor
+            document.body.classList.add('is-dragging-image');
+            
+            // Highlight the source image
+            const sourceImg = e.target.closest('.storyboard-sidebar-image');
+            if(sourceImg) sourceImg.classList.add('being-dragged');
         }
         
-        function handleSceneDragStart(e, sceneIdx){
+        function handleSceneMouseDown(e, sceneIdx){
             if(editorMode !== 'storyboard') return;
+            if(sceneIdx === 0) return; // Can't drag first scene
+            e.preventDefault();
+            
             draggedSceneIdx = sceneIdx;
             draggedImageIndex = null;
-            e.dataTransfer.effectAllowed = 'move';
-            e.dataTransfer.setData('text/plain', 'scene:' + sceneIdx);
-            e.target.classList.add('dragging');
+            isDragging = true;
+            dragStartY = e.clientY;
             
-            // Use pre-loaded transparent image to hide drag preview
-            const emptyImg = document.getElementById('emptyDragImage');
-            if(emptyImg) e.dataTransfer.setDragImage(emptyImg, 0, 0);
+            document.body.classList.add('is-dragging-image');
+            e.target.closest('.scene-divider').classList.add('being-dragged');
         }
+        
+        // Global mouse move handler
+        document.addEventListener('mousemove', function(e){
+            if(!isDragging) return;
+            if(draggedImageIndex === null && draggedSceneIdx === null) return;
+            
+            // Show drop indicator
+            const editor = document.getElementById('richEditor');
+            if(!editor) return;
+            
+            const editorRect = editor.getBoundingClientRect();
+            const isOverEditor = e.clientX >= editorRect.left && e.clientX <= editorRect.right &&
+                                 e.clientY >= editorRect.top && e.clientY <= editorRect.bottom;
+            
+            // Remove existing indicators
+            document.querySelectorAll('.drop-indicator-line').forEach(el => el.remove());
+            
+            if(isOverEditor){
+                const lines = document.querySelectorAll('.scene-line');
+                const numLines = lines.length;
+                const dropY = e.clientY;
+                
+                let insertAfterLineIdx = -1;
+                let insertAfterLine = null;
+                
+                lines.forEach((line) => {
+                    const rect = line.getBoundingClientRect();
+                    const lineMiddle = rect.top + rect.height / 2;
+                    const lineIdx = parseInt(line.dataset.lineIdx);
+                    
+                    if(!isNaN(lineIdx) && dropY > lineMiddle) {
+                        insertAfterLineIdx = lineIdx;
+                        insertAfterLine = line;
+                    }
+                });
+                
+                if(insertAfterLine) {
+                    const targetLineIndex = insertAfterLineIdx + 1;
+                    const isEndFrame = targetLineIndex >= numLines && draggedImageIndex !== null;
+                    
+                    let indicator = document.createElement('div');
+                    indicator.className = 'drop-indicator-line' + (isEndFrame ? ' end-frame' : '');
+                    indicator.textContent = isEndFrame ? '🏁 Set as End Frame' : '◆ Insert scene here';
+                    
+                    insertAfterLine.parentNode.insertBefore(indicator, insertAfterLine.nextSibling);
+                }
+            }
+        });
+        
+        // Global mouse up handler
+        document.addEventListener('mouseup', function(e){
+            if(!isDragging) return;
+            
+            document.body.classList.remove('is-dragging-image');
+            document.querySelectorAll('.being-dragged').forEach(el => el.classList.remove('being-dragged'));
+            document.querySelectorAll('.drop-indicator-line').forEach(el => el.remove());
+            
+            // Check if dropped on editor
+            const editor = document.getElementById('richEditor');
+            if(!editor){
+                resetDragState();
+                return;
+            }
+            
+            const editorRect = editor.getBoundingClientRect();
+            const isOverEditor = e.clientX >= editorRect.left && e.clientX <= editorRect.right &&
+                                 e.clientY >= editorRect.top && e.clientY <= editorRect.bottom;
+            
+            if(isOverEditor){
+                // Find drop target
+                const lines = document.querySelectorAll('.scene-line');
+                const numLines = lines.length;
+                const dropY = e.clientY;
+                
+                let targetLineIndex = 0;
+                lines.forEach((line) => {
+                    const rect = line.getBoundingClientRect();
+                    const lineMiddle = rect.top + rect.height / 2;
+                    const lineIdx = parseInt(line.dataset.lineIdx);
+                    
+                    if(!isNaN(lineIdx) && dropY > lineMiddle) {
+                        targetLineIndex = lineIdx + 1;
+                    }
+                });
+                
+                // Handle the drop
+                if(draggedImageIndex !== null){
+                    if(targetLineIndex >= numLines && numLines > 0){
+                        // Set as End Frame
+                        lastFrameIndex = draggedImageIndex;
+                    } else if(targetLineIndex > 0){
+                        // Create/update scene break
+                        const existingBreakIdx = sceneBreaks.findIndex(sb => sb.lineIndex === targetLineIndex);
+                        if(existingBreakIdx !== -1){
+                            sceneBreaks[existingBreakIdx].imgIndex = draggedImageIndex;
+                        } else {
+                            sceneBreaks.push({ 
+                                lineIndex: targetLineIndex, 
+                                imgIndex: draggedImageIndex, 
+                                clipMode: 'blend',
+                                transition: 'blend'
+                            });
+                        }
+                    }
+                } else if(draggedSceneIdx !== null){
+                    if(draggedSceneIdx > 0 && draggedSceneIdx < sceneBreaks.length && targetLineIndex > 0 && targetLineIndex < numLines){
+                        if(targetLineIndex !== sceneBreaks[draggedSceneIdx].lineIndex){
+                            sceneBreaks[draggedSceneIdx].lineIndex = targetLineIndex;
+                        }
+                    }
+                }
+                
+                renderStoryboard();
+            }
+            
+            // Check if dropped on a scene divider (to replace image)
+            const sceneDivider = document.elementFromPoint(e.clientX, e.clientY)?.closest('.scene-divider');
+            if(sceneDivider && draggedImageIndex !== null && !isOverEditor){
+                const sceneIdx = parseInt(sceneDivider.dataset.sceneIdx);
+                if(!isNaN(sceneIdx) && sceneIdx >= 0 && sceneIdx < sceneBreaks.length){
+                    sceneBreaks[sceneIdx].imgIndex = draggedImageIndex;
+                    renderStoryboard();
+                }
+            }
+            
+            resetDragState();
+        });
+        
+        function resetDragState(){
+            isDragging = false;
+            draggedImageIndex = null;
+            draggedSceneIdx = null;
+        }
+        
+        // Keep old handlers for compatibility but they won't be used
+        function handleImageDragStart(e, imgIndex){ e.preventDefault(); }
+        function handleSceneDragStart(e, sceneIdx){ e.preventDefault(); }
         
         function handleEditorDragOver(e){
             if(editorMode !== 'storyboard') return;
