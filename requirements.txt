@@ -1,0 +1,27 @@
+# Veo Web App Dependencies
+
+# Web Framework
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+
+# Database
+sqlalchemy>=2.0.30
+
+# Pydantic for data validation
+pydantic>=2.9.0
+
+# Google Gemini / Veo 3.1
+google-genai>=1.0.0
+
+# OpenAI (for prompt tuning and auto-split)
+openai>=1.10.0
+
+# Utilities
+python-dotenv>=1.0.0
+aiofiles>=23.0.0
+
+# Voice Activity Detection (VAD) - OPTIONAL
+# Uncomment these for silence removal in final video export
+# torch>=2.0.0
+# numpy>=1.24.0
