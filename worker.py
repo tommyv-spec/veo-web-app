@@ -897,10 +897,13 @@ class JobWorker:
                 print(f"[Worker] Frame extraction error: {e}", flush=True)
                 return None
         
-        def enhance_frame_with_nano_banana(frame_path: Path) -> Optional[Path]:
+        def enhance_frame_with_nano_banana(frame_path: Path, original_scene_image: Optional[Path] = None) -> Optional[Path]:
             """
             Enhance an extracted frame using Nano Banana Pro (Gemini 3 Pro Image).
             Upscales and improves quality of the image.
+            
+            If original_scene_image is provided, also corrects facial features to match
+            the original person (fixes AI drift in facial appearance).
             """
             try:
                 import google.genai as genai
@@ -917,9 +920,9 @@ class JobWorker:
                 api_key = api_keys[0]
                 client = genai.Client(api_key=api_key)
                 
-                # Read the image
+                # Read the extracted frame
                 with open(frame_path, 'rb') as f:
-                    image_bytes = f.read()
+                    frame_bytes = f.read()
                 
                 # Determine mime type
                 suffix = frame_path.suffix.lower()
@@ -932,19 +935,51 @@ class JobWorker:
                 
                 print(f"[Worker] Enhancing frame with Nano Banana Pro: {frame_path.name}", flush=True)
                 
-                # Create the enhancement prompt
+                # Build the prompt parts
+                parts = [
+                    types.Part.from_bytes(data=frame_bytes, mime_type=mime_type),
+                ]
+                
+                # If we have original scene image, include it for facial consistency
+                if original_scene_image and original_scene_image.exists():
+                    print(f"[Worker] Including original scene image for facial consistency: {original_scene_image.name}", flush=True)
+                    
+                    with open(original_scene_image, 'rb') as f:
+                        original_bytes = f.read()
+                    
+                    original_suffix = original_scene_image.suffix.lower()
+                    original_mime = {
+                        '.jpg': 'image/jpeg',
+                        '.jpeg': 'image/jpeg',
+                        '.png': 'image/png',
+                        '.webp': 'image/webp'
+                    }.get(original_suffix, 'image/jpeg')
+                    
+                    parts.append(types.Part.from_bytes(data=original_bytes, mime_type=original_mime))
+                    
+                    prompt_text = (
+                        "The first image is an extracted video frame. The second image shows the original person. "
+                        "Enhance the first image while correcting the facial features to match the original person in the second image. "
+                        "This is NOT a face swap - it's the same person, but the AI video generation may have slightly altered their appearance. "
+                        "Correct any facial drift: restore accurate facial structure, skin tone, eye shape, nose shape, and other features to match the original. "
+                        "Also upscale to higher resolution, reduce compression artifacts, and improve overall image quality. "
+                        "Keep the exact pose, expression, lighting, background, and composition from the first image - only correct the facial features and enhance quality."
+                    )
+                else:
+                    # No reference image - just enhance quality
+                    prompt_text = (
+                        "Upscale this image to higher resolution while preserving all details. "
+                        "Enhance the image quality, reduce any compression artifacts, "
+                        "and improve sharpness and clarity. Keep the exact same content, "
+                        "colors, and composition - only improve the quality."
+                    )
+                
+                parts.append(types.Part.from_text(text=prompt_text))
+                
                 contents = [
                     types.Content(
                         role="user",
-                        parts=[
-                            types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
-                            types.Part.from_text(
-                                text="Upscale this image to higher resolution while preserving all details. "
-                                     "Enhance the image quality, reduce any compression artifacts, "
-                                     "and improve sharpness and clarity. Keep the exact same content, "
-                                     "colors, and composition - only improve the quality."
-                            )
-                        ]
+                        parts=parts
                     )
                 ]
                 
@@ -1000,6 +1035,9 @@ class JobWorker:
             clip_mode = frames.get("clip_mode", "blend")
             requires_previous = frames.get("requires_previous", False)
             
+            # Store the original scene image for facial consistency correction
+            original_scene_image = frames["start_frame"]  # The original image for this scene
+            
             # Handle "continue" mode - use extracted frame from APPROVED previous clip
             # ONLY if requires_previous is True (meaning previous clip is in SAME scene)
             if clip_mode == "continue" and requires_previous and clip_index > 0:
@@ -1008,7 +1046,8 @@ class JobWorker:
                     extracted = extract_frame_from_video(Path(prev_video), frame_offset=-9)
                     if extracted:
                         # Enhance the extracted frame using Nano Banana Pro
-                        enhanced = enhance_frame_with_nano_banana(extracted)
+                        # Pass the original scene image for facial consistency correction
+                        enhanced = enhance_frame_with_nano_banana(extracted, original_scene_image)
                         start_frame = enhanced
                         print(f"[Worker] Clip {clip_index}: Using {'enhanced' if enhanced != extracted else 'extracted'} frame from APPROVED clip {clip_index - 1}", flush=True)
                     else:
