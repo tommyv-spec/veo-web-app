@@ -669,16 +669,9 @@ class JobWorker:
                     auto_cycle_mode = scenes_data is None or len(scenes_data) == 0
                     
                     if is_last_clip:
-                        # CASE 1: Last clip of the video
-                        if last_frame_index is not None and last_frame_index < num_images:
-                            # Last Frame is defined - use it
-                            use_end_frame = True
-                            actual_end_idx = last_frame_index
-                            end_frame_reason = f"last clip, using Last Frame (image {last_frame_index + 1})"
-                        else:
-                            # No Last Frame defined - no end frame
-                            use_end_frame = False
-                            end_frame_reason = "last clip, no Last Frame defined"
+                        # LAST CLIP: Never assign end frame - let it end naturally
+                        use_end_frame = False
+                        end_frame_reason = "last clip, no end frame (ends naturally)"
                     else:
                         next_info = clip_info[i + 1]
                         next_scene = next_info["scene_index"]
@@ -1124,6 +1117,35 @@ class JobWorker:
                 # This is the uploaded image for this scene (not the extracted frame in CONTINUE mode)
                 scene_image = images[start_index] if start_index < len(images) else images[0]
                 
+                # Calculate dynamic duration for LAST CLIP
+                # Last clip picks from 4, 6, or 8 seconds based on expected speech duration
+                override_duration = None
+                is_last_clip = clip_index == total_clips - 1
+                
+                if is_last_clip:
+                    # Estimate speech duration based on word count
+                    word_count = len(dialogue_text.split())
+                    language = generator.config.language if hasattr(generator.config, 'language') else 'English'
+                    
+                    # Words per second by language (approximate)
+                    wps_map = {
+                        "English": 2.5, "Italian": 2.8, "Spanish": 2.8, "French": 2.5, "German": 2.2,
+                        "Portuguese": 2.7, "Dutch": 2.4, "Polish": 2.3, "Russian": 2.2,
+                        "Japanese": 3.0, "Korean": 3.0, "Chinese": 3.2, "Arabic": 2.3, "Hindi": 2.6, "Turkish": 2.5
+                    }
+                    wps = wps_map.get(language, 2.5)
+                    estimated_duration = word_count / wps
+                    
+                    # Pick the duration slightly above the estimated (4, 6, or 8 seconds)
+                    if estimated_duration <= 3.5:
+                        override_duration = "4"
+                    elif estimated_duration <= 5.5:
+                        override_duration = "6"
+                    else:
+                        override_duration = "8"
+                    
+                    print(f"[Worker] LAST CLIP: {word_count} words, ~{estimated_duration:.1f}s speech → using {override_duration}s duration", flush=True)
+                
                 result = generator.generate_single_clip(
                     start_frame=start_frame,
                     end_frame=end_frame,  # Can be None
@@ -1134,6 +1156,7 @@ class JobWorker:
                     images_list=images,
                     current_end_index=end_index if end_index is not None else start_index,
                     scene_image=scene_image,  # Original scene image for prompt analysis
+                    override_duration=override_duration,  # Dynamic duration for last clip
                 )
                 
                 # Log the prompt that was sent to Veo

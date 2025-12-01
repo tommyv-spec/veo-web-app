@@ -1460,81 +1460,22 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 startIdx = splitIdx;
             }
             
-            // Handle short last line - redistribute last 3-4 lines
-            if(resultLines.length >= 2){
-                const lastLine = resultLines[resultLines.length - 1];
-                const lastWordCount = lastLine.split(/\s+/).length;
-                
-                // If last line is too short (< target - 4)
-                if(lastWordCount < TARGET_WORDS - 4){
-                    console.log(`[SmartSplit] Last line too short: ${lastWordCount} words`);
-                    
-                    // Take last 3 or 4 lines to redistribute
-                    const linesToRedistribute = Math.min(resultLines.length, lastWordCount < TARGET_WORDS - 8 ? 4 : 3);
-                    const lastLines = resultLines.splice(-linesToRedistribute);
-                    const allWords = lastLines.join(' ').split(/\s+/);
-                    const totalWords = allWords.length;
-                    
-                    console.log(`[SmartSplit] Redistributing ${totalWords} words from last ${linesToRedistribute} lines`);
-                    
-                    // Calculate how many lines we need (each ~TARGET_WORDS)
-                    const numNewLines = Math.ceil(totalWords / TARGET_WORDS);
-                    const wordsPerLine = Math.ceil(totalWords / numNewLines);
-                    
-                    console.log(`[SmartSplit] Creating ${numNewLines} new lines (~${wordsPerLine} words each)`);
-                    
-                    let wordIdx = 0;
-                    for(let i = 0; i < numNewLines; i++){
-                        const isLastNewLine = (i === numNewLines - 1);
-                        const targetEnd = isLastNewLine ? totalWords : wordIdx + wordsPerLine;
-                        
-                        // Look for punctuation near target end
-                        let splitAt = targetEnd;
-                        
-                        if(!isLastNewLine){
-                            // Search for hard stop in ±2 range
-                            for(const offset of [0, 1, -1, 2, -2]){
-                                const checkPos = targetEnd + offset - 1;  // 0-indexed
-                                if(checkPos >= wordIdx && checkPos < totalWords - 1){
-                                    const word = allWords[checkPos];
-                                    if(HARD_STOPS.includes(word.slice(-1))){
-                                        splitAt = checkPos + 1;
-                                        console.log(`[SmartSplit] Found HARD STOP at ${splitAt}: "${word}"`);
-                                        break;
-                                    }
-                                }
-                            }
-                            
-                            // If no hard stop, look for soft stop in ±1 range
-                            if(splitAt === targetEnd){
-                                for(const offset of [0, 1, -1]){
-                                    const checkPos = targetEnd + offset - 1;
-                                    if(checkPos >= wordIdx && checkPos < totalWords - 1){
-                                        const word = allWords[checkPos];
-                                        if(SOFT_STOPS.includes(word.slice(-1))){
-                                            splitAt = checkPos + 1;
-                                            console.log(`[SmartSplit] Found SOFT STOP at ${splitAt}: "${word}"`);
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        
-                        const newLine = allWords.slice(wordIdx, splitAt).join(' ');
-                        resultLines.push(newLine);
-                        console.log(`[SmartSplit] New line: ${splitAt - wordIdx} words`);
-                        wordIdx = splitAt;
-                    }
-                }
-            }
+            // NOTE: We no longer redistribute last lines
+            // Last clip can be 4-8 seconds, and we dynamically pick the best duration
             
             // Final log
             console.log(`[SmartSplit] === ${resultLines.length} lines ===`);
             resultLines.forEach((line, idx) => {
                 const wc = line.split(/\s+/).length;
                 const estSec = wc / wordsPerSec;
-                console.log(`[SmartSplit] Line ${idx + 1}: ${wc} words, ~${estSec.toFixed(1)}s`);
+                const isLast = idx === resultLines.length - 1;
+                if (isLast) {
+                    // Last clip picks from 4, 6, or 8 seconds
+                    const bestDuration = estSec <= 4 ? 4 : (estSec <= 6 ? 6 : 8);
+                    console.log(`[SmartSplit] Line ${idx + 1}: ${wc} words, ~${estSec.toFixed(1)}s (LAST CLIP - will use ${bestDuration}s)`);
+                } else {
+                    console.log(`[SmartSplit] Line ${idx + 1}: ${wc} words, ~${estSec.toFixed(1)}s`);
+                }
             });
             
             return resultLines;
@@ -2583,14 +2524,26 @@ Example: A realistic vertical video of a professional presenter speaking directl
             const numPairs=useInterpolation?(numImages>1?numImages-1:1):numImages;
             const singleImageMode=numImages===1;
             
+            const totalLines = formattedLines.length;
             let html='',issues=0,okCount=0;
             formattedLines.forEach((line,idx)=>{
                 const parts=line.split('|');if(parts.length<2)return;
                 const lineNum=parts[0].trim(),text=parts.slice(1).join('|').trim(),wordCount=text.split(/\s+/).filter(w=>w).length,duration=(wordCount/wps).toFixed(1);
+                const isLastLine = idx === totalLines - 1;
                 let sc,st,si;
-                if(wordCount<minWords){sc='line-short';st='⚠️ Too short';si=`Need ${minWords-wordCount}+ more`;issues++;}
-                else if(wordCount>maxWords){sc='line-long';st='⚠️ Too long';si=`${wordCount-maxWords} over`;issues++;}
-                else{sc='line-ok';st='✓ OK';si='';okCount++;}
+                
+                if(isLastLine){
+                    // LAST LINE: Always OK - can be 4-8 seconds, pick best duration dynamically
+                    const estDuration = wordCount / wps;
+                    const bestDuration = estDuration <= 4 ? 4 : (estDuration <= 6 ? 6 : 8);
+                    sc='line-ok';st='✓ OK';si=`Last clip: ${bestDuration}s`;okCount++;
+                } else if(wordCount<minWords){
+                    sc='line-short';st='⚠️ Too short';si=`Need ${minWords-wordCount}+ more`;issues++;
+                } else if(wordCount>maxWords){
+                    sc='line-long';st='⚠️ Too long';si=`${wordCount-maxWords} over`;issues++;
+                } else {
+                    sc='line-ok';st='✓ OK';si='';okCount++;
+                }
                 
                 // Calculate which images this clip will use
                 let imageInfo='';
@@ -2612,7 +2565,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 
                 html+=`<div class="line-check ${sc}"><span class="line-num">#${lineNum}</span><span class="line-status">${st}</span>${imageInfo}<span class="line-info">${wordCount} words → ~${duration}s ${si?'('+si+')':''}</span></div>`;
             });
-            container.innerHTML=(issues===0?`<div class="validation-summary all-ok">✓ All ${okCount} lines are ~7s (${targetWords}±5 words)</div>`:`<div class="validation-summary has-issues">⚠️ ${issues} line${issues>1?'s':''} need adjustment</div>`)+'<div class="line-validation">'+html+'</div>';
+            container.innerHTML=(issues===0?`<div class="validation-summary all-ok">✓ All ${okCount} lines ready (last clip: dynamic 4-8s)</div>`:`<div class="validation-summary has-issues">⚠️ ${issues} line${issues>1?'s':''} need adjustment</div>`)+'<div class="line-validation">'+html+'</div>';
             container.style.display='block';
         }
         document.getElementById('language').addEventListener('change', function(){

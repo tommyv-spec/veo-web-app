@@ -856,6 +856,7 @@ def build_prompt(
     frame_analysis: Optional[dict] = None,
     user_context_override: Optional[dict] = None,
     redo_feedback: Optional[str] = None,  # User's feedback for redo
+    override_duration: Optional[str] = None,  # Override duration for last clip
 ) -> str:
     """
     PROMPT ASSEMBLY
@@ -958,7 +959,11 @@ def build_prompt(
     # - Use quotation marks for dialogue
     # - Use "without" for negative prompts
     
-    duration = float(config.duration.value if hasattr(config.duration, 'value') else config.duration)
+    # Use override duration if provided (for last clip)
+    if override_duration:
+        duration = float(override_duration)
+    else:
+        duration = float(config.duration.value if hasattr(config.duration, 'value') else config.duration)
     speech_end_time = duration - 1.0  # Leave 1 second for silence
     
     # Extract accent info from voice profile
@@ -1462,12 +1467,15 @@ class VeoGenerator:
         current_end_index: int,
         scene_image: Optional[Path] = None,  # Original scene image for analysis (may differ from start_frame in CONTINUE mode)
         redo_feedback: Optional[str] = None,  # User's feedback for redo - what should be different
+        override_duration: Optional[str] = None,  # Override duration for this specific clip (e.g., "4" for last clip)
     ) -> Dict[str, Any]:
         """Generate a single video clip with retry logic."""
         
         vlog(f"[VeoGenerator] Generating clip {clip_index}: '{dialogue_line[:50]}...'")
         if redo_feedback:
             vlog(f"[VeoGenerator] Redo feedback: '{redo_feedback}'")
+        if override_duration:
+            vlog(f"[VeoGenerator] Using override duration: {override_duration}s")
         
         result = {
             "success": False,
@@ -1562,6 +1570,7 @@ class VeoGenerator:
                     frame_analysis=clip_frame_analysis,  # Per-scene analysis (based on scene_image)
                     user_context_override=self.enriched_context,  # User overrides (if any)
                     redo_feedback=self._current_redo_feedback,  # User's feedback for redo
+                    override_duration=override_duration,  # Override duration for last clip
                 )
                 result["prompt_text"] = prompt_text
             except Exception as e:
@@ -1614,7 +1623,11 @@ class VeoGenerator:
                     
                     aspect = self.config.aspect_ratio.value if hasattr(self.config.aspect_ratio, 'value') else self.config.aspect_ratio
                     res = self.config.resolution.value if hasattr(self.config.resolution, 'value') else self.config.resolution
-                    dur = self.config.duration.value if hasattr(self.config.duration, 'value') else self.config.duration
+                    # Use override duration if provided (for last clip dynamic duration)
+                    if override_duration:
+                        dur = override_duration
+                    else:
+                        dur = self.config.duration.value if hasattr(self.config.duration, 'value') else self.config.duration
                     
                     cfg = types.GenerateVideosConfig(
                         aspect_ratio=aspect,
