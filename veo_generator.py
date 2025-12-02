@@ -406,23 +406,23 @@ def describe_frame(image_path: str, openai_key: Optional[str] = None) -> str:
 
 def analyze_dialogue_for_gestures(dialogue_line: str, language: str, openai_key: Optional[str] = None) -> dict:
     """
-    Analyze the dialogue line to determine appropriate gestures, expressions, and body language.
+    Analyze dialogue to determine appropriate expressions, gestures, and delivery.
     
     Returns dict with:
-    - emotion: primary emotion (excited, sad, thoughtful, angry, neutral, etc.)
+    - emotion: primary emotion
     - intensity: low, medium, high
-    - suggested_expression: facial expression description
-    - suggested_gestures: hand/body gesture description
-    - suggested_posture: body posture description
-    - delivery_style: how the line should be delivered
+    - suggested_expression: facial expression
+    - suggested_gestures: hand/body gestures
+    - suggested_posture: body posture
+    - delivery_style: how to deliver the line
     """
     default_result = {
         "emotion": "neutral",
         "intensity": "medium",
-        "suggested_expression": "Natural, engaged expression",
-        "suggested_gestures": "Natural hand movements while speaking",
-        "suggested_posture": "Upright, attentive posture",
-        "delivery_style": "Conversational, natural delivery"
+        "suggested_expression": "natural engaged expression",
+        "suggested_gestures": "natural hand movements",
+        "suggested_posture": "upright attentive posture",
+        "delivery_style": "conversational natural delivery"
     }
     
     client = get_openai_client(openai_key)
@@ -433,18 +433,18 @@ def analyze_dialogue_for_gestures(dialogue_line: str, language: str, openai_key:
         system_msg = """You analyze dialogue lines to determine appropriate non-verbal communication.
 
 Given a line of dialogue, determine:
-1. EMOTION: The primary emotion (excited, happy, sad, angry, frustrated, thoughtful, surprised, worried, confident, neutral, empathetic, persuasive, curious, skeptical)
+1. EMOTION: Primary emotion (excited, happy, sad, angry, frustrated, thoughtful, surprised, worried, confident, neutral, empathetic, persuasive, curious, skeptical)
 2. INTENSITY: How strongly expressed (low, medium, high)
-3. EXPRESSION: Specific facial expression (be precise: "raised eyebrows with slight smile", "furrowed brow, tight lips", etc.)
-4. GESTURES: Specific hand/arm gestures (be precise: "open palms facing up", "pointing finger for emphasis", "hands clasped together", etc.)
-5. POSTURE: Body posture (be precise: "leaning forward engaged", "relaxed shoulders back", "slight head tilt", etc.)
-6. DELIVERY: How to speak the line (be precise: "slow and deliberate", "quick and energetic", "soft and empathetic", etc.)
+3. EXPRESSION: Specific facial expression (e.g., "raised eyebrows with slight smile", "furrowed brow")
+4. GESTURES: Hand/arm gestures (e.g., "open palms", "pointing for emphasis", "hands together")
+5. POSTURE: Body posture (e.g., "leaning forward", "relaxed shoulders", "slight head tilt")
+6. DELIVERY: How to speak it (e.g., "slow and deliberate", "energetic", "soft and warm")
 
-Respond ONLY with valid JSON, no other text."""
+Respond ONLY with valid JSON."""
 
         user_msg = f"""Dialogue line ({language}): "{dialogue_line}"
 
-Analyze this line and provide appropriate non-verbal cues. Respond with JSON:
+Respond with JSON:
 {{
   "emotion": "...",
   "intensity": "...",
@@ -468,7 +468,6 @@ Analyze this line and provide appropriate non-verbal cues. Respond with JSON:
         
         # Parse JSON response
         import json
-        # Remove markdown code blocks if present
         if result_text.startswith("```"):
             result_text = result_text.split("```")[1]
             if result_text.startswith("json"):
@@ -477,8 +476,6 @@ Analyze this line and provide appropriate non-verbal cues. Respond with JSON:
         
         result = json.loads(result_text)
         vlog(f"[DIALOGUE ANALYSIS] Emotion: {result.get('emotion')}, Intensity: {result.get('intensity')}")
-        vlog(f"[DIALOGUE ANALYSIS] Expression: {result.get('suggested_expression')}")
-        vlog(f"[DIALOGUE ANALYSIS] Gestures: {result.get('suggested_gestures')}")
         
         return {
             "emotion": result.get("emotion", "neutral"),
@@ -859,22 +856,16 @@ def build_prompt(
     override_duration: Optional[str] = None,  # Override duration for last clip
 ) -> str:
     """
-    PROMPT ASSEMBLY
+    VEO 3.1 PROMPT BUILDER
     
-    Builds the final prompt using:
-    1. FRAME ANALYSIS (default) - auto-detected from image
-    2. USER CONTEXT (override) - adds to or overrides frame analysis
-    3. DIALOGUE ANALYSIS - gestures/expressions based on line content
-    4. REDO FEEDBACK - user's specific feedback for regeneration (if any)
+    KEY PRINCIPLES:
+    1. 🚫 NO VISUAL REDESCRIPTION: The image locks appearance
+    2. ✅ RAW/DOCUMENTARY STYLE: Not "cinematic" - prevents AI glossy look
+    3. ✅ STATIC CAMERA: For talking heads, locked-off camera preserves lip-sync
+    4. ✅ VOICE PROFILE: Extract and pass voice traits correctly
+    5. ✅ "Character says:" syntax for Veo lip-sync engine
     
     Priority: Redo feedback > User context > Dialogue analysis > Frame analysis > Defaults
-    
-    PROMPT STRUCTURE (based on Veo 3.1 best practices):
-    - Front-load critical details (first 10% gets 45% attention)
-    - Use "without" instead of "no" for negatives
-    - Use professional cinematic terminology
-    - Quotation marks for dialogue
-    - Separate sections for different expert networks
     """
     vlog(f"[ROUTING] Building prompt for clip {clip_index}...")
     if redo_feedback:
@@ -894,7 +885,6 @@ def build_prompt(
     
     # === 3. MERGE: User context > Dialogue analysis > Frame analysis > Defaults ===
     def get_value(key, frame_key=None, dialogue_key=None, default=""):
-        """Get value with priority: user_context > dialogue_analysis > frame_analysis > default"""
         if frame_key is None:
             frame_key = key
         if dialogue_key is None:
@@ -914,140 +904,126 @@ def build_prompt(
             
         return default
     
-    # Subject details - now uses dialogue analysis for expression/gestures
-    facial_expression = get_value("facial_expression", "facial_expression", "suggested_expression", "natural expression")
+    # === 4. EXTRACT VALUES ===
+    facial_expression = get_value("facial_expression", "facial_expression", "suggested_expression", "natural engaged expression")
     body_language = get_value("body_language", "body_language", "suggested_posture", "natural posture")
-    suggested_gestures = dialogue_analysis.get("suggested_gestures", "natural hand movements while speaking")
+    suggested_gestures = dialogue_analysis.get("suggested_gestures", "natural hand movements")
     
-    # Action
-    current_action = get_value("subject_action", "current_action", None, "speaking naturally to camera")
-    
-    # Scene/atmosphere
-    atmosphere = get_value("atmosphere", "atmosphere", None, "natural soft lighting")
-    background = get_value("background_action", "background_description", None, "static background")
-    setting = frame_analysis.get("setting_type", "indoor setting")
-    
-    # Voice - use dialogue analysis for delivery style
-    voice_tone = get_value("voice_tone", "suggested_voice_tone", None, "natural speaking voice")
-    delivery_style = get_value("delivery_style", "suggested_delivery", "delivery_style", "natural conversation")
-    
-    # Emotion context from dialogue
+    # Emotion and delivery
     emotion = dialogue_analysis.get("emotion", "neutral")
     intensity = dialogue_analysis.get("intensity", "medium")
+    delivery_style = get_value("delivery_style", "suggested_delivery", "delivery_style", "natural conversational")
     
-    # Camera
-    camera_motion = get_value("camera_motion", "camera_motion", None, "static locked-off tripod")
+    # === 5. EXTRACT VOICE PROFILE PROPERLY ===
+    # Parse the voice profile to extract key traits for Veo
+    voice_texture = ""
+    voice_tone = ""
+    voice_accent = ""
+    voice_signature = ""
     
-    # === 4. BUILD VISUAL DESCRIPTION ===
-    user_context_raw = getattr(config, 'user_context', '') or ''
+    if voice_profile:
+        lines = voice_profile.split('\n')
+        for line in lines:
+            line_lower = line.lower().strip()
+            line_clean = line.strip()
+            
+            # Extract texture (raspy, smooth, gravelly, etc.)
+            if 'texture:' in line_lower:
+                voice_texture = line_clean.split(':', 1)[1].strip() if ':' in line_clean else ""
+            elif 'quality:' in line_lower and not voice_texture:
+                voice_texture = line_clean.split(':', 1)[1].strip() if ':' in line_clean else ""
+            
+            # Extract tone
+            if 'tone:' in line_lower:
+                voice_tone = line_clean.split(':', 1)[1].strip() if ':' in line_clean else ""
+            
+            # Extract accent
+            if 'accent:' in line_lower:
+                accent_val = line_clean.split(':', 1)[1].strip() if ':' in line_clean else ""
+                if accent_val and 'none' not in accent_val.lower() and 'neutral' not in accent_val.lower():
+                    voice_accent = accent_val
+            
+            # Extract signature traits
+            if 'signature' in line_lower and 'trait' in line_lower:
+                voice_signature = line_clean.split(':', 1)[1].strip() if ':' in line_clean else ""
     
-    if config.use_frame_vision and config.use_openai_prompt_tuning:
-        start_desc = frame_analysis.get("visual_description", "")
-    else:
-        start_desc = ""
+    # Build consolidated voice instruction for Veo
+    voice_parts = []
+    if voice_texture:
+        voice_parts.append(voice_texture)
+    if voice_tone:
+        voice_parts.append(voice_tone)
+    if voice_signature:
+        voice_parts.append(voice_signature)
+    if voice_accent:
+        voice_parts.append(f"accent: {voice_accent}")
     
-    visual_description = build_visual_description(
-        BASE_PROMPT, start_desc, 
-        {**frame_analysis, **user_context_override},  # Merged context
-        dialogue_line, language, openai_key
-    ) if config.use_openai_prompt_tuning else f"{BASE_PROMPT}. {user_context_raw}"
-
-    # === 5. BUILD OPTIMIZED PROMPT STRUCTURE ===
-    # Based on Veo 3.1 best practices:
-    # - Formula: [Cinematography] + [Subject] + [Action] + [Context] + [Style & Ambiance]
-    # - Front-load critical visual/audio requirements
-    # - Use quotation marks for dialogue
-    # - Use "without" for negative prompts
+    voice_instruction = ", ".join(voice_parts) if voice_parts else "natural authentic voice"
     
-    # Use override duration if provided (for last clip)
+    vlog(f"[VOICE] Extracted - Texture: {voice_texture}, Tone: {voice_tone}, Accent: {voice_accent}")
+    vlog(f"[VOICE] Final instruction: {voice_instruction}")
+    
+    # === 6. CALCULATE TIMING ===
     if override_duration:
         duration = float(override_duration)
     else:
         duration = float(config.duration.value if hasattr(config.duration, 'value') else config.duration)
-    speech_end_time = duration - 1.0  # Leave 1 second for silence
+    speech_end_time = duration - 1.0
     
-    # Extract accent info from voice profile
-    accent_line = "completely neutral, accentless"
-    if voice_profile:
-        if "ACCENT:" in voice_profile:
-            accent_match = voice_profile.split("ACCENT:")[1].split("\n")[0].strip() if "ACCENT:" in voice_profile else ""
-            if accent_match and "NONE" not in accent_match.upper():
-                accent_line = accent_match
+    # === 7. BUILD THE PROMPT ===
     
-    # === BUILD THE PROMPT IN OPTIMAL ORDER ===
-    # TIER 1: FRAMING (most critical - front-loaded)
-    shot_section = f"""Medium shot, {camera_motion}, subject centered in frame.
-The person from the start frame speaks directly to camera.
-Photorealistic, natural, like a real video recording."""
+    # SEGMENT A: CAMERA & STYLE
+    camera_section = """Style: Raw, realistic footage. No filters.
+Camera: Static locked-off shot, sharp focus on subject. Medium shot framing."""
 
-    # TIER 2: SUBJECT (who is in the scene)
-    subject_section = f"""The speaker maintains exact appearance and clothing from start frame.
+    # SEGMENT B: SUBJECT (reference image as source of truth)
+    subject_section = f"""Subject Behavior: The subject in the frame speaks directly to camera.
 Expression: {facial_expression}. Posture: {body_language}.
-Lips move in perfect sync with every spoken word - this is on-camera speech, not voiceover."""
-
-    # TIER 3: ACTION (what happens)
-    action_section = f"""Action: {current_action}.
 Gestures: {suggested_gestures}.
-All movements natural and realistic."""
+Lip movements precisely synchronized to speech."""
 
-    # TIER 4: DIALOGUE (using quotation marks per Google's format)
-    dialogue_section = f"""The speaker says in {language}, "{dialogue_line}"
-Voice: {voice_tone}, {delivery_style}, {emotion} emotion at {intensity} intensity.
-Voice profile: {accent_line}.
-Timing: Speech completes by {speech_end_time:.1f} seconds. Final {1.0} second is complete silence with natural stillness."""
+    # SEGMENT C: AUDIO & VOICE (most important for your use case)
+    # Using Veo 3.1 syntax: 'Character says: "..."' triggers lip-sync
+    audio_section = f"""Audio: High-fidelity isolated vocals. Studio quality. Dead silent environment.
 
-    # TIER 5: SCENE/CONTEXT
-    scene_section = f"""Setting: {setting}. {start_desc}
-Lighting: {atmosphere}.
-Background: {background}."""
+Character says in {language}: "{dialogue_line}"
 
-    # TIER 6: AUDIO ENVIRONMENT (critical for your requirements)
-    audio_section = f"""Audio environment: Studio recording booth, completely dead silent.
-The ONLY sound is the speaker's voice, nothing else.
-Recording quality: Broadcast-quality isolated voice, professional microphone."""
+Voice Instructions: {voice_instruction}
+Delivery: {delivery_style}, {emotion} emotion, {intensity} intensity.
+Timing: Speech from 0s to {speech_end_time:.1f}s. Final moment is silence with stillness.
+(no subtitles)"""
 
-    # TIER 7: STYLE & AMBIANCE
-    style_section = """Style: Photorealistic, natural, authentic - like a real video recording.
-Natural colors and lighting, accurate skin tones."""
-
-    # NEGATIVE PROMPTS (using "without" method - 85% more effective than "no")
-    negative_section = """Without: text overlays, subtitles, captions, burned-in text, graphics, watermarks, logos, titles, lower thirds.
-Without: fake laughter, audience sounds, applause, crowd noise, background music, ambient noise, sound effects.
-Without: morphing faces, distorted limbs, extra fingers, anatomical errors, jerky movements, teleportation."""
+    # SEGMENT D: NEGATIVE PROMPTS
+    negative_section = """Without: subtitles, text overlay, captions, watermarks, logos.
+Without: cinematic lighting, dramatic filters, artificial color grading.
+Without: morphing, face distortion, anatomical errors, jerky movements.
+Without: background music, ambient noise, crowd sounds, applause, laughter."""
 
     # === ASSEMBLE FINAL PROMPT ===
-    # Priority instruction at the very top if redo feedback exists
     if redo_feedback:
-        priority_section = f"""=== PRIORITY INSTRUCTION (APPLY FIRST) ===
+        priority_section = f"""=== PRIORITY INSTRUCTION ===
 {redo_feedback}
-==="""
+===
+
+"""
     else:
         priority_section = ""
     
-    # Build the complete prompt in optimal order
-    final_prompt = f"""{priority_section}
-
-{shot_section}
+    # Include full voice profile at the end for reference
+    final_prompt = f"""{priority_section}{camera_section}
 
 {subject_section}
 
-{action_section}
-
-{dialogue_section}
-
-{scene_section}
-
 {audio_section}
-
-{style_section}
 
 {negative_section}
 
-VOICE PROFILE:
+=== VOICE PROFILE REFERENCE ===
 {voice_profile}""".strip()
     
     vlog(f"[ROUTING] Final prompt length: {len(final_prompt)} chars")
-    vlog(f"[ROUTING] Prompt preview: {final_prompt[:500]}...")
+    
+    return final_prompt
     
     return final_prompt
 
