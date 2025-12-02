@@ -889,7 +889,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
             // Reset storyboard
             sceneBreaks = [];
             lastFrameIndex = null;
-            editorMode = 'auto-cycle';
+            editorMode = 'auto';
             updateUIMode();
         }
         
@@ -1797,18 +1797,45 @@ Example: A realistic vertical video of a professional presenter speaking directl
             const fullText = document.getElementById('dialogueInput').value;
             const numImages = uploadedFilesData.length;
             
-            // Get language settings for splitting
-            const language = document.getElementById('language').value;
-            const wps = SPEAKING_RATES[language] || 2.5;
+            let lines;
             
-            // Use custom words per line if set
-            const customWords = parseInt(document.getElementById('wordsPerLine')?.value) || 0;
-            const targetWords = customWords > 0 ? customWords : Math.round(wps * 6);
-            const minWords = Math.round(targetWords * 0.7);
-            const maxWords = Math.round(targetWords * 1.3);
+            // Check if auto-split is enabled
+            const autoSplitEnabled = isAutoSplitEnabled();
             
-            // Auto-split the text
-            const lines = smartSplitText(fullText, minWords, targetWords, maxWords);
+            if(autoSplitEnabled) {
+                // AUTO-SPLIT: Split by speaking rate
+                const language = document.getElementById('language').value;
+                const wps = SPEAKING_RATES[language] || 2.5;
+                
+                // Use custom words per line if set
+                const customWords = parseInt(document.getElementById('wordsPerLine')?.value) || 0;
+                const targetWords = customWords > 0 ? customWords : Math.round(wps * 6);
+                const minWords = Math.round(targetWords * 0.7);
+                const maxWords = Math.round(targetWords * 1.3);
+                
+                // Combine all text first (remove existing line breaks), then split
+                const combinedText = fullText
+                    .split('\n')
+                    .map(l => {
+                        // Remove line numbers if present
+                        const match = l.match(/^\d+\|(.*)$/);
+                        return match ? match[1].trim() : l.trim();
+                    })
+                    .filter(l => l)
+                    .join(' ');
+                
+                lines = smartSplitText(combinedText, minWords, targetWords, maxWords);
+            } else {
+                // MANUAL: Each line in dialogueInput = 1 clip (don't re-split)
+                lines = fullText
+                    .split('\n')
+                    .map(l => {
+                        // Remove line numbers if present
+                        const match = l.match(/^\d+\|(.*)$/);
+                        return match ? match[1].trim() : l.trim();
+                    })
+                    .filter(l => l);
+            }
             
             // Use the shared render function
             renderStoryboardWithLines(lines);
@@ -3555,11 +3582,28 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 
                 console.log('[Export] Sending request with settings:', settings);
                 
-                const response = await fetch(`${API}/jobs/${jobId}/export-final`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(settings)
-                });
+                // Create AbortController for timeout (5 minutes max)
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 300000); // 5 min timeout
+                
+                let response;
+                try {
+                    response = await fetch(`${API}/jobs/${jobId}/export-final`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(settings),
+                        signal: controller.signal
+                    });
+                } catch (fetchError) {
+                    clearTimeout(timeoutId);
+                    // Check if it was an abort (timeout)
+                    if (fetchError.name === 'AbortError') {
+                        throw new Error('Export timed out after 5 minutes. The video might still be processing on the server. Try refreshing and downloading manually.');
+                    }
+                    // Network error
+                    throw new Error(`Network error: ${fetchError.message}. Check if the server is running.`);
+                }
+                clearTimeout(timeoutId);
                 
                 clearInterval(timerInterval);
                 clearInterval(stageInterval);

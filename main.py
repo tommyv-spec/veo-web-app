@@ -1314,6 +1314,10 @@ async def export_final_video(
     output_path = Path(job.output_dir) / output_filename
     
     try:
+        print(f"[Export] Starting export for job {job_id}")
+        print(f"[Export] Clips to process: {len(clip_info)}")
+        print(f"[Export] Output path: {output_path}")
+        
         # Process the export with per-clip trim settings
         stats = process_export(
             clip_info=clip_info,
@@ -1327,6 +1331,8 @@ async def export_final_video(
             vad_pad_after=settings.vad_pad_after
         )
         
+        print(f"[Export] Success! Stats: {stats}")
+        
         return {
             "success": True,
             "filename": output_filename,
@@ -1335,6 +1341,9 @@ async def export_final_video(
         }
         
     except Exception as e:
+        import traceback
+        print(f"[Export] ERROR: {str(e)}")
+        print(f"[Export] Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
 
 

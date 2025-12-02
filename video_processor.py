@@ -277,9 +277,17 @@ def trim_video(
     frames_end: int = 0
 ) -> None:
     """Trim frames from start and end of video."""
+    print(f"[VideoProcessor] trim_video: {src} -> {out}")
+    print(f"[VideoProcessor]   frames_start={frames_start}, frames_end={frames_end}")
+    
+    if not src.exists():
+        raise RuntimeError(f"Source file does not exist: {src}")
+    
     info = ffprobe_json(src)
     fps = get_fps(info)
     duration = get_duration(info)
+    
+    print(f"[VideoProcessor]   fps={fps}, duration={duration}")
     
     cut_start_seconds = frames_start / fps
     cut_end_seconds = frames_end / fps
@@ -296,13 +304,18 @@ def trim_video(
         str(out)
     ]
     
+    print(f"[VideoProcessor]   Running ffmpeg: {' '.join(cmd[:5])}...")
     code, _, err = run(cmd)
     if code != 0:
+        print(f"[VideoProcessor]   ERROR: {err}")
         raise RuntimeError(f"Failed to trim video: {err}")
+    print(f"[VideoProcessor]   trim_video completed")
 
 
 def concat_videos(files: List[Path], output: Path) -> None:
     """Concatenate multiple videos into one."""
+    print(f"[VideoProcessor] concat_videos: {len(files)} files -> {output}")
+    
     with tempfile.TemporaryDirectory() as td:
         listfile = Path(td) / "inputs.txt"
         with listfile.open("w", encoding="utf-8") as f:
@@ -316,11 +329,14 @@ def concat_videos(files: List[Path], output: Path) -> None:
             "-c", "copy",
             str(output)
         ]
+        print(f"[VideoProcessor]   Trying stream copy...")
         code, _, _ = run(cmd_copy)
         if code == 0:
+            print(f"[VideoProcessor]   concat_videos completed (stream copy)")
             return
         
         # Fall back to re-encoding
+        print(f"[VideoProcessor]   Stream copy failed, re-encoding...")
         cmd_re = [
             FFMPEG_BIN, "-y",
             "-f", "concat", "-safe", "0", "-i", str(listfile),
@@ -331,7 +347,9 @@ def concat_videos(files: List[Path], output: Path) -> None:
         ]
         code, _, err = run(cmd_re)
         if code != 0:
+            print(f"[VideoProcessor]   ERROR: {err}")
             raise RuntimeError(f"Failed to concatenate videos: {err}")
+        print(f"[VideoProcessor]   concat_videos completed (re-encoded)")
 
 
 def export_final_video(
@@ -367,6 +385,10 @@ def export_final_video(
     Returns:
         dict with processing stats
     """
+    print(f"[VideoProcessor] export_final_video called")
+    print(f"[VideoProcessor] clip_info count: {len(clip_info)}")
+    print(f"[VideoProcessor] output_path: {output_path}")
+    
     if not clip_info:
         raise ValueError("No clips provided")
     
