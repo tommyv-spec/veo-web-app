@@ -18,20 +18,31 @@ load_dotenv()
 def get_gemini_keys_from_env() -> List[str]:
     """Load all Gemini API keys from environment variables"""
     keys = []
+    found_vars = []
     
-    # Check numbered keys (GEMINI_API_KEY_1, GEMINI_API_KEY_2, etc.)
-    for i in range(1, 20):
-        key = os.environ.get(f"GEMINI_API_KEY_{i}")
-        if key and key.strip() and not key.startswith("your-"):
-            keys.append(key.strip())
+    # Method 1: Scan ALL environment variables for any GEMINI/GOOGLE key patterns
+    for var_name, var_value in os.environ.items():
+        if var_name.startswith(("GEMINI_API_KEY", "GEMINI_KEY", "GOOGLE_API_KEY")):
+            if var_value and var_value.strip() and not var_value.startswith("your-"):
+                key = var_value.strip()
+                if key not in keys:
+                    keys.append(key)
+                    found_vars.append(var_name)
     
-    # Also check single key formats
+    # Method 2: Also check single key formats (in case they weren't caught)
     for var in ["GEMINI_API_KEY", "GOOGLE_API_KEY"]:
         key = os.environ.get(var)
-        if key and key.strip() and not key.startswith("your-") and key not in keys:
+        if key and key.strip() and not key.startswith("your-") and key.strip() not in keys:
             keys.append(key.strip())
+            if var not in found_vars:
+                found_vars.append(var)
     
     print(f"[Config] Loaded {len(keys)} Gemini API keys from environment", flush=True)
+    if found_vars:
+        # Sort and log found variable names (without revealing the keys)
+        found_vars.sort()
+        print(f"[Config] Found key variables: {found_vars}", flush=True)
+    
     return keys
 
 
