@@ -253,20 +253,26 @@ def analyze_frame(image_path: str, openai_key: Optional[str] = None) -> dict:
 
 Analyze this frame and extract EVERYTHING needed for video generation.
 
-=== CRITICAL INSTRUCTION ===
-This is for a SOLO SPEAKER video with ISOLATED AUDIO.
-NEVER mention or imply:
-- Audience, crowd, spectators, attendees, viewers
-- Stage, podium, conference, presentation, keynote, TED talk
-- Live performance, public speaking event
-- Applause, reactions, laughter
-- Any suggestion that other people are watching live
+=== CRITICAL AUDIO INSTRUCTION ===
+This is for a SOLO SPEAKER video with COMPLETELY ISOLATED AUDIO.
+The final video will have ONLY the speaker's voice - NO OTHER SOUNDS.
 
-Instead, describe settings neutrally:
+NEVER mention, imply, or suggest ANY of these in your analysis:
+- Audience, crowd, spectators, attendees, viewers, listeners
+- Stage, podium, conference, presentation, keynote, TED talk, seminar
+- Live performance, public speaking event, speech, lecture
+- Applause, reactions, laughter, cheering, clapping
+- Background music, ambient sounds, environmental audio
+- Any suggestion that other people are present or listening
+- Entertainment setting, talk show, interview set, panel
+
+Instead, ALWAYS describe settings as:
 - "conference stage" → "professional studio with backdrop"
-- "speaking to audience" → "speaking to camera"
-- "presentation setting" → "professional recording environment"
+- "talk show set" → "professional recording studio"
+- "speaking to audience" → "speaking directly to camera"
+- "presentation setting" → "solo recording environment"
 - "keynote speaker" → "professional speaker" or "subject matter expert"
+- "interview setting" → "studio recording setup"
 
 === WHAT TO ANALYZE ===
 
@@ -296,7 +302,7 @@ Instead, describe settings neutrally:
 
 4. SETTING & ENVIRONMENT:
    - Where is this? (studio, office, gym, outdoor, home, etc.)
-   - What's in the background? (describe neutrally, no audience)
+   - What's in the background? (describe as studio/recording setup, NOT live event)
    - Lighting quality and type
    - Overall atmosphere/mood of the scene
 
@@ -316,29 +322,30 @@ Instead, describe settings neutrally:
   "body_language": "posture and stance",
   
   "apparent_role": "detected role/profession based on visual cues",
-  "current_action": "what they appear to be doing",
+  "current_action": "what they appear to be doing - ALWAYS speaking to camera",
   
   "objects_in_scene": "list of visible objects",
   "objects_interacting_with": "what they're holding or using",
   "props": "any notable props",
   
   "setting_location": "indoor / outdoor / studio",
-  "setting_type": "specific type (office, gym, studio, etc.) - NEVER conference/stage/event",
-  "background_description": "what's behind them - describe neutrally",
+  "setting_type": "specific type (office, gym, studio, etc.) - NEVER conference/stage/event/talk show",
+  "background_description": "what's behind them - describe as studio setup, NOT live venue",
   "lighting": "lighting description",
-  "atmosphere": "mood/feel of the scene",
+  "atmosphere": "mood/feel of the scene - professional/warm/etc, NOT entertaining/lively",
   
   "suggested_voice_tone": "voice quality that matches this person and role",
   "suggested_delivery": "speaking style appropriate for context",
   "suggested_energy": "low / moderate / high",
   
-  "visual_description": "50-word summary - describe as solo recording, not live event",
+  "visual_description": "50-word summary - describe as solo recording, NEVER as live event",
   "confidence": "high / medium / low - confidence in role detection"
 }
 
 Be SPECIFIC. Don't say "professional" - say "business executive" or "content creator".
 Don't say "nice clothes" - say "dark blue suit with red tie".
-NEVER use words: audience, crowd, stage, conference, keynote, presentation, applause, spectators."""
+
+BANNED WORDS (never use these): audience, crowd, stage, conference, keynote, presentation, applause, spectators, laughter, cheering, talk show, interview set, panel, seminar, lecture, entertainment."""
 
         resp = client.chat.completions.create(
             model=OPENAI_MODEL,
@@ -355,26 +362,40 @@ NEVER use words: audience, crowd, stage, conference, keynote, presentation, appl
         
         result = json.loads(resp.choices[0].message.content)
         
-        # POST-PROCESS: Sanitize any audience-related terms that might have slipped through
-        audience_terms = ['audience', 'crowd', 'spectator', 'attendee', 'viewer', 'stage', 
-                         'conference', 'keynote', 'presentation', 'ted talk', 'applause', 
-                         'laughter', 'live event', 'public speaking']
+        # POST-PROCESS: Sanitize any audience/audio-related terms that might have slipped through
+        # These terms can trigger Veo to add fake laughter, applause, or background music
+        audio_trigger_terms = [
+            'audience', 'crowd', 'spectator', 'attendee', 'viewer', 'listener',
+            'stage', 'podium', 'conference', 'keynote', 'presentation', 'seminar', 'lecture',
+            'ted talk', 'talk show', 'interview set', 'panel', 'forum',
+            'applause', 'laughter', 'cheering', 'clapping', 'reactions',
+            'live event', 'public speaking', 'entertainment', 'performance',
+            'show', 'broadcast', 'program'
+        ]
         
         for key, value in result.items():
             if isinstance(value, str):
                 value_lower = value.lower()
-                for term in audience_terms:
+                for term in audio_trigger_terms:
                     if term in value_lower:
-                        # Replace problematic descriptions
+                        # Replace problematic descriptions with neutral alternatives
                         if key == 'setting_type':
-                            result[key] = 'professional studio'
+                            result[key] = 'professional recording studio'
                         elif key == 'background_description':
-                            result[key] = 'professional backdrop'
+                            result[key] = 'clean professional backdrop'
                         elif key == 'current_action':
                             result[key] = 'speaking directly to camera'
+                        elif key == 'atmosphere':
+                            result[key] = 'professional focused'
                         elif key == 'visual_description':
-                            # Remove audience-related phrases
-                            result[key] = value.replace(term, 'camera').replace('stage', 'studio')
+                            # Clean up the description
+                            cleaned = value
+                            for t in audio_trigger_terms:
+                                cleaned = cleaned.lower().replace(t, 'studio')
+                            result[key] = cleaned
+                        elif key == 'apparent_role':
+                            if 'host' in value_lower or 'presenter' in value_lower:
+                                result[key] = 'professional speaker'
                         vlog(f"[FRAME ANALYSIS] Sanitized '{term}' from {key}")
                         break
         
@@ -984,20 +1005,29 @@ Lip movements precisely synchronized to speech."""
 
     # SEGMENT C: AUDIO & VOICE (most important for your use case)
     # Using Veo 3.1 syntax: 'Character says: "..."' triggers lip-sync
-    audio_section = f"""Audio: High-fidelity isolated vocals. Studio quality. Dead silent environment.
+    audio_section = f"""Audio Environment: Professional recording booth. Completely dead silent. No room ambience.
+The ONLY sound in this video is the speaker's isolated voice. Nothing else.
 
 Character says in {language}: "{dialogue_line}"
 
 Voice Instructions: {voice_instruction}
 Delivery: {delivery_style}, {emotion} emotion, {intensity} intensity.
-Timing: Speech from 0s to {speech_end_time:.1f}s. Final moment is silence with stillness.
-(no subtitles)"""
+Timing: Speech from 0s to {speech_end_time:.1f}s. Final moment is complete silence with stillness.
+(no subtitles) (no background music) (no laughter) (no applause)"""
 
-    # SEGMENT D: NEGATIVE PROMPTS
-    negative_section = """Without: subtitles, text overlay, captions, watermarks, logos.
-Without: cinematic lighting, dramatic filters, artificial color grading.
-Without: morphing, face distortion, anatomical errors, jerky movements.
-Without: background music, ambient noise, crowd sounds, applause, laughter."""
+    # SEGMENT D: NEGATIVE PROMPTS - CRITICAL FOR AUDIO ISOLATION
+    # These prevent Veo from adding unwanted sounds based on visual context
+    negative_section = """Without: subtitles, text overlay, captions, burned-in text, watermarks, logos, lower thirds, graphics.
+Without: cinematic lighting, dramatic filters, artificial color grading, lens flares, film grain.
+Without: morphing, face distortion, anatomical errors, extra limbs, jerky movements, teleportation.
+
+AUDIO ISOLATION (CRITICAL):
+Without: background music, musical score, soundtrack, jingle, theme music.
+Without: laughter, fake laughter, audience laughter, chuckling, giggling.
+Without: applause, clapping, cheering, crowd reactions, audience sounds.
+Without: ambient noise, room tone, echo, reverb, environmental sounds.
+Without: sound effects, whoosh, swoosh, transition sounds.
+The ONLY audio is the speaker's isolated voice. Complete silence otherwise."""
 
     # === ASSEMBLE FINAL PROMPT ===
     if redo_feedback:
