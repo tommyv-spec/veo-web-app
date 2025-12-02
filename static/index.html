@@ -1802,9 +1802,6 @@ Example: A realistic vertical video of a professional presenter speaking directl
             // Check if auto-split is enabled
             const autoSplitEnabled = isAutoSplitEnabled();
             
-            console.log('[renderStoryboard] autoSplitEnabled:', autoSplitEnabled);
-            console.log('[renderStoryboard] fullText (first 100):', fullText.substring(0, 100));
-            
             if(autoSplitEnabled) {
                 // AUTO-SPLIT: Split by speaking rate
                 const language = document.getElementById('language').value;
@@ -1839,9 +1836,6 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     })
                     .filter(l => l);
             }
-            
-            console.log('[renderStoryboard] lines count:', lines.length);
-            console.log('[renderStoryboard] lines:', lines);
             
             // Use the shared render function
             renderStoryboardWithLines(lines);
@@ -2320,26 +2314,45 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 }
             }
             
-            // Store lines properly - don't join with spaces if auto-split is OFF
             const autoSplitEnabled = isAutoSplitEnabled();
-            
-            console.log('[syncAutoCycleFromDOM] autoSplitEnabled:', autoSplitEnabled);
-            console.log('[syncAutoCycleFromDOM] allLines:', allLines);
             
             if(autoSplitEnabled) {
                 // Join all text - will be re-split by renderStoryboard
                 document.getElementById('dialogueInput').value = allLines.join(' ');
+                
+                clearTimeout(window.storyboardUpdateTimeout);
+                window.storyboardUpdateTimeout = setTimeout(() => {
+                    renderStoryboard();
+                }, 600);
             } else {
-                // Keep each line separate - number them
+                // Keep each line separate - just update hidden input, DON'T re-render
                 document.getElementById('dialogueInput').value = allLines.map((l, i) => `${i + 1}|${l}`).join('\n');
+                
+                // Only update line numbers in place without replacing content
+                clearTimeout(window.storyboardUpdateTimeout);
+                window.storyboardUpdateTimeout = setTimeout(() => {
+                    updateAutoCycleLineNumbers();
+                    updateStoryboardSummary();
+                }, 600);
             }
+        }
+        
+        // Update line numbers without re-rendering (preserves cursor)
+        function updateAutoCycleLineNumbers(){
+            const editor = document.getElementById('richEditor');
+            const lineElements = editor.querySelectorAll('.scene-line');
+            const numImages = uploadedFilesData.length;
             
-            console.log('[syncAutoCycleFromDOM] dialogueInput.value:', document.getElementById('dialogueInput').value.substring(0, 100));
-            
-            clearTimeout(window.storyboardUpdateTimeout);
-            window.storyboardUpdateTimeout = setTimeout(() => {
-                renderStoryboard();
-            }, 600);
+            lineElements.forEach((el, idx) => {
+                el.setAttribute('data-line', idx + 1);
+                if(numImages > 0){
+                    el.setAttribute('data-img', `🖼${(idx % numImages) + 1}`);
+                }
+                // Remove placeholder class if has content
+                if(el.textContent.trim()){
+                    el.classList.remove('placeholder-line');
+                }
+            });
         }
         
         function syncStoryboardFromDOM(){
@@ -2435,6 +2448,13 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     }));
                     if(sceneBreaks.length > 0) sceneBreaks[0].lineIndex = 0;
                 }
+                
+                // DON'T re-render - just update summary
+                clearTimeout(window.storyboardUpdateTimeout);
+                window.storyboardUpdateTimeout = setTimeout(() => {
+                    updateStoryboardSummary();
+                }, 600);
+                return;
             }
             
             clearTimeout(window.storyboardUpdateTimeout);
