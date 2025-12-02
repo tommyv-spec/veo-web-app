@@ -780,13 +780,28 @@
                              class="simple-rich-editor" 
                              contenteditable="true"
                              oninput="syncFromSimpleEditor()"
-                             onpaste="handleSimpleEditorPaste(event)">
+                             onpaste="handleSimpleEditorPaste(event)"
+                             onkeydown="handleSimpleEditorKeydown(event)">
                         </div>
                     </div>
                     <textarea id="dialogueInput" style="display:none;"></textarea>
                     <div id="splitStatus" style="font-size:11px;color:var(--text-muted);margin-top:8px;display:none;"></div>
                     <div id="lineValidation" style="margin-top:10px;display:none;"></div>
-                    <p class="tip-text">💡 <strong>Tip:</strong> Just paste your script and it will automatically split into ~7 second clips.</p>
+                    
+                    <!-- Auto-split toggle -->
+                    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding:8px 12px;background:var(--bg-input);border-radius:var(--radius-sm);">
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <span style="font-size:12px;color:var(--text-secondary);">✂️ Auto-split on paste</span>
+                            <span class="help-icon" style="font-size:10px;">?
+                                <div class="tooltip" style="width:220px;">
+                                    <p><strong>ON:</strong> Pasted text is automatically split into ~7 second clips based on language</p>
+                                    <p><strong>OFF:</strong> Each line you type or paste = 1 clip (press Enter for new clip)</p>
+                                </div>
+                            </span>
+                        </div>
+                        <div class="toggle active" id="autoSplitToggle" onclick="toggleAutoSplit()"></div>
+                    </div>
+                    <div id="autoSplitStatus" style="font-size:10px;color:var(--success);margin-top:4px;text-align:right;">Auto-split: ON</div>
                 </div>
                 
                 <div class="card" id="customPromptSection" style="display:none;">
@@ -1318,12 +1333,28 @@ Example: A realistic vertical video of a professional presenter speaking directl
             
             document.getElementById('dialogueInput').value = allLines.join('\n');
             
-            // Debounced re-render to update line numbers
+            // Update line numbers in-place WITHOUT replacing innerHTML
+            // This preserves cursor position
             clearTimeout(window.simpleEditorTimeout);
             window.simpleEditorTimeout = setTimeout(() => {
-                renderSimpleEditor();
+                updateSimpleEditorLineNumbers();
                 validateDialogueLines();
             }, 800);
+        }
+        
+        // Update only line numbers without replacing content
+        function updateSimpleEditorLineNumbers(){
+            const editor = document.getElementById('simpleRichEditor');
+            if(!editor) return;
+            
+            const lines = editor.querySelectorAll('.simple-line');
+            lines.forEach((line, idx) => {
+                line.setAttribute('data-line', idx + 1);
+                // Remove placeholder class if line has content
+                if(line.textContent.trim()){
+                    line.classList.remove('placeholder-line');
+                }
+            });
         }
         
         function handleSimpleEditorPaste(e){
@@ -1335,31 +1366,150 @@ Example: A realistic vertical video of a professional presenter speaking directl
             
             if(!pastedText) return;
             
-            // Use ONLY pasted text (replace, don't append)
-            const fullText = pastedText;
+            const autoSplitEnabled = document.getElementById('autoSplitToggle')?.classList.contains('active') ?? true;
             
-            // Split the text
-            const language = document.getElementById('language').value;
-            const wps = SPEAKING_RATES[language] || 2.5;
-            const targetWords = Math.round(wps * 6);
-            const minWords = Math.round(targetWords * 0.7);
-            const maxWords = Math.round(targetWords * 1.3);
-            const newLines = smartSplitText(fullText, minWords, targetWords, maxWords);
+            if(autoSplitEnabled) {
+                // AUTO-SPLIT MODE: Split pasted text and APPEND to existing content
+                const existingLines = [];
+                editor.querySelectorAll('.simple-line').forEach((line, idx) => {
+                    const text = line.textContent.trim();
+                    if(text && !line.classList.contains('placeholder-line')){
+                        existingLines.push(text);
+                    }
+                });
+                
+                // Split the pasted text
+                const language = document.getElementById('language').value;
+                const wps = SPEAKING_RATES[language] || 2.5;
+                const targetWords = Math.round(wps * 6);
+                const minWords = Math.round(targetWords * 0.7);
+                const maxWords = Math.round(targetWords * 1.3);
+                const newLines = smartSplitText(pastedText, minWords, targetWords, maxWords);
+                
+                // Combine existing + new
+                const allLines = [...existingLines, ...newLines];
+                
+                // Update dialogueInput with numbered lines
+                document.getElementById('dialogueInput').value = allLines.map((l, i) => `${i + 1}|${l}`).join('\n');
+                
+                // Re-render
+                renderSimpleEditor();
+                validateDialogueLines();
+                
+                // Show status
+                const status = document.getElementById('splitStatus');
+                if(status && newLines.length > 0){
+                    status.style.display = 'block';
+                    status.textContent = `✓ Added ${newLines.length} clips (auto-split)`;
+                    status.style.color = 'var(--success)';
+                    setTimeout(() => { status.style.display = 'none'; }, 3000);
+                }
+            } else {
+                // MANUAL MODE: Each line in pasted text becomes a separate clip
+                const pastedLines = pastedText.split('\n').map(l => l.trim()).filter(l => l);
+                
+                if(pastedLines.length === 0) return;
+                
+                // Get existing lines
+                const existingLines = [];
+                editor.querySelectorAll('.simple-line').forEach((line) => {
+                    const text = line.textContent.trim();
+                    if(text && !line.classList.contains('placeholder-line')){
+                        existingLines.push(text);
+                    }
+                });
+                
+                // Combine existing + new (each pasted line = one clip)
+                const allLines = [...existingLines, ...pastedLines];
+                
+                // Update dialogueInput with numbered lines
+                document.getElementById('dialogueInput').value = allLines.map((l, i) => `${i + 1}|${l}`).join('\n');
+                
+                // Re-render
+                renderSimpleEditor();
+                validateDialogueLines();
+                
+                // Show status
+                const status = document.getElementById('splitStatus');
+                if(status){
+                    status.style.display = 'block';
+                    status.textContent = `✓ Added ${pastedLines.length} line${pastedLines.length > 1 ? 's' : ''} (1 line = 1 clip)`;
+                    status.style.color = 'var(--accent)';
+                    setTimeout(() => { status.style.display = 'none'; }, 2000);
+                }
+            }
+        }
+        
+        function updateAutoSplitStatus(){
+            const toggle = document.getElementById('autoSplitToggle');
+            const enabled = toggle?.classList.contains('active') ?? true;
+            const status = document.getElementById('autoSplitStatus');
+            if(status){
+                status.textContent = enabled ? 'Auto-split: ON' : 'Manual: 1 line = 1 clip';
+                status.style.color = enabled ? 'var(--success)' : 'var(--accent)';
+            }
+        }
+        
+        function toggleAutoSplit(){
+            const toggle = document.getElementById('autoSplitToggle');
+            if(toggle){
+                toggle.classList.toggle('active');
+                updateAutoSplitStatus();
+            }
+        }
+        
+        function handleSimpleEditorKeydown(e){
+            const editor = document.getElementById('simpleRichEditor');
             
-            // Update dialogueInput with numbered lines
-            document.getElementById('dialogueInput').value = newLines.map((l, i) => `${i + 1}|${l}`).join('\n');
-            
-            // Re-render
-            renderSimpleEditor();
-            validateDialogueLines();
-            
-            // Show status
-            const status = document.getElementById('splitStatus');
-            if(status && newLines.length > 0){
-                status.style.display = 'block';
-                status.textContent = `✓ Auto-split into ${newLines.length} clips`;
-                status.style.color = 'var(--success)';
-                setTimeout(() => { status.style.display = 'none'; }, 3000);
+            // Handle Enter key - create a new line div
+            if(e.key === 'Enter'){
+                e.preventDefault();
+                
+                // Get current selection
+                const selection = window.getSelection();
+                const range = selection.getRangeAt(0);
+                
+                // Create new line div
+                const newLine = document.createElement('div');
+                newLine.className = 'simple-line';
+                newLine.setAttribute('data-line', editor.querySelectorAll('.simple-line').length + 1);
+                newLine.innerHTML = '<br>'; // Empty line needs a br to be focusable
+                
+                // Find current line and insert after it
+                let currentLine = range.startContainer;
+                while(currentLine && !currentLine.classList?.contains('simple-line')){
+                    currentLine = currentLine.parentNode;
+                }
+                
+                if(currentLine && currentLine.classList?.contains('simple-line')){
+                    // Split text at cursor if in middle of line
+                    const cursorOffset = range.startOffset;
+                    const textContent = currentLine.textContent;
+                    
+                    if(cursorOffset < textContent.length){
+                        // Split the text
+                        const beforeText = textContent.substring(0, cursorOffset);
+                        const afterText = textContent.substring(cursorOffset);
+                        currentLine.textContent = beforeText || '';
+                        newLine.textContent = afterText || '';
+                        newLine.innerHTML = newLine.innerHTML || '<br>';
+                    }
+                    
+                    currentLine.after(newLine);
+                } else {
+                    // Append at end
+                    editor.appendChild(newLine);
+                }
+                
+                // Move cursor to new line
+                const newRange = document.createRange();
+                newRange.setStart(newLine, 0);
+                newRange.collapse(true);
+                selection.removeAllRanges();
+                selection.addRange(newRange);
+                
+                // Sync to hidden input
+                syncFromSimpleEditor();
             }
         }
         
