@@ -992,49 +992,45 @@ def build_prompt(
     speech_end_time = duration - 1.0
     
     # === 7. BUILD THE PROMPT ===
-    # Structure: Audio/Voice FIRST (most important), then Voice Profile, Camera, Subject, Negatives
+    # Structure: Voice Profile FIRST, then Audio/Dialogue, Camera, Subject, Negatives
     
-    # SEGMENT 1: AUDIO & VOICE (PRIORITY - FRONT-LOADED)
-    audio_section = f"""Audio Environment: Professional recording booth. Completely dead silent. No room ambience.
-The ONLY sound in this video is the speaker's isolated voice. Nothing else.
+    # SEGMENT 1: VOICE PROFILE (FIRST - Most important for voice consistency)
+    voice_profile_section = f"""=== VOICE PROFILE ===
+{voice_profile}
+==="""
+
+    # SEGMENT 2: AUDIO & DIALOGUE
+    # Simplified voice instruction - just the key traits
+    short_voice = voice_instruction[:100] if len(voice_instruction) > 100 else voice_instruction
+    
+    audio_section = f"""Audio: Isolated voice only. Dead silent environment. No other sounds.
 
 Character says in {language}: "{dialogue_line}"
 
-Voice Instructions: {voice_instruction}
-Delivery: {delivery_style}, {emotion} emotion, {intensity} intensity.
-Timing: Speech from 0s to {speech_end_time:.1f}s. Final moment is complete silence with stillness.
-(no subtitles) (no background music) (no laughter) (no applause)"""
-
-    # SEGMENT 2: FULL VOICE PROFILE REFERENCE
-    voice_profile_section = f"""=== VOICE PROFILE ===
-{voice_profile}"""
+Voice: {short_voice}
+Delivery: {delivery_style}, {emotion}, {intensity}.
+Timing: Speech ends at {speech_end_time:.1f}s, then silence.
+(no subtitles) (no music) (no laughter)"""
 
     # SEGMENT 3: CAMERA & STYLE
-    camera_section = """Style: Raw, realistic footage. No filters.
-Camera: Static locked-off shot, sharp focus on subject. Medium shot framing."""
+    camera_section = """Style: Raw, realistic. No filters.
+Camera: Static locked-off, medium shot."""
 
-    # SEGMENT 4: SUBJECT BEHAVIOR (reference image as source of truth)
-    subject_section = f"""Subject Behavior: The subject in the frame speaks directly to camera.
+    # SEGMENT 4: SUBJECT BEHAVIOR
+    subject_section = f"""Subject: The person in frame speaks to camera.
 Expression: {facial_expression}. Posture: {body_language}.
-Gestures: {suggested_gestures}.
-Lip movements precisely synchronized to speech."""
+Lip sync to speech."""
 
-    # SEGMENT 5: NEGATIVE PROMPTS - CRITICAL FOR AUDIO ISOLATION
-    negative_section = """Without: subtitles, text overlay, captions, burned-in text, watermarks, logos, lower thirds, graphics.
-Without: cinematic lighting, dramatic filters, artificial color grading, lens flares, film grain.
-Without: morphing, face distortion, anatomical errors, extra limbs, jerky movements, teleportation.
-
-AUDIO ISOLATION (CRITICAL):
-Without: background music, musical score, soundtrack, jingle, theme music.
-Without: laughter, fake laughter, audience laughter, chuckling, giggling.
-Without: applause, clapping, cheering, crowd reactions, audience sounds.
-Without: ambient noise, room tone, echo, reverb, environmental sounds.
-Without: sound effects, whoosh, swoosh, transition sounds.
-The ONLY audio is the speaker's isolated voice. Complete silence otherwise."""
+    # SEGMENT 5: NEGATIVE PROMPTS
+    negative_section = """Without: subtitles, text, captions, watermarks, logos.
+Without: cinematic lighting, filters, color grading.
+Without: morphing, distortion, extra limbs, jerky movements.
+Without: background music, laughter, applause, crowd sounds, ambient noise.
+ONLY the speaker's voice. Complete silence otherwise."""
 
     # === ASSEMBLE FINAL PROMPT ===
     if redo_feedback:
-        priority_section = f"""=== PRIORITY INSTRUCTION ===
+        priority_section = f"""=== PRIORITY ===
 {redo_feedback}
 ===
 
@@ -1042,10 +1038,10 @@ The ONLY audio is the speaker's isolated voice. Complete silence otherwise."""
     else:
         priority_section = ""
     
-    # Build prompt with Audio/Voice FIRST
-    final_prompt = f"""{priority_section}{audio_section}
+    # Build prompt with Voice Profile FIRST
+    final_prompt = f"""{priority_section}{voice_profile_section}
 
-{voice_profile_section}
+{audio_section}
 
 {camera_section}
 
@@ -1053,9 +1049,12 @@ The ONLY audio is the speaker's isolated voice. Complete silence otherwise."""
 
 {negative_section}""".strip()
     
-    vlog(f"[ROUTING] Final prompt length: {len(final_prompt)} chars")
-    
-    return final_prompt
+    # Log the FULL prompt
+    vlog(f"\n{'='*80}")
+    vlog(f"[PROMPT] CLIP {clip_index} - FULL PROMPT ({len(final_prompt)} chars):")
+    vlog(f"{'='*80}")
+    vlog(final_prompt)
+    vlog(f"{'='*80}\n")
     
     return final_prompt
 
