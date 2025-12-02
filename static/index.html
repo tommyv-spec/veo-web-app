@@ -437,6 +437,11 @@
         .clip-card.clip-generating { border-color: var(--accent); }
         .clip-video { background: #000; aspect-ratio: 9/16; max-height: 260px; display: flex; align-items: center; justify-content: center; position: relative; flex-direction: column; }
         .clip-video video { width: 100%; height: 100%; object-fit: contain; }
+        .clip-video .video-container { width: 100%; height: 100%; position: relative; }
+        .clip-video .video-container video { width: 100%; height: 100%; object-fit: contain; }
+        .video-download-btn { position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,0.7); border: none; border-radius: 6px; padding: 6px 8px; cursor: pointer; font-size: 14px; opacity: 0; transition: opacity 0.2s; z-index: 10; }
+        .video-container:hover .video-download-btn { opacity: 1; }
+        .video-download-btn:hover { background: rgba(99, 102, 241, 0.9); }
         
         .variant-nav { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 4px; background: rgba(0, 0, 0, 0.8); padding: 4px 8px; border-radius: 12px; backdrop-filter: blur(4px); }
         .variant-btn { background: transparent; border: none; color: white; cursor: pointer; font-size: 10px; padding: 2px 6px; opacity: 0.8; transition: opacity 0.2s; }
@@ -724,13 +729,20 @@
                 <div id="storyboardContainer" class="storyboard-container card">
                     <div class="storyboard-header">
                         <h3>🎬 Script Editor</h3>
-                        <div class="storyboard-mode-toggle">
-                            <button id="btnAutoCycle" class="mode-btn active" onclick="setEditorMode('auto')" title="Images cycle through clips automatically">
-                                🔄 Auto-Cycle
-                            </button>
-                            <button id="btnStoryboard" class="mode-btn" onclick="setEditorMode('storyboard')" title="Drag images to create scene breaks">
-                                🎬 Storyboard
-                            </button>
+                        <div style="display:flex;align-items:center;gap:12px;">
+                            <!-- Auto-split toggle -->
+                            <div style="display:flex;align-items:center;gap:6px;">
+                                <span style="font-size:11px;color:var(--text-muted);">✂️ Auto-split</span>
+                                <div class="toggle active" id="autoSplitToggleStoryboard" onclick="toggleAutoSplit()" title="ON: Auto-split into ~7s clips | OFF: Each line = 1 clip"></div>
+                            </div>
+                            <div class="storyboard-mode-toggle">
+                                <button id="btnAutoCycle" class="mode-btn active" onclick="setEditorMode('auto')" title="Images cycle through clips automatically">
+                                    🔄 Auto-Cycle
+                                </button>
+                                <button id="btnStoryboard" class="mode-btn" onclick="setEditorMode('storyboard')" title="Drag images to create scene breaks">
+                                    🎬 Storyboard
+                                </button>
+                            </div>
                         </div>
                     </div>
                     
@@ -763,17 +775,24 @@
                 
                 <!-- Simple Mode: Separate dialogue section -->
                 <div class="card" id="simpleDialogueSection">
-                    <div class="card-title">
-                        <span class="section-step">3</span>
-                        Dialogue Script
-                        <span class="info-icon">?
-                            <div class="tooltip">
-                                <h5>✍️ Add Dialogue Lines</h5>
-                                <p>Enter lines in format: <code style="background:var(--bg-input);padding:2px 6px;border-radius:4px;">1|First line here</code></p>
-                                <p>OR paste your full script - it will be automatically split into ~7 second clips.</p>
-                                <p style="color:var(--success);">💡 Auto-split adapts word count based on language!</p>
-                            </div>
-                        </span>
+                    <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <span class="section-step">3</span>
+                            Dialogue Script
+                            <span class="info-icon">?
+                                <div class="tooltip">
+                                    <h5>✍️ Dialogue Lines</h5>
+                                    <p><strong>Auto-split ON:</strong> Paste your script and it auto-splits into ~7 second clips based on language speaking rate.</p>
+                                    <p><strong>Auto-split OFF:</strong> Each line you paste or type = 1 clip. Press Enter to create a new clip.</p>
+                                    <p style="color:var(--text-muted);font-size:10px;margin-top:6px;">Toggle auto-split with the switch →</p>
+                                </div>
+                            </span>
+                        </div>
+                        <!-- Auto-split toggle inline with title -->
+                        <div style="display:flex;align-items:center;gap:6px;">
+                            <span style="font-size:11px;color:var(--text-muted);">✂️ Auto-split</span>
+                            <div class="toggle active" id="autoSplitToggle" onclick="toggleAutoSplit()" title="ON: Auto-split into ~7s clips | OFF: Each line = 1 clip"></div>
+                        </div>
                     </div>
                     <div id="simpleEditorContainer" class="simple-editor-container">
                         <div id="simpleRichEditor" 
@@ -787,21 +806,6 @@
                     <textarea id="dialogueInput" style="display:none;"></textarea>
                     <div id="splitStatus" style="font-size:11px;color:var(--text-muted);margin-top:8px;display:none;"></div>
                     <div id="lineValidation" style="margin-top:10px;display:none;"></div>
-                    
-                    <!-- Auto-split toggle -->
-                    <div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px;padding:8px 12px;background:var(--bg-input);border-radius:var(--radius-sm);">
-                        <div style="display:flex;align-items:center;gap:8px;">
-                            <span style="font-size:12px;color:var(--text-secondary);">✂️ Auto-split on paste</span>
-                            <span class="help-icon" style="font-size:10px;">?
-                                <div class="tooltip" style="width:220px;">
-                                    <p><strong>ON:</strong> Pasted text is automatically split into ~7 second clips based on language</p>
-                                    <p><strong>OFF:</strong> Each line you type or paste = 1 clip (press Enter for new clip)</p>
-                                </div>
-                            </span>
-                        </div>
-                        <div class="toggle active" id="autoSplitToggle" onclick="toggleAutoSplit()"></div>
-                    </div>
-                    <div id="autoSplitStatus" style="font-size:10px;color:var(--success);margin-top:4px;text-align:right;">Auto-split: ON</div>
                 </div>
                 
                 <div class="card" id="customPromptSection" style="display:none;">
@@ -1366,7 +1370,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
             
             if(!pastedText) return;
             
-            const autoSplitEnabled = document.getElementById('autoSplitToggle')?.classList.contains('active') ?? true;
+            const autoSplitEnabled = isAutoSplitEnabled();
             
             if(autoSplitEnabled) {
                 // AUTO-SPLIT MODE: Split pasted text and APPEND to existing content
@@ -1441,8 +1445,11 @@ Example: A realistic vertical video of a professional presenter speaking directl
         }
         
         function updateAutoSplitStatus(){
-            const toggle = document.getElementById('autoSplitToggle');
-            const enabled = toggle?.classList.contains('active') ?? true;
+            const toggle1 = document.getElementById('autoSplitToggle');
+            const toggle2 = document.getElementById('autoSplitToggleStoryboard');
+            const enabled = toggle1?.classList.contains('active') || toggle2?.classList.contains('active');
+            
+            // Update any status text if present
             const status = document.getElementById('autoSplitStatus');
             if(status){
                 status.textContent = enabled ? 'Auto-split: ON' : 'Manual: 1 line = 1 clip';
@@ -1451,11 +1458,31 @@ Example: A realistic vertical video of a professional presenter speaking directl
         }
         
         function toggleAutoSplit(){
-            const toggle = document.getElementById('autoSplitToggle');
-            if(toggle){
-                toggle.classList.toggle('active');
-                updateAutoSplitStatus();
+            const toggle1 = document.getElementById('autoSplitToggle');
+            const toggle2 = document.getElementById('autoSplitToggleStoryboard');
+            
+            // Get current state from either toggle
+            const wasActive = toggle1?.classList.contains('active') || toggle2?.classList.contains('active');
+            const newState = !wasActive;
+            
+            // Sync both toggles
+            if(toggle1) {
+                if(newState) toggle1.classList.add('active');
+                else toggle1.classList.remove('active');
             }
+            if(toggle2) {
+                if(newState) toggle2.classList.add('active');
+                else toggle2.classList.remove('active');
+            }
+            
+            updateAutoSplitStatus();
+        }
+        
+        // Check auto-split state
+        function isAutoSplitEnabled(){
+            const toggle1 = document.getElementById('autoSplitToggle');
+            const toggle2 = document.getElementById('autoSplitToggleStoryboard');
+            return toggle1?.classList.contains('active') || toggle2?.classList.contains('active');
         }
         
         function handleSimpleEditorKeydown(e){
@@ -2186,19 +2213,21 @@ Example: A realistic vertical video of a professional presenter speaking directl
             // Mark that we're handling a paste to prevent duplicate processing
             editor.dataset.pasting = 'true';
             
-            // Use ONLY pasted text (replace, don't append)
-            const fullText = pastedText;
+            const autoSplitEnabled = isAutoSplitEnabled();
+            let newLines;
             
-            // Update the hidden textarea
-            document.getElementById('dialogueInput').value = fullText;
-            
-            // Split and render
-            const language = document.getElementById('language').value;
-            const wps = SPEAKING_RATES[language] || 2.5;
-            const targetWords = Math.round(wps * 6);
-            const minWords = Math.round(targetWords * 0.7);
-            const maxWords = Math.round(targetWords * 1.3);
-            const newLines = smartSplitText(fullText, minWords, targetWords, maxWords);
+            if(autoSplitEnabled) {
+                // AUTO-SPLIT: Split by speaking rate
+                const language = document.getElementById('language').value;
+                const wps = SPEAKING_RATES[language] || 2.5;
+                const targetWords = Math.round(wps * 6);
+                const minWords = Math.round(targetWords * 0.7);
+                const maxWords = Math.round(targetWords * 1.3);
+                newLines = smartSplitText(pastedText, minWords, targetWords, maxWords);
+            } else {
+                // MANUAL: Each line in pasted text = 1 clip
+                newLines = pastedText.split('\n').map(l => l.trim()).filter(l => l);
+            }
             
             // Update dialogueInput with numbered lines
             document.getElementById('dialogueInput').value = newLines.map((l, i) => `${i + 1}|${l}`).join('\n');
@@ -2208,6 +2237,17 @@ Example: A realistic vertical video of a professional presenter speaking directl
             
             // Re-render the storyboard
             renderStoryboard();
+            
+            // Show status
+            const status = document.getElementById('splitStatus');
+            if(status && newLines.length > 0){
+                status.style.display = 'block';
+                status.textContent = autoSplitEnabled 
+                    ? `✓ Auto-split into ${newLines.length} clips`
+                    : `✓ Added ${newLines.length} lines (1 line = 1 clip)`;
+                status.style.color = 'var(--success)';
+                setTimeout(() => { status.style.display = 'none'; }, 3000);
+            }
             
             // Clear the pasting flag after a short delay
             setTimeout(() => {
@@ -3143,7 +3183,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
             if(isRegenerating)vid=`<div class="generating-state"><div class="generating-spinner">🎬</div><div class="generating-text">${redoQueued?'Regenerating...':'Generating...'}</div></div>`;
             else if(waitingApproval)vid=`<div class="pending-state"><div class="pending-icon">⏸️</div><div class="pending-text">Awaiting<br>Approval</div></div>`;
             else if(pending)vid=`<div class="pending-state"><div class="pending-icon">⏳</div><div class="pending-text">Waiting...</div></div>`;
-            else if(c.output_filename)vid=`<video controls preload="auto" playsinline><source src="${API}/jobs/${jid}/outputs/${c.output_filename}?t=${Date.now()}" type="video/mp4"></video>`;
+            else if(c.output_filename)vid=`<div class="video-container"><video controls preload="auto" playsinline><source src="${API}/jobs/${jid}/outputs/${c.output_filename}?t=${Date.now()}" type="video/mp4"></video><button class="video-download-btn" onclick="event.stopPropagation();downloadClip('${API}/jobs/${jid}/outputs/${c.output_filename}','clip_${c.clip_index+1}.mp4')" title="Download clip">📥</button></div>`;
             else if(failed)vid=`<div class="failed-state"><div class="failed-icon">❌</div><div class="failed-text">Failed</div></div>`;
             else vid='<div style="color:var(--text-muted);font-size:10px">🎬</div>';
             let variantNav='';
@@ -3152,7 +3192,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
             if(isRegenerating){status=redoQueued?'regenerating':'generating';badgeClass='running';}else if(failed){status='failed';badgeClass='failed';}else if(approved){status='approved';badgeClass='approved';}else if(rejected){status='rejected';badgeClass='rejected';}else if(waitingApproval){status='waiting approval';badgeClass='waiting_approval';}else if(pending){status='pending';badgeClass='running';}else if(c.status==='completed'){status=c.approval_status||'pending_review';badgeClass=status;}
             let acts='';const clipId=c.id||0;
             if(isRegenerating)acts=`<div class="clip-progress"><div class="clip-progress-bar"></div></div><div style="color:var(--text-muted);text-align:center;font-size:10px;margin-top:4px">v${c.generation_attempt} in progress...</div>`;
-            else if(approved)acts=`<div style="color:var(--success);text-align:center;font-size:14px">✓ Approved${hasMultipleVariants?' (v'+selectedVariant+')':''}</div>`;
+            else if(approved)acts=`<div style="display:flex;align-items:center;justify-content:center;gap:8px"><span style="color:var(--success);font-size:14px">✓ Approved${hasMultipleVariants?' (v'+selectedVariant+')':''}</span><button class="btn btn-secondary btn-sm" style="padding:4px 8px;font-size:11px" onclick="downloadClip('${API}/jobs/${jid}/outputs/${c.output_filename}','clip_${c.clip_index+1}.mp4')" title="Download clip">📥</button></div>`;
             else if(rejected&&!redoQueued)acts=`<div class="rejected-notice"><span>❌ Rejected</span>${c.attempts_remaining>0&&clipId?`<button class="btn btn-redo btn-sm" onclick="redoModal(${clipId},${c.attempts_remaining},${c.clip_index})">↻ Redo (${c.attempts_remaining})</button>`:'<span>No redos</span>'}</div>`;
             else if(maxed)acts='<div class="max-notice">⚠️ Max attempts</div>';
             else if(waitingApproval)acts=`<div style="color:#f59e0b;text-align:center;font-size:10px">⏸️ Approve clip #${c.clip_index} first</div>`;
@@ -3250,7 +3290,73 @@ Example: A realistic vertical video of a professional presenter speaking directl
         
         function cancelJob(id){if(!confirm('Cancel?'))return;fetch(`${API}/jobs/${id}/cancel`,{method:'POST'}).then(()=>{loadJob(id);refreshJobsList();});}
         function deleteJob(id){if(!confirm('Delete?'))return;document.getElementById('jobDetails').style.display='none';document.getElementById('noJob').style.display='block';selectedJobId=null;fetch(`${API}/jobs/${id}`,{method:'DELETE'}).then(()=>refreshJobsList());}
-        function downloadAll(id){fetch(`${API}/jobs/${id}/outputs?approved_only=true`).then(r=>r.json()).then(d=>{if(d.videos.length===0){alert('No approved clips to download');return;}d.videos.forEach((v,i)=>{setTimeout(()=>{const a=document.createElement('a');a.href=v.url;a.download=v.filename;a.click();},i*500);});});}
+        async function downloadAll(id){
+            try {
+                const r = await fetch(`${API}/jobs/${id}/outputs?approved_only=true`);
+                if(!r.ok) throw new Error('Failed to get outputs list');
+                
+                const d = await r.json();
+                if(d.videos.length === 0) {
+                    alert('No approved clips to download');
+                    return;
+                }
+                
+                // Show progress
+                const status = document.getElementById('splitStatus');
+                if(status) {
+                    status.style.display = 'block';
+                    status.textContent = `Downloading ${d.videos.length} clips...`;
+                    status.style.color = 'var(--accent)';
+                }
+                
+                // Download each video with delay
+                for(let i = 0; i < d.videos.length; i++) {
+                    const v = d.videos[i];
+                    await new Promise(resolve => setTimeout(resolve, i * 600));
+                    await downloadClip(v.url, v.filename);
+                }
+                
+                if(status) {
+                    status.textContent = `✓ Downloaded ${d.videos.length} clips`;
+                    status.style.color = 'var(--success)';
+                    setTimeout(() => { status.style.display = 'none'; }, 3000);
+                }
+            } catch(e) {
+                console.error('Download error:', e);
+                alert('Download failed: ' + e.message);
+            }
+        }
+        
+        // Download a single clip by URL - using fetch + blob for reliability
+        async function downloadClip(url, filename) {
+            try {
+                const response = await fetch(url);
+                if (!response.ok) throw new Error('Failed to fetch clip');
+                
+                const blob = await response.blob();
+                const blobUrl = window.URL.createObjectURL(blob);
+                
+                const a = document.createElement('a');
+                a.href = blobUrl;
+                a.download = filename || 'clip.mp4';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                
+                // Clean up blob URL after download starts
+                setTimeout(() => window.URL.revokeObjectURL(blobUrl), 1000);
+            } catch (e) {
+                console.error('Download error:', e);
+                // Fallback to direct link
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename || 'clip.mp4';
+                a.target = '_blank';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+            }
+        }
         
         // ============ Export Final Video ============
         let isExporting = false; // Prevent multiple concurrent exports
@@ -3432,6 +3538,8 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     remove_silence: false
                 };
                 
+                console.log('[Export] Sending request with settings:', settings);
+                
                 const response = await fetch(`${API}/jobs/${jobId}/export-final`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -3442,11 +3550,18 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 clearInterval(stageInterval);
                 
                 if (!response.ok) {
-                    const err = await response.json();
-                    throw new Error(err.detail || 'Export failed');
+                    let errMsg = 'Export failed';
+                    try {
+                        const err = await response.json();
+                        errMsg = err.detail || errMsg;
+                    } catch(parseErr) {
+                        errMsg = `HTTP ${response.status}: ${response.statusText}`;
+                    }
+                    throw new Error(errMsg);
                 }
                 
                 const result = await response.json();
+                console.log('[Export] Success:', result);
                 
                 // Show success
                 const progressBanner = container.querySelector('.export-progress');
@@ -3457,12 +3572,12 @@ Example: A realistic vertical video of a professional presenter speaking directl
                             <div>
                                 <h3 style="margin:0;font-size:14px;color:white;">✅ Export Complete!</h3>
                                 <p style="margin:4px 0 0;font-size:11px;opacity:0.9;color:white;">
-                                    Duration: ${result.stats.final_duration?.toFixed(1) || '?'}s • 
-                                    ${result.stats.clips_processed} clips processed
+                                    Duration: ${result.stats?.final_duration?.toFixed(1) || '?'}s • 
+                                    ${result.stats?.clips_processed || '?'} clips processed
                                 </p>
                             </div>
-                            <button class="btn btn-secondary btn-sm" onclick="this.parentElement.parentElement.remove()" style="background:rgba(255,255,255,0.2);border:none;color:white;">
-                                ✓ Close
+                            <button class="btn btn-secondary btn-sm" onclick="downloadClip('${result.download_url}','${result.filename}')" style="background:rgba(255,255,255,0.2);border:none;color:white;">
+                                📥 Download
                             </button>
                         </div>
                     `;
@@ -3470,10 +3585,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 
                 // Trigger download
                 setTimeout(() => {
-                    const a = document.createElement('a');
-                    a.href = result.download_url;
-                    a.download = result.filename;
-                    a.click();
+                    downloadClip(result.download_url, result.filename);
                 }, 500);
                 
             } catch (e) {
