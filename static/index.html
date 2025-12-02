@@ -2300,21 +2300,30 @@ Example: A realistic vertical video of a professional presenter speaking directl
         function syncAutoCycleFromDOM(){
             const editor = document.getElementById('richEditor');
             const lineElements = editor.querySelectorAll('.scene-line');
-            let allText = [];
+            let allLines = [];
             
             lineElements.forEach(el => {
                 const text = el.textContent.trim();
-                if(text && !el.classList.contains('placeholder-line')) allText.push(text);
+                if(text && !el.classList.contains('placeholder-line')) allLines.push(text);
             });
             
-            if(allText.length === 0){
+            if(allLines.length === 0){
                 const rawText = editor.textContent.trim();
                 if(rawText){
-                    allText = [rawText];
+                    allLines = [rawText];
                 }
             }
             
-            document.getElementById('dialogueInput').value = allText.join(' ');
+            // Store lines properly - don't join with spaces if auto-split is OFF
+            const autoSplitEnabled = isAutoSplitEnabled();
+            
+            if(autoSplitEnabled) {
+                // Join all text - will be re-split by renderStoryboard
+                document.getElementById('dialogueInput').value = allLines.join(' ');
+            } else {
+                // Keep each line separate - number them
+                document.getElementById('dialogueInput').value = allLines.map((l, i) => `${i + 1}|${l}`).join('\n');
+            }
             
             clearTimeout(window.storyboardUpdateTimeout);
             window.storyboardUpdateTimeout = setTimeout(() => {
@@ -2359,51 +2368,62 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 }
             }
             
-            // Combine all text
-            const fullText = allTextSegments.join(' ');
-            document.getElementById('dialogueInput').value = fullText;
+            const autoSplitEnabled = isAutoSplitEnabled();
+            let newLines;
             
-            // Re-split the text
-            const language = document.getElementById('language').value;
-            const wps = SPEAKING_RATES[language] || 2.5;
-            const targetWords = Math.round(wps * 6);
-            const minWords = Math.round(targetWords * 0.7);
-            const maxWords = Math.round(targetWords * 1.3);
-            const newLines = smartSplitText(fullText, minWords, targetWords, maxWords);
-            
-            // Now we need to figure out which new line each scene break corresponds to
-            // The textStartIdx tells us how many text segments were before this divider
-            // But after re-splitting, the line count may be different
-            
-            // Simple approach: distribute scene breaks proportionally based on text position
-            if(newSceneBreaks.length > 0 && allTextSegments.length > 0 && newLines.length > 0){
-                const totalOldSegments = allTextSegments.length;
+            if(autoSplitEnabled) {
+                // AUTO-SPLIT: Combine all text and re-split
+                const fullText = allTextSegments.join(' ');
+                document.getElementById('dialogueInput').value = fullText;
                 
-                sceneBreaks = newSceneBreaks.map((sb, idx) => {
-                    if(idx === 0){
-                        return { lineIndex: 0, imgIndex: sb.imgIndex };
-                    }
-                    // Calculate proportional position
-                    const proportion = sb.textStartIdx / totalOldSegments;
-                    const newLineIdx = Math.min(Math.floor(proportion * newLines.length), newLines.length - 1);
-                    return { lineIndex: Math.max(1, newLineIdx), imgIndex: sb.imgIndex };
-                });
+                const language = document.getElementById('language').value;
+                const wps = SPEAKING_RATES[language] || 2.5;
+                const targetWords = Math.round(wps * 6);
+                const minWords = Math.round(targetWords * 0.7);
+                const maxWords = Math.round(targetWords * 1.3);
+                newLines = smartSplitText(fullText, minWords, targetWords, maxWords);
                 
-                // Remove duplicates and ensure first is at 0
-                sceneBreaks[0].lineIndex = 0;
-                const seen = new Set([0]);
-                sceneBreaks = sceneBreaks.filter((sb, idx) => {
-                    if(idx === 0) return true;
-                    if(seen.has(sb.lineIndex)){
-                        // Try next line
-                        while(seen.has(sb.lineIndex) && sb.lineIndex < newLines.length - 1){
-                            sb.lineIndex++;
+                // Distribute scene breaks proportionally based on text position
+                if(newSceneBreaks.length > 0 && allTextSegments.length > 0 && newLines.length > 0){
+                    const totalOldSegments = allTextSegments.length;
+                    
+                    sceneBreaks = newSceneBreaks.map((sb, idx) => {
+                        if(idx === 0){
+                            return { lineIndex: 0, imgIndex: sb.imgIndex };
                         }
-                        if(seen.has(sb.lineIndex)) return false;
-                    }
-                    seen.add(sb.lineIndex);
-                    return true;
-                });
+                        const proportion = sb.textStartIdx / totalOldSegments;
+                        const newLineIdx = Math.min(Math.floor(proportion * newLines.length), newLines.length - 1);
+                        return { lineIndex: Math.max(1, newLineIdx), imgIndex: sb.imgIndex };
+                    });
+                    
+                    // Remove duplicates and ensure first is at 0
+                    sceneBreaks[0].lineIndex = 0;
+                    const seen = new Set([0]);
+                    sceneBreaks = sceneBreaks.filter((sb, idx) => {
+                        if(idx === 0) return true;
+                        if(seen.has(sb.lineIndex)){
+                            while(seen.has(sb.lineIndex) && sb.lineIndex < newLines.length - 1){
+                                sb.lineIndex++;
+                            }
+                            if(seen.has(sb.lineIndex)) return false;
+                        }
+                        seen.add(sb.lineIndex);
+                        return true;
+                    });
+                }
+            } else {
+                // MANUAL: Keep each line as-is, no re-splitting
+                newLines = allTextSegments;
+                document.getElementById('dialogueInput').value = newLines.map((l, i) => `${i + 1}|${l}`).join('\n');
+                
+                // Keep scene breaks as they are (adjust to current line count)
+                if(newSceneBreaks.length > 0){
+                    sceneBreaks = newSceneBreaks.map((sb, idx) => ({
+                        lineIndex: Math.min(sb.textStartIdx, newLines.length - 1),
+                        imgIndex: sb.imgIndex
+                    }));
+                    if(sceneBreaks.length > 0) sceneBreaks[0].lineIndex = 0;
+                }
             }
             
             clearTimeout(window.storyboardUpdateTimeout);
@@ -3651,20 +3671,56 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 clearInterval(timerInterval);
                 clearInterval(stageInterval);
                 
-                const progressBanner = container.querySelector('.export-progress');
-                if (progressBanner) {
-                    progressBanner.style.background = 'var(--error)';
-                    progressBanner.innerHTML = `
-                        <div style="display:flex;align-items:center;justify-content:space-between;width:100%">
-                            <div>
-                                <h3 style="margin:0;font-size:14px;color:white;">❌ Export Failed</h3>
-                                <p style="margin:4px 0 0;font-size:11px;opacity:0.9;color:white;">${e.message}</p>
+                // Check if export actually succeeded despite network error
+                // by trying to find the exported file
+                let exportSucceeded = false;
+                try {
+                    const checkResponse = await fetch(`${API}/jobs/${jobId}/outputs?approved_only=false`);
+                    if (checkResponse.ok) {
+                        const outputs = await checkResponse.json();
+                        const exportedFile = outputs.videos?.find(v => v.filename?.startsWith('final_export_'));
+                        if (exportedFile) {
+                            exportSucceeded = true;
+                            // Show success with download link
+                            const progressBanner = container.querySelector('.export-progress');
+                            if (progressBanner) {
+                                progressBanner.style.background = 'var(--success)';
+                                progressBanner.innerHTML = `
+                                    <div style="display:flex;align-items:center;justify-content:space-between;width:100%">
+                                        <div>
+                                            <h3 style="margin:0;font-size:14px;color:white;">✅ Export Complete!</h3>
+                                            <p style="margin:4px 0 0;font-size:11px;opacity:0.9;color:white;">
+                                                Network hiccup, but export succeeded. Click to download.
+                                            </p>
+                                        </div>
+                                        <button class="btn btn-secondary btn-sm" onclick="downloadClip('${exportedFile.url}','${exportedFile.filename}')" style="background:rgba(255,255,255,0.2);border:none;color:white;">
+                                            📥 Download
+                                        </button>
+                                    </div>
+                                `;
+                            }
+                        }
+                    }
+                } catch (checkErr) {
+                    console.log('[Export] Could not check for exported file:', checkErr);
+                }
+                
+                if (!exportSucceeded) {
+                    const progressBanner = container.querySelector('.export-progress');
+                    if (progressBanner) {
+                        progressBanner.style.background = 'var(--error)';
+                        progressBanner.innerHTML = `
+                            <div style="display:flex;align-items:center;justify-content:space-between;width:100%">
+                                <div>
+                                    <h3 style="margin:0;font-size:14px;color:white;">❌ Export Failed</h3>
+                                    <p style="margin:4px 0 0;font-size:11px;opacity:0.9;color:white;">Network error: ${e.message}. Check if the server is running.</p>
+                                </div>
+                                <button class="btn btn-secondary btn-sm" onclick="this.parentElement.parentElement.remove();exportFinalVideo('${jobId}')" style="background:rgba(255,255,255,0.2);border:none;color:white;">
+                                    Retry
+                                </button>
                             </div>
-                            <button class="btn btn-secondary btn-sm" onclick="this.parentElement.parentElement.remove();exportFinalVideo('${jobId}')" style="background:rgba(255,255,255,0.2);border:none;color:white;">
-                                Retry
-                            </button>
-                        </div>
-                    `;
+                        `;
+                    }
                 }
             } finally {
                 isExporting = false; // Always release lock
