@@ -694,7 +694,7 @@
                         </div>
                         
                         <!-- Hidden inputs to store default export settings (used by modal) -->
-                        <input type="hidden" id="exportFramesStart" value="7">
+                        <input type="hidden" id="exportFramesStart" value="0">
                         <input type="hidden" id="exportFramesEnd" value="7">
                         <input type="hidden" id="togSmartTrim" data-value="true">
                         
@@ -962,9 +962,20 @@ Example: A realistic vertical video of a professional presenter speaking directl
             const words = rawText.split(/\s+/).filter(w => w);
             const totalWords = words.length;
             
-            console.log(`[updateWordsPerLine] Total words: ${totalWords}, Target per line: ${targetWords}`);
+            // Get current language and weak words set
+            const lang = document.getElementById('language').value || 'English';
+            const weakWordsSet = WEAK_WORDS[lang] || WEAK_WORDS["English"] || new Set();
             
-            // Smart split with punctuation awareness
+            // Helper to check if a word is weak
+            const isWeakWord = (word) => {
+                if (!word) return false;
+                const cleanWord = word.replace(/[.,!?;:'")\]—–-]+$/, '').toLowerCase();
+                return weakWordsSet.has(cleanWord);
+            };
+            
+            console.log(`[updateWordsPerLine] Total words: ${totalWords}, Target per line: ${targetWords}, Language: ${lang}`);
+            
+            // Smart split with punctuation awareness AND weak word avoidance
             const newLines = [];
             let startIdx = 0;
             
@@ -991,21 +1002,21 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 const hasHardStop = (w) => w && HARD_STOPS_EARLY.some(s => w.word.endsWith(s));
                 const hasSoftStop = (w) => w && SOFT_STOPS_EARLY.some(s => w.word.endsWith(s));
                 
-                // Priority 1: HARD STOP at target+2, +1, -1, -2 (prefer longer lines)
+                // Priority 1: HARD STOP at target+2, +1, -1, -2 (skip weak words)
                 for (const offset of [2, 1, -1, -2]) {
                     const w = getWordAt(offset);
-                    if (hasHardStop(w)) {
+                    if (hasHardStop(w) && !isWeakWord(w.word)) {
                         splitIdx = w.idx + 1;
                         console.log(`[updateWordsPerLine] HARD STOP at ${offset}: "${w.word}"`);
                         break;
                     }
                 }
                 
-                // Priority 2: SOFT STOP at target+1, -1
+                // Priority 2: SOFT STOP at target+2, +1, -1, -2 (skip weak words)
                 if (splitIdx === null) {
-                    for (const offset of [1, -1]) {
+                    for (const offset of [2, 1, -1, -2]) {
                         const w = getWordAt(offset);
-                        if (hasSoftStop(w)) {
+                        if (hasSoftStop(w) && !isWeakWord(w.word)) {
                             splitIdx = w.idx + 1;
                             console.log(`[updateWordsPerLine] SOFT STOP at ${offset}: "${w.word}"`);
                             break;
@@ -1013,9 +1024,22 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     }
                 }
                 
-                // Priority 3: No punctuation - split at exactly target
+                // Priority 3: Find best non-weak word in range ±2
+                if (splitIdx === null) {
+                    for (const offset of [0, 1, -1, 2, -2]) {
+                        const w = getWordAt(offset);
+                        if (w && !isWeakWord(w.word)) {
+                            splitIdx = w.idx + 1;
+                            console.log(`[updateWordsPerLine] Best non-weak at ${offset}: "${w.word}"`);
+                            break;
+                        }
+                    }
+                }
+                
+                // Priority 4: Last resort - split at target even if weak
                 if (splitIdx === null) {
                     splitIdx = Math.min(startIdx + targetWords, words.length);
+                    console.log(`[updateWordsPerLine] Fallback to target`);
                 }
                 
                 // Take the chunk
@@ -1090,7 +1114,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
             const startVal = parseInt(document.getElementById('exportFramesStart')?.value);
             const endVal = parseInt(document.getElementById('exportFramesEnd')?.value);
             return {
-                frames_to_cut_start: isNaN(startVal) ? 7 : startVal,
+                frames_to_cut_start: isNaN(startVal) ? 0 : startVal,
                 frames_to_cut_end: isNaN(endVal) ? 7 : endVal,
                 smart_trim: document.getElementById('togSmartTrim')?.dataset?.value === 'true'
             };
@@ -1360,6 +1384,81 @@ Example: A realistic vertical video of a professional presenter speaking directl
         const HARD_STOPS = ['.', '!', '?', '。', '！', '？', '।'];
         const SOFT_STOPS = [',', ';', ':', '—', '–', '-', '،', '、', ')'];
         
+        // Words that should NOT end a line (articles, prepositions, conjunctions, etc.)
+        // These create awkward breaks when at the end of a line
+        const WEAK_WORDS = {
+            "English": new Set([
+                // Articles
+                'the', 'a', 'an',
+                // Prepositions
+                'of', 'in', 'to', 'for', 'with', 'on', 'at', 'by', 'from', 'as', 'into', 'about', 'through', 'after', 'over', 'between', 'under', 'against', 'during', 'without', 'before', 'around', 'among',
+                // Conjunctions
+                'and', 'but', 'or', 'nor', 'so', 'yet', 'if', 'when', 'while', 'although', 'because', 'unless', 'until', 'whether', 'that', 'which', 'who', 'whom', 'whose',
+                // Possessives & Determiners
+                'my', 'your', 'his', 'her', 'its', 'our', 'their', 'this', 'that', 'these', 'those',
+                // Auxiliary/Common verbs
+                'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'can',
+                // Other weak words
+                "it's", "don't", "doesn't", "isn't", "aren't", "wasn't", "weren't", "won't", "wouldn't", "couldn't", "shouldn't", "can't", "not", "no", "just", 'very', 'really', 'also', 'even', 'only'
+            ]),
+            "Italian": new Set([
+                // Articles
+                'il', 'lo', 'la', 'i', 'gli', 'le', 'un', 'uno', 'una', "un'", 'l\'',
+                // Prepositions (simple and articulated)
+                'di', 'a', 'da', 'in', 'con', 'su', 'per', 'tra', 'fra', 'del', 'dello', 'della', 'dei', 'degli', 'delle', 'al', 'allo', 'alla', 'ai', 'agli', 'alle', 'dal', 'dallo', 'dalla', 'dai', 'dagli', 'dalle', 'nel', 'nello', 'nella', 'nei', 'negli', 'nelle', 'sul', 'sullo', 'sulla', 'sui', 'sugli', 'sulle',
+                // Conjunctions
+                'e', 'o', 'ma', 'però', 'quindi', 'perché', 'se', 'che', 'quando', 'mentre', 'anche', 'né', 'oppure', 'dunque', 'infatti', 'cioè',
+                // Possessives & Demonstratives
+                'mio', 'mia', 'miei', 'mie', 'tuo', 'tua', 'tuoi', 'tue', 'suo', 'sua', 'suoi', 'sue', 'nostro', 'nostra', 'nostri', 'nostre', 'vostro', 'vostra', 'vostri', 'vostre', 'loro', 'questo', 'questa', 'questi', 'queste', 'quello', 'quella', 'quelli', 'quelle',
+                // Auxiliary verbs
+                'è', 'sono', 'era', 'erano', 'essere', 'stato', 'stata', 'stati', 'state', 'ha', 'ho', 'hai', 'abbiamo', 'avete', 'hanno', 'aveva', 'avevo', 'avevi', 'avevamo', 'avevate', 'avevano',
+                // Other
+                'non', 'più', 'molto', 'tanto', 'poco', 'tutto', 'ogni', 'alcuni', 'alcune', 'qualche'
+            ]),
+            "Spanish": new Set([
+                // Articles
+                'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas',
+                // Prepositions
+                'de', 'a', 'en', 'con', 'por', 'para', 'sin', 'sobre', 'entre', 'hacia', 'desde', 'durante', 'mediante', 'según', 'contra', 'tras', 'ante', 'bajo',
+                // Conjunctions
+                'y', 'e', 'o', 'u', 'pero', 'sino', 'aunque', 'porque', 'que', 'si', 'cuando', 'como', 'donde', 'mientras', 'ni', 'pues', 'ya',
+                // Possessives & Demonstratives
+                'mi', 'mis', 'tu', 'tus', 'su', 'sus', 'nuestro', 'nuestra', 'nuestros', 'nuestras', 'vuestro', 'vuestra', 'vuestros', 'vuestras', 'este', 'esta', 'estos', 'estas', 'ese', 'esa', 'esos', 'esas', 'aquel', 'aquella', 'aquellos', 'aquellas',
+                // Auxiliary verbs
+                'es', 'son', 'era', 'eran', 'ser', 'sido', 'está', 'están', 'estaba', 'estaban', 'estar', 'estado', 'ha', 'he', 'has', 'hemos', 'han', 'había', 'habían', 'haber', 'tengo', 'tienes', 'tiene', 'tenemos', 'tienen',
+                // Other
+                'no', 'muy', 'más', 'menos', 'mucho', 'poco', 'todo', 'cada', 'algún', 'alguna', 'algunos', 'algunas'
+            ]),
+            "French": new Set([
+                // Articles
+                'le', 'la', 'les', 'un', 'une', 'des', "l'", 'du', 'de', 'au', 'aux',
+                // Prepositions
+                'de', 'à', 'en', 'dans', 'avec', 'pour', 'sur', 'par', 'sans', 'sous', 'entre', 'vers', 'chez', 'depuis', 'pendant', 'avant', 'après', 'contre',
+                // Conjunctions
+                'et', 'ou', 'mais', 'donc', 'or', 'ni', 'car', 'que', 'qui', 'quand', 'si', 'comme', 'lorsque', 'puisque', 'quoique', 'parce',
+                // Possessives & Demonstratives
+                'mon', 'ma', 'mes', 'ton', 'ta', 'tes', 'son', 'sa', 'ses', 'notre', 'nos', 'votre', 'vos', 'leur', 'leurs', 'ce', 'cet', 'cette', 'ces',
+                // Auxiliary verbs
+                'est', 'sont', 'était', 'étaient', 'être', 'été', 'a', 'ai', 'as', 'avons', 'avez', 'ont', 'avait', 'avaient', 'avoir', 'eu', 'fait', 'va', 'vais', 'vas', 'allons', 'allez', 'vont',
+                // Other
+                'ne', 'pas', "n'", 'plus', 'très', 'bien', 'tout', 'tous', 'toute', 'toutes', 'quelque', 'quelques', 'chaque', 'aucun', 'aucune'
+            ]),
+            "German": new Set([
+                // Articles
+                'der', 'die', 'das', 'den', 'dem', 'des', 'ein', 'eine', 'einer', 'einem', 'einen', 'eines',
+                // Prepositions
+                'von', 'zu', 'bei', 'mit', 'nach', 'aus', 'für', 'um', 'an', 'auf', 'in', 'über', 'unter', 'vor', 'hinter', 'neben', 'zwischen', 'durch', 'gegen', 'ohne', 'bis', 'seit', 'während',
+                // Conjunctions
+                'und', 'oder', 'aber', 'denn', 'weil', 'dass', 'wenn', 'als', 'ob', 'damit', 'obwohl', 'während', 'bevor', 'nachdem', 'sobald', 'falls',
+                // Possessives & Demonstratives
+                'mein', 'meine', 'meinem', 'meinen', 'meiner', 'meines', 'dein', 'deine', 'sein', 'seine', 'ihr', 'ihre', 'unser', 'unsere', 'euer', 'eure', 'dieser', 'diese', 'dieses', 'diesen', 'diesem', 'jener', 'jene', 'jenes',
+                // Auxiliary verbs
+                'ist', 'sind', 'war', 'waren', 'sein', 'gewesen', 'hat', 'habe', 'hast', 'haben', 'habt', 'hatte', 'hatten', 'gehabt', 'wird', 'werde', 'wirst', 'werden', 'werdet', 'wurde', 'wurden', 'kann', 'können', 'konnte', 'konnten', 'muss', 'müssen', 'musste', 'mussten', 'soll', 'sollen', 'sollte', 'sollten', 'will', 'wollen', 'wollte', 'wollten', 'darf', 'dürfen', 'durfte', 'durften', 'mag', 'mögen', 'mochte', 'mochten',
+                // Other
+                'nicht', 'auch', 'noch', 'schon', 'nur', 'sehr', 'viel', 'mehr', 'wenig', 'alle', 'alles', 'jeder', 'jede', 'jedes', 'kein', 'keine'
+            ])
+        };
+        
         function smartSplitText(text, minWords, targetWords, maxWords){
             // Clean the text - remove existing line numbers
             const cleanedText = text
@@ -1386,6 +1485,17 @@ Example: A realistic vertical video of a professional presenter speaking directl
             const resultLines = [];
             let startIdx = 0;
             
+            // Get weak words set for current language (fallback to English)
+            const weakWordsSet = WEAK_WORDS[lang] || WEAK_WORDS["English"] || new Set();
+            
+            // Helper to check if a word is weak (should not end a line)
+            const isWeakWord = (word) => {
+                if (!word) return false;
+                // Remove punctuation for checking
+                const cleanWord = word.replace(/[.,!?;:'")\]—–-]+$/, '').toLowerCase();
+                return weakWordsSet.has(cleanWord);
+            };
+            
             while(startIdx < words.length){
                 const remaining = words.length - startIdx;
                 
@@ -1410,43 +1520,48 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 const hasSoftStop = (w) => w && SOFT_STOPS.includes(w.word.slice(-1));
                 
                 // Priority 1: HARD STOP at target+2, +1, -1, or -2 (prefer longer lines)
-                const hardPlus2 = getWordAt(TARGET_WORDS + 2);
-                const hardPlus1 = getWordAt(TARGET_WORDS + 1);
-                const hardMinus1 = getWordAt(TARGET_WORDS - 1);
-                const hardMinus2 = getWordAt(TARGET_WORDS - 2);
-                
-                if(hasHardStop(hardPlus2)){
-                    splitIdx = hardPlus2.idx + 1;
-                    splitReason = `HARD STOP at +2 "${hardPlus2.word}"`;
-                } else if(hasHardStop(hardPlus1)){
-                    splitIdx = hardPlus1.idx + 1;
-                    splitReason = `HARD STOP at +1 "${hardPlus1.word}"`;
-                } else if(hasHardStop(hardMinus1)){
-                    splitIdx = hardMinus1.idx + 1;
-                    splitReason = `HARD STOP at -1 "${hardMinus1.word}"`;
-                } else if(hasHardStop(hardMinus2)){
-                    splitIdx = hardMinus2.idx + 1;
-                    splitReason = `HARD STOP at -2 "${hardMinus2.word}"`;
-                }
-                
-                // Priority 2: SOFT STOP at target+1 or target-1
-                if(splitIdx === null){
-                    const softPlus1 = getWordAt(TARGET_WORDS + 1);
-                    const softMinus1 = getWordAt(TARGET_WORDS - 1);
-                    
-                    if(hasSoftStop(softPlus1)){
-                        splitIdx = softPlus1.idx + 1;
-                        splitReason = `SOFT STOP at +1 "${softPlus1.word}"`;
-                    } else if(hasSoftStop(softMinus1)){
-                        splitIdx = softMinus1.idx + 1;
-                        splitReason = `SOFT STOP at -1 "${softMinus1.word}"`;
+                // But skip if the word is a weak word
+                const hardOffsets = [2, 1, -1, -2];
+                for (const offset of hardOffsets) {
+                    const candidate = getWordAt(TARGET_WORDS + offset);
+                    if (hasHardStop(candidate) && !isWeakWord(candidate.word)) {
+                        splitIdx = candidate.idx + 1;
+                        splitReason = `HARD STOP at ${offset > 0 ? '+' : ''}${offset} "${candidate.word}"`;
+                        break;
                     }
                 }
                 
-                // Priority 3: No punctuation - split at exactly target
+                // Priority 2: SOFT STOP at target+2, +1, -1, -2 (skip weak words)
                 if(splitIdx === null){
-                    splitIdx = Math.min(startIdx + TARGET_WORDS, words.length);
-                    splitReason = `No punctuation, split at target`;
+                    const softOffsets = [2, 1, -1, -2];
+                    for (const offset of softOffsets) {
+                        const candidate = getWordAt(TARGET_WORDS + offset);
+                        if (hasSoftStop(candidate) && !isWeakWord(candidate.word)) {
+                            splitIdx = candidate.idx + 1;
+                            splitReason = `SOFT STOP at ${offset > 0 ? '+' : ''}${offset} "${candidate.word}"`;
+                            break;
+                        }
+                    }
+                }
+                
+                // Priority 3: No punctuation - find best non-weak word in range ±2
+                if(splitIdx === null){
+                    // Check positions: target, +1, -1, +2, -2 (prefer closer to target)
+                    const fallbackOffsets = [0, 1, -1, 2, -2];
+                    for (const offset of fallbackOffsets) {
+                        const candidate = getWordAt(TARGET_WORDS + offset);
+                        if (candidate && !isWeakWord(candidate.word)) {
+                            splitIdx = candidate.idx + 1;
+                            splitReason = `Best non-weak word at ${offset === 0 ? 'target' : (offset > 0 ? '+' : '') + offset} "${candidate.word}"`;
+                            break;
+                        }
+                    }
+                    
+                    // If all words in range are weak, just split at target (last resort)
+                    if (splitIdx === null) {
+                        splitIdx = Math.min(startIdx + TARGET_WORDS, words.length);
+                        splitReason = `All weak words in range, split at target`;
+                    }
                 }
                 
                 // Take the chunk
@@ -2928,7 +3043,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
                         <div style="padding:12px;background:var(--bg-input);border-radius:var(--radius-sm);margin-bottom:16px;">
                             <div style="display:flex;justify-content:space-between;align-items:center;">
                                 <span style="font-size:12px;">
-                                    Smart Trim
+                                    Smart Trim <span style="color:var(--success);font-size:10px;">✓ Recommended</span>
                                     <span style="font-size:10px;color:var(--text-muted);display:block;">Skip first clip & scene cuts</span>
                                 </span>
                                 <div class="toggle ${toggleClass}" id="modalSmartTrim" 
@@ -2967,7 +3082,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     const startVal = parseInt(document.getElementById('modalFramesStart').value);
                     const endVal = parseInt(document.getElementById('modalFramesEnd').value);
                     const modalSettings = {
-                        frames_to_cut_start: isNaN(startVal) ? 7 : startVal,
+                        frames_to_cut_start: isNaN(startVal) ? 0 : startVal,
                         frames_to_cut_end: isNaN(endVal) ? 7 : endVal,
                         smart_trim: document.getElementById('modalSmartTrim').classList.contains('active')
                     };
