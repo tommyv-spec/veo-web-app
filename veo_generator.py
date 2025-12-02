@@ -992,19 +992,9 @@ def build_prompt(
     speech_end_time = duration - 1.0
     
     # === 7. BUILD THE PROMPT ===
+    # Structure: Audio/Voice FIRST (most important), then Voice Profile, Camera, Subject, Negatives
     
-    # SEGMENT A: CAMERA & STYLE
-    camera_section = """Style: Raw, realistic footage. No filters.
-Camera: Static locked-off shot, sharp focus on subject. Medium shot framing."""
-
-    # SEGMENT B: SUBJECT (reference image as source of truth)
-    subject_section = f"""Subject Behavior: The subject in the frame speaks directly to camera.
-Expression: {facial_expression}. Posture: {body_language}.
-Gestures: {suggested_gestures}.
-Lip movements precisely synchronized to speech."""
-
-    # SEGMENT C: AUDIO & VOICE (most important for your use case)
-    # Using Veo 3.1 syntax: 'Character says: "..."' triggers lip-sync
+    # SEGMENT 1: AUDIO & VOICE (PRIORITY - FRONT-LOADED)
     audio_section = f"""Audio Environment: Professional recording booth. Completely dead silent. No room ambience.
 The ONLY sound in this video is the speaker's isolated voice. Nothing else.
 
@@ -1015,8 +1005,21 @@ Delivery: {delivery_style}, {emotion} emotion, {intensity} intensity.
 Timing: Speech from 0s to {speech_end_time:.1f}s. Final moment is complete silence with stillness.
 (no subtitles) (no background music) (no laughter) (no applause)"""
 
-    # SEGMENT D: NEGATIVE PROMPTS - CRITICAL FOR AUDIO ISOLATION
-    # These prevent Veo from adding unwanted sounds based on visual context
+    # SEGMENT 2: FULL VOICE PROFILE REFERENCE
+    voice_profile_section = f"""=== VOICE PROFILE ===
+{voice_profile}"""
+
+    # SEGMENT 3: CAMERA & STYLE
+    camera_section = """Style: Raw, realistic footage. No filters.
+Camera: Static locked-off shot, sharp focus on subject. Medium shot framing."""
+
+    # SEGMENT 4: SUBJECT BEHAVIOR (reference image as source of truth)
+    subject_section = f"""Subject Behavior: The subject in the frame speaks directly to camera.
+Expression: {facial_expression}. Posture: {body_language}.
+Gestures: {suggested_gestures}.
+Lip movements precisely synchronized to speech."""
+
+    # SEGMENT 5: NEGATIVE PROMPTS - CRITICAL FOR AUDIO ISOLATION
     negative_section = """Without: subtitles, text overlay, captions, burned-in text, watermarks, logos, lower thirds, graphics.
 Without: cinematic lighting, dramatic filters, artificial color grading, lens flares, film grain.
 Without: morphing, face distortion, anatomical errors, extra limbs, jerky movements, teleportation.
@@ -1039,17 +1042,16 @@ The ONLY audio is the speaker's isolated voice. Complete silence otherwise."""
     else:
         priority_section = ""
     
-    # Include full voice profile at the end for reference
-    final_prompt = f"""{priority_section}{camera_section}
+    # Build prompt with Audio/Voice FIRST
+    final_prompt = f"""{priority_section}{audio_section}
+
+{voice_profile_section}
+
+{camera_section}
 
 {subject_section}
 
-{audio_section}
-
-{negative_section}
-
-=== VOICE PROFILE REFERENCE ===
-{voice_profile}""".strip()
+{negative_section}""".strip()
     
     vlog(f"[ROUTING] Final prompt length: {len(final_prompt)} chars")
     
