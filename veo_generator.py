@@ -991,67 +991,54 @@ def build_prompt(
         duration = float(config.duration.value if hasattr(config.duration, 'value') else config.duration)
     speech_end_time = duration - 1.0
     
-    # === 7. BUILD THE PROMPT ===
-    # Structure: Voice Profile FIRST, then Audio/Dialogue, Camera, Subject, Negatives
+    # === 7. BUILD THE PROMPT IN VEO 3.1 OFFICIAL FORMAT ===
+    # Google's formula: [Cinematography] + [Subject] + [Action] + [Context] + [Style & Ambiance]
+    # Dialogue format: The character says, "text here"
+    # Audio format: SFX: description, Ambient noise: description
     
-    # SEGMENT 1: VOICE PROFILE (FIRST - Most important for voice consistency)
-    voice_profile_section = f"""=== VOICE PROFILE ===
+    # Simplified voice instruction - extract key trait only
+    short_voice = ""
+    if voice_texture:
+        short_voice = voice_texture
+    elif voice_tone:
+        short_voice = voice_tone
+    elif voice_signature:
+        short_voice = voice_signature
+    if voice_accent:
+        short_voice = f"{short_voice}, {voice_accent}" if short_voice else voice_accent
+    if not short_voice:
+        short_voice = "natural voice"
+    
+    # Build prompt following Veo 3.1 official structure
+    final_prompt = f"""=== VOICE PROFILE ===
 {voice_profile}
-==="""
+===
 
-    # SEGMENT 2: AUDIO & DIALOGUE
-    # Simplified voice instruction - just the key traits
-    short_voice = voice_instruction[:100] if len(voice_instruction) > 100 else voice_instruction
-    
-    audio_section = f"""Audio: Isolated voice only. Dead silent environment. No other sounds.
+Medium shot, static locked-off camera, sharp focus on subject.
 
-Character says in {language}: "{dialogue_line}"
+The subject in the frame speaks directly to camera with {facial_expression}, {body_language}.
 
-Voice: {short_voice}
-Delivery: {delivery_style}, {emotion}, {intensity}.
-Timing: Speech ends at {speech_end_time:.1f}s, then silence.
-(no subtitles) (no music) (no laughter)"""
+The character says in {language}, "{dialogue_line}"
 
-    # SEGMENT 3: CAMERA & STYLE
-    camera_section = """Style: Raw, realistic. No filters.
-Camera: Static locked-off, medium shot."""
+Voice: {short_voice}. {delivery_style}, {emotion} emotion.
 
-    # SEGMENT 4: SUBJECT BEHAVIOR
-    subject_section = f"""Subject: The person in frame speaks to camera.
-Expression: {facial_expression}. Posture: {body_language}.
-Lip sync to speech."""
+Ambient noise: Complete silence, professional recording booth, no room ambiance.
 
-    # SEGMENT 5: NEGATIVE PROMPTS
-    negative_section = """Without: subtitles, text, captions, watermarks, logos.
-Without: cinematic lighting, filters, color grading.
-Without: morphing, distortion, extra limbs, jerky movements.
-Without: background music, laughter, applause, crowd sounds, ambient noise.
-ONLY the speaker's voice. Complete silence otherwise."""
+Style: Raw realistic footage, natural lighting, photorealistic. Speech timing: 0s to {speech_end_time:.1f}s, then silence.
 
-    # === ASSEMBLE FINAL PROMPT ===
+No subtitles, no text overlays, no captions, no watermarks. No background music, no laughter, no applause, no crowd sounds, no ambient noise. No morphing, no face distortion, no jerky movements. Only the speaker's isolated voice."""
+
+    # Add redo feedback at the top if present
     if redo_feedback:
-        priority_section = f"""=== PRIORITY ===
+        final_prompt = f"""=== PRIORITY ===
 {redo_feedback}
 ===
 
-"""
-    else:
-        priority_section = ""
+{final_prompt}"""
     
-    # Build prompt with Voice Profile FIRST
-    final_prompt = f"""{priority_section}{voice_profile_section}
-
-{audio_section}
-
-{camera_section}
-
-{subject_section}
-
-{negative_section}""".strip()
-    
-    # Log the FULL prompt
+    # Log the FULL prompt (this will be sent to websocket)
     vlog(f"\n{'='*80}")
-    vlog(f"[PROMPT] CLIP {clip_index} - FULL PROMPT ({len(final_prompt)} chars):")
+    vlog(f"[FULL PROMPT] CLIP {clip_index}")
     vlog(f"{'='*80}")
     vlog(final_prompt)
     vlog(f"{'='*80}\n")

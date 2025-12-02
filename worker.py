@@ -1159,13 +1159,13 @@ class JobWorker:
                     override_duration=override_duration,  # Dynamic duration for last clip
                 )
                 
-                # Log the prompt that was sent to Veo
+                # Log the FULL prompt that was sent to Veo (no truncation)
                 if result.get("prompt_text"):
-                    prompt_preview = result["prompt_text"][:500] + "..." if len(result.get("prompt_text", "")) > 500 else result.get("prompt_text", "")
+                    full_prompt = result["prompt_text"]
                     with get_db() as db:
                         add_job_log(
                             db, job_id,
-                            f"📝 Prompt for clip {clip_index + 1}: {prompt_preview}",
+                            f"📝 FULL PROMPT for clip {clip_index + 1}:\n{full_prompt}",
                             "INFO", "prompt"
                         )
                 
