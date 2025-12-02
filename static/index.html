@@ -1802,6 +1802,9 @@ Example: A realistic vertical video of a professional presenter speaking directl
             // Check if auto-split is enabled
             const autoSplitEnabled = isAutoSplitEnabled();
             
+            console.log('[renderStoryboard] autoSplitEnabled:', autoSplitEnabled);
+            console.log('[renderStoryboard] fullText (first 100):', fullText.substring(0, 100));
+            
             if(autoSplitEnabled) {
                 // AUTO-SPLIT: Split by speaking rate
                 const language = document.getElementById('language').value;
@@ -1836,6 +1839,9 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     })
                     .filter(l => l);
             }
+            
+            console.log('[renderStoryboard] lines count:', lines.length);
+            console.log('[renderStoryboard] lines:', lines);
             
             // Use the shared render function
             renderStoryboardWithLines(lines);
@@ -2317,6 +2323,9 @@ Example: A realistic vertical video of a professional presenter speaking directl
             // Store lines properly - don't join with spaces if auto-split is OFF
             const autoSplitEnabled = isAutoSplitEnabled();
             
+            console.log('[syncAutoCycleFromDOM] autoSplitEnabled:', autoSplitEnabled);
+            console.log('[syncAutoCycleFromDOM] allLines:', allLines);
+            
             if(autoSplitEnabled) {
                 // Join all text - will be re-split by renderStoryboard
                 document.getElementById('dialogueInput').value = allLines.join(' ');
@@ -2324,6 +2333,8 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 // Keep each line separate - number them
                 document.getElementById('dialogueInput').value = allLines.map((l, i) => `${i + 1}|${l}`).join('\n');
             }
+            
+            console.log('[syncAutoCycleFromDOM] dialogueInput.value:', document.getElementById('dialogueInput').value.substring(0, 100));
             
             clearTimeout(window.storyboardUpdateTimeout);
             window.storyboardUpdateTimeout = setTimeout(() => {
