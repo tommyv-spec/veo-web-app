@@ -596,19 +596,17 @@ def generate_voice_profile(
     openai_key: Optional[str] = None
 ) -> str:
     """
-    Generate a HIGHLY SPECIFIC voice profile for consistency across all clips.
+    Generate a CONCISE voice profile with only what Veo needs to generate voice.
     
-    CRITICAL: Default is NO ACCENT (neutral). Only use accent if user explicitly requests it.
+    Veo only needs:
+    - Gender/Age (affects pitch)
+    - Pitch & Timbre (core voice quality)
+    - Texture (raspy, smooth, etc.)
+    - Tone (warm, authoritative, etc.)
+    - Pacing (fast, slow, etc.)
+    - Accent (if any)
     
-    Template:
-    1. Age & Gender - specific range
-    2. Accent - NO ACCENT by default, only if user requests
-    3. Pitch & Timbre - specific vocal qualities
-    4. Vocal Texture - unique characteristics
-    5. Tone / Personality - emotional baseline
-    6. Pacing & Rhythm - speech patterns
-    7. Signature Traits - unique identifiers
-    8. Audio Quality - always studio grade
+    NO "consistency" instructions - Veo doesn't know about other clips.
     """
     client = get_openai_client(openai_key)
     
@@ -618,32 +616,22 @@ def generate_voice_profile(
     auto_role = frame_analysis.get('apparent_role', 'natural speaker')
     auto_voice_tone = frame_analysis.get('suggested_voice_tone', 'clear, natural')
     auto_delivery = frame_analysis.get('suggested_delivery', 'measured pace')
-    visual_desc = frame_analysis.get('visual_description', '')
     detection_confidence = frame_analysis.get('confidence', 'low')
     
     # === EXTRACT FROM USER CONTEXT (overrides) ===
     user_role = user_context_enriched.get('speaker_role', '')
     user_voice_tone = user_context_enriched.get('voice_tone', '')
     user_delivery = user_context_enriched.get('delivery_style', '')
-    user_accent = user_context_enriched.get('accent', '')  # Only if explicitly requested
+    user_accent = user_context_enriched.get('accent', '')
     
     # === MERGE: User context overrides auto-detected ===
     final_role = user_role if user_role else auto_role
     final_voice_tone = user_voice_tone if user_voice_tone else auto_voice_tone
     final_delivery = user_delivery if user_delivery else auto_delivery
     
-    # Log the merge decision
-    vlog(f"[VOICE CASTING] Auto-detected role: {auto_role} (confidence: {detection_confidence})")
-    if user_role:
-        vlog(f"[VOICE CASTING] User override role: {user_role} (USING THIS)")
-    vlog(f"[VOICE CASTING] Final role: {final_role}")
-    if user_accent:
-        vlog(f"[VOICE CASTING] User requested accent: {user_accent}")
-    else:
-        vlog(f"[VOICE CASTING] No accent requested - using NEUTRAL/NO ACCENT")
+    vlog(f"[VOICE CASTING] Role: {final_role}, Accent: {user_accent if user_accent else 'NONE'}")
     
     if client is None:
-        # Fallback without OpenAI
         return build_voice_profile_template(
             age=auto_age,
             gender=auto_gender,
@@ -654,93 +642,36 @@ def generate_voice_profile(
             user_accent=user_accent
         )
     
-    # Determine accent instruction
-    if user_accent:
-        accent_instruction = f"User requested accent: {user_accent}. Use this accent."
-    else:
-        accent_instruction = f"""ACCENT RULE: NO ACCENT. 
-The voice must be completely neutral with NO regional accent whatsoever.
-- NO Indian accent
-- NO British accent  
-- NO Southern US accent
-- NO Australian accent
-- NO Irish accent
-- NO Scottish accent
-- NO any other regional accent
-The voice should sound like a neutral, accentless {language} speaker - like a professional news anchor or voice actor with no detectable regional origin."""
-    
     try:
-        system_msg = f"""You are a Voice Casting Director creating a UNIQUE VOICE IDENTITY.
+        system_msg = f"""You create CONCISE voice profiles for AI video generation.
 
-=== CRITICAL GOAL ===
-Create a voice profile SO SPECIFIC that it generates the EXACT SAME VOICE across multiple video clips.
-Generic descriptions = voice drift between clips. We need UNIQUE IDENTIFIERS.
+OUTPUT FORMAT (use exactly this structure):
+---
+Gender: [male/female]
+Age: [specific like "mid-40s" or "early 30s"]
+Pitch: [low/medium/high, e.g. "low-medium, ~150Hz"]
+Timbre: [warm/bright/dark/rich] with [chest/head/balanced] resonance
+Texture: [smooth/raspy/breathy/crisp/velvety] - [any unique quality]
+Tone: [confident/warm/authoritative/friendly/calm]
+Pacing: [slow/moderate/fast], [steady/varied] rhythm
+Accent: {user_accent if user_accent else "Neutral, no regional accent"}
+---
 
-=== ACCENT RULE (EXTREMELY IMPORTANT) ===
-{accent_instruction}
+RULES:
+1. Keep it SHORT - only voice characteristics
+2. NO instructions about "consistency" or "all clips" - the AI doesn't know about other clips
+3. NO audio quality notes - that's handled separately
+4. Be SPECIFIC with descriptors"""
 
-=== VOICE IDENTITY TEMPLATE (MANDATORY FORMAT) ===
+        user_msg = f"""Create a voice profile for:
+- Detected: {auto_age} {auto_gender}
+- Role: {final_role}
+- Tone preference: {final_voice_tone}
+- Delivery: {final_delivery}
+- Language: {language}
+- Accent: {user_accent if user_accent else "None - neutral"}
 
-1. Age & Gender: [Specific age range like "early 30s" not just "adult"] [gender]
-
-2. Accent: {"Use the user-requested accent: " + user_accent if user_accent else "NONE - completely neutral, no regional accent whatsoever. Like a professional voice actor with no detectable origin."}
-
-3. Pitch & Timbre: 
-   - Pitch: [specific like "low-medium, around 180Hz" or "higher register"]
-   - Timbre: [warm/bright/dark/rich/thin]
-   - Resonance: [chest voice/head voice/balanced]
-
-4. Vocal Texture (CRITICAL FOR CONSISTENCY):
-   - [Choose 2-3: smooth, slightly breathy, crisp, silky, husky, gravelly, nasal, clear, velvety, airy, full-bodied]
-   - Any unique quality: [slight vocal fry, natural raspiness, bell-like clarity, etc.]
-
-5. Tone & Personality:
-   - Baseline emotion: [confident, warm, serious, friendly, authoritative]
-   - Energy level: [calm, moderate, high-energy]
-
-6. Pacing & Rhythm:
-   - Speed: [slow/moderate/fast, specific like "105-115 words per minute"]
-   - Rhythm: [steady, varied, staccato, flowing]
-   - Pause style: [minimal, natural beats, dramatic pauses]
-
-7. Signature Traits (UNIQUE IDENTIFIERS - pick 2-3):
-   - [Examples: slight upward inflection at sentence ends, emphasis on first syllable, soft consonants, crisp T's and D's, gentle fade at phrase ends, subtle warmth on vowels]
-
-8. Audio Quality: Studio-grade, broadcast quality, crystal clear, no background noise.
-
-=== ROLE GUIDELINES ===
-Adjust the profile based on role but KEEP IT SPECIFIC:
-- News Anchor: authoritative, measured, formal
-- Fitness Coach: energetic, motivational, loud
-- Doctor: calm, reassuring, precise
-- Teacher: clear, patient, engaging
-- Salesperson: enthusiastic, persuasive
-- Corporate: professional, polished
-- Influencer/Vlogger: natural, conversational, authentic
-
-=== CRITICAL RULES ===
-1. {"Use ONLY the accent specified: " + user_accent if user_accent else "NO ACCENT - the voice must be completely neutral with zero regional coloring"}
-2. Voice must be consistent across all clips
-3. Be extremely specific - vague descriptions cause voice drift"""
-
-        user_msg = f"""=== SUBJECT FROM IMAGE ===
-Age: {auto_age}
-Gender: {auto_gender}
-Visual: {visual_desc}
-
-=== VOICE REQUIREMENTS ===
-Language: {language}
-Role/Style: {final_role}
-Tone preference: {final_voice_tone}
-Delivery style: {final_delivery}
-Accent: {user_accent if user_accent else "NONE - completely neutral, no accent"}
-
-=== YOUR TASK ===
-Create a HIGHLY SPECIFIC voice identity using ALL 8 sections of the template.
-The voice must be unique enough to be consistent across 10+ video clips.
-Include at least 2 "Signature Traits" that make this voice recognizable.
-
-REMEMBER: {"Use the accent: " + user_accent if user_accent else "NO ACCENT AT ALL - neutral voice only"}"""
+Output the voice profile in the exact format specified."""
 
         resp = client.chat.completions.create(
             model=OPENAI_MODEL,
@@ -749,16 +680,10 @@ REMEMBER: {"Use the accent: " + user_accent if user_accent else "NO ACCENT AT AL
                 {"role": "user", "content": user_msg},
             ],
             temperature=0.3,
-            max_tokens=500,
+            max_tokens=250,
         )
         
-        result = resp.choices[0].message.content.strip()
-        
-        # Add consistency and accent reminder at the end
-        accent_reminder = f"ACCENT: {user_accent}" if user_accent else "ACCENT: NONE - completely neutral, no regional accent"
-        result += f"\n\n[CONSISTENCY LOCK: This exact voice profile must be used for ALL clips. {accent_reminder}. Do not deviate.]"
-        
-        return result
+        return resp.choices[0].message.content.strip()
         
     except Exception as e:
         vlog(f"[VOICE PROFILE] Error: {e}")
@@ -782,82 +707,35 @@ def build_voice_profile_template(
     delivery: str,
     user_accent: str = ""
 ) -> str:
-    """Build a structured voice profile with specific identifiers for consistency."""
+    """Build a CONCISE voice profile - only what Veo needs."""
     
-    # NO ACCENT by default
-    if user_accent:
-        accent_line = f"{user_accent}"
-    else:
-        accent_line = f"NONE - completely neutral {language} voice with NO regional accent. No Indian, British, Southern, Australian, or any other accent. Like a professional voice actor with no detectable origin."
+    accent = user_accent if user_accent else "Neutral, no regional accent"
     
-    return f"""1. Age & Gender: {age} {gender}
-
-2. Accent: {accent_line}
-
-3. Pitch & Timbre:
-   - Pitch: Medium register
-   - Timbre: Warm and clear
-   - Resonance: Balanced chest-head voice
-
-4. Vocal Texture:
-   - Smooth and clear articulation
-   - No vocal fry, no breathiness
-   - Clean, professional sound
-
-5. Tone & Personality:
-   - Baseline: {tone}, professional
-   - Energy: Moderate, grounded
-
-6. Pacing & Rhythm:
-   - Speed: Moderate, {delivery}
-   - Rhythm: Steady and flowing
-   - Pauses: Natural phrase breaks
-
-7. Signature Traits:
-   - Consistent warmth throughout
-   - Clear word endings
-   - Natural emphasis patterns
-
-8. Audio Quality: Studio-grade, broadcast quality, crystal clear, no background noise.
-
-[CONSISTENCY LOCK: This exact voice profile must be used for ALL clips. {"ACCENT: " + user_accent if user_accent else "ACCENT: NONE - no regional accent"}. Do not deviate.]"""
+    return f"""---
+Gender: {gender}
+Age: {age}
+Pitch: Medium, warm
+Timbre: Clear with balanced resonance
+Texture: Smooth, professional
+Tone: {tone}
+Pacing: Moderate, {delivery}
+Accent: {accent}
+---"""
 
 
 def get_default_voice_profile(language: str, user_context: str = "") -> str:
-    """Default voice profile with NO ACCENT by default."""
+    """Default CONCISE voice profile."""
     
-    context_note = f"\nSpeaker context: {user_context}" if user_context else ""
-    
-    return f"""1. Age & Gender: Adult, matching the speaker visible in the image
-
-2. Accent: NONE - completely neutral {language} voice with NO regional accent. No Indian, British, Southern, Australian, or any other accent.
-
-3. Pitch & Timbre:
-   - Pitch: Medium register
-   - Timbre: Warm and clear
-   - Resonance: Balanced, natural
-
-4. Vocal Texture:
-   - Smooth and clear articulation
-   - Natural, unaffected quality
-
-5. Tone & Personality:
-   - Baseline: Professional, confident, approachable
-   - Energy: Moderate{context_note}
-
-6. Pacing & Rhythm:
-   - Speed: Moderate, conversational
-   - Rhythm: Steady and natural
-   - Pauses: Natural phrase breaks
-
-7. Signature Traits:
-   - Consistent warmth throughout
-   - Clear word endings
-   - Natural emphasis patterns
-
-8. Audio Quality: Studio-grade, broadcast quality, crystal clear, no background noise.
-
-[CONSISTENCY LOCK: This exact voice profile must be used for ALL clips. ACCENT: NONE - no regional accent. Do not deviate.]"""
+    return f"""---
+Gender: Match the person in image
+Age: Adult
+Pitch: Medium
+Timbre: Warm and clear
+Texture: Smooth, natural
+Tone: Professional, confident
+Pacing: Moderate, conversational
+Accent: Neutral {language}, no regional accent
+---"""
 
 
 # ===================== STEP 5: PROMPT ASSEMBLY (ROUTING) =====================
@@ -1026,7 +904,9 @@ Ambient noise: Complete silence, professional recording booth, no room ambiance.
 
 Style: Raw realistic footage, natural lighting, photorealistic. Speech timing: 0s to {speech_end_time:.1f}s, then silence.
 
-No subtitles, no text overlays, no captions, no watermarks. No background music, no laughter, no applause, no crowd sounds, no ambient noise. No morphing, no face distortion, no jerky movements. Only the speaker's isolated voice."""
+No subtitles, no text overlays, no captions, no watermarks. No background music, no laughter, no applause, no crowd sounds, no ambient noise. No morphing, no face distortion, no jerky movements. Only the speaker's isolated voice.
+
+(no subtitles)"""
 
     # Add redo feedback at the top if present
     if redo_feedback:
