@@ -2920,15 +2920,42 @@ Example: A realistic vertical video of a professional presenter speaking directl
             const item=document.querySelector(`.job-item[onclick*="${id}"]`);if(item)item.classList.add('selected');
             loadJob(id);loadClips(id);loadLogs(id);
             let pollTimer=null;
+            let lastJobStatus = null;
             (function startPolling(){
                 if(pollTimer)clearInterval(pollTimer);
+                // Poll every 2 seconds instead of 1 - less aggressive
                 pollTimer=setInterval(async()=>{
                     if(selectedJobId!==id){clearInterval(pollTimer);return;}
                     const jr=await fetch(`${API}/jobs/${id}`).catch(()=>null);if(!jr)return;const job=await jr.json();
+                    
+                    // Update job info panel
                     document.getElementById('jobInfo').innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><span class="badge badge-${job.status}">${job.status}</span><span class="job-id">${job.id}</span></div><div class="progress-bar" style="height:6px"><div class="progress-fill ${job.status==='running'?'generating':''}" style="width:${job.progress_percent}%"></div></div><div class="stats-row"><div class="stat"><div class="stat-val">${job.total_clips}</div><div class="stat-lbl">Total</div></div><div class="stat"><div class="stat-val" style="color:var(--success)">${job.completed_clips}</div><div class="stat-lbl">Done</div></div><div class="stat"><div class="stat-val" style="color:var(--error)">${job.failed_clips}</div><div class="stat-lbl">Failed</div></div></div>`;
                     document.getElementById('jobActions').innerHTML=`${job.status==='running'?`<button class="btn btn-danger btn-sm" onclick="cancelJob('${job.id}')">⏹</button>`:''}${job.status==='completed'?`<button class="btn btn-primary btn-sm" onclick="downloadAll('${job.id}')">📥</button>`:''}<button class="btn btn-secondary btn-sm" onclick="deleteJob('${job.id}')">🗑</button>`;
-                    loadClips(id);loadLogs(id);refreshJobsList();
-                },1000);
+                    
+                    // Only reload clips if job is actively running OR status changed
+                    const statusChanged = lastJobStatus !== job.status;
+                    lastJobStatus = job.status;
+                    
+                    if(job.status === 'running' || statusChanged) {
+                        loadClips(id);
+                    }
+                    
+                    // Always update logs
+                    loadLogs(id);
+                    
+                    // Update job list less frequently (only on status change)
+                    if(statusChanged) {
+                        refreshJobsList();
+                    }
+                    
+                    // Stop polling if job is completed/failed/cancelled
+                    if(job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
+                        // Do one final refresh and stop
+                        loadClips(id);
+                        refreshJobsList();
+                        clearInterval(pollTimer);
+                    }
+                },2000);
             })();
         }
         
@@ -2994,7 +3021,73 @@ Example: A realistic vertical video of a professional presenter speaking directl
         
         async function loadLogs(id){try{const isInitial=lastLogId===0,url=isInitial?`${API}/jobs/${id}/logs?limit=100`:`${API}/jobs/${id}/logs?since_id=${lastLogId}&limit=30`;const r=await fetch(url);if(!r.ok)return;const logs=await r.json();if(!logs.length)return;lastLogId=logs[logs.length-1].id;const c=document.getElementById('logs');const logsHtml=logs.map(l=>`<div class="log"><span class="log-time">${new Date(l.created_at).toLocaleTimeString()}</span><span class="log-msg">${l.message}</span></div>`).join('');if(isInitial)c.innerHTML=logsHtml;else c.innerHTML+=logsHtml;c.scrollTop=c.scrollHeight;}catch(e){}}
         
-        function approve(cid){const btn=event.target,card=btn.closest('.clip-card');card.classList.add('clip-approved');card.querySelector('.badge').className='badge badge-approved';card.querySelector('.badge').textContent='approved';btn.closest('.clip-actions').innerHTML='<div style="color:var(--success);text-align:center;font-size:14px">✓ Approved</div>';fetch(`${API}/clips/${cid}/approve`,{method:'POST'}).catch(e=>{loadClips(selectedJobId);});}
+        function approve(cid){
+            const btn=event.target;
+            const card=btn.closest('.clip-card');
+            const clipIdx = Array.from(document.querySelectorAll('.clip-card')).indexOf(card);
+            
+            // Optimistic UI update - no reload needed
+            card.classList.remove('clip-rejected');
+            card.classList.add('clip-approved');
+            card.querySelector('.badge').className='badge badge-approved';
+            card.querySelector('.badge').textContent='approved';
+            btn.closest('.clip-actions').innerHTML='<div style="color:var(--success);text-align:center;font-size:14px">✓ Approved</div>';
+            
+            // Update local state to prevent polling from reverting
+            if(clipIdx >= 0) {
+                clipStates[clipIdx] = `completed|approved|${clipStates[clipIdx]?.split('|')[2] || ''}|${clipStates[clipIdx]?.split('|')[3] || '1'}|${clipStates[clipIdx]?.split('|')[4] || '1'}`;
+            }
+            
+            // Make the API call in background - no need to wait
+            fetch(`${API}/clips/${cid}/approve`,{method:'POST'})
+                .then(r => {
+                    if(!r.ok) throw new Error('Approve failed');
+                    return r.json();
+                })
+                .then(() => {
+                    // Just update the banner counts, don't reload clips
+                    if(selectedJobId) {
+                        updateReviewBannerOnly(selectedJobId);
+                    }
+                })
+                .catch(e => {
+                    console.error('Approve error:', e);
+                    // Only reload on failure to revert
+                    loadClips(selectedJobId);
+                });
+        }
+        
+        // Lightweight banner update - doesn't touch clips
+        async function updateReviewBannerOnly(jobId) {
+            try {
+                const rs = await fetch(`${API}/jobs/${jobId}/review-status`).then(r=>r.json());
+                const container = document.querySelector('.clips-container') || document.getElementById('clipsList');
+                if(!container) return;
+                
+                let banner = container.querySelector('.review-banner');
+                let bannerHtml = '';
+                
+                if(rs.all_approved) {
+                    bannerHtml = `<div class="review-banner" style="background:var(--success)"><h3>✅ All Approved</h3><div style="display:flex;gap:8px"><button class="btn btn-secondary btn-sm" onclick="downloadAll('${jobId}')">📥 Download</button><button class="btn btn-primary btn-sm" onclick="exportFinalVideo('${jobId}')">🎬 Export Final</button></div></div>`;
+                } else if(rs.pending_review > 0) {
+                    bannerHtml = `<div class="review-banner"><h3>📋 Review</h3><div class="review-stats"><div class="review-stat"><div class="review-stat-val">${rs.approved}</div><div class="review-stat-lbl">OK</div></div><div class="review-stat"><div class="review-stat-val">${rs.pending_review}</div><div class="review-stat-lbl">Pending</div></div></div></div>`;
+                }
+                
+                if(banner) {
+                    if(bannerHtml) banner.outerHTML = bannerHtml;
+                    else banner.remove();
+                } else if(bannerHtml) {
+                    container.insertAdjacentHTML('afterbegin', bannerHtml);
+                }
+            } catch(e) {
+                console.error('Failed to update review banner:', e);
+            }
+        }
+        
+        // Keep the old function for backwards compatibility
+        async function updateReviewBanner(jobId) {
+            return updateReviewBannerOnly(jobId);
+        }
         function confirmDelete(cid,clipIdx){if(confirm(`Delete Clip #${clipIdx+1}?`))deleteClip(cid,clipIdx);}
         function deleteClip(cid,clipIdx){const card=document.querySelectorAll('.clip-card')[clipIdx];if(card){card.style.opacity='0.5';card.style.pointerEvents='none';}fetch(`${API}/clips/${cid}`,{method:'DELETE'}).then(r=>{if(!r.ok)throw new Error();return r.json();}).then(()=>{if(card)card.remove();clipStates={};loadClips(selectedJobId);}).catch(e=>{if(card){card.style.opacity='1';card.style.pointerEvents='auto';}alert('Failed');});}
         async function switchVariant(clipId,variantNum){if(variantNum<1)return;try{const r=await fetch(`${API}/clips/${clipId}/select-variant/${variantNum}`,{method:'POST'});if(!r.ok)throw new Error();clipStates={};await loadClips(selectedJobId);}catch(e){alert('Failed to switch');}}
@@ -3010,7 +3103,13 @@ Example: A realistic vertical video of a professional presenter speaking directl
         function downloadAll(id){fetch(`${API}/jobs/${id}/outputs?approved_only=true`).then(r=>r.json()).then(d=>{if(d.videos.length===0){alert('No approved clips to download');return;}d.videos.forEach((v,i)=>{setTimeout(()=>{const a=document.createElement('a');a.href=v.url;a.download=v.filename;a.click();},i*500);});});}
         
         // ============ Export Final Video ============
+        let isExporting = false; // Prevent multiple concurrent exports
+        
         async function exportFinalVideo(jobId) {
+            if (isExporting) {
+                alert('Export already in progress');
+                return;
+            }
             // Get current export settings
             const currentSettings = getExportSettings();
             
@@ -3100,6 +3199,8 @@ Example: A realistic vertical video of a professional presenter speaking directl
         }
         
         async function doExport(jobId, exportSettings) {
+            isExporting = true; // Set lock
+            
             // Create export progress banner - ADD it, don't replace the existing banner
             const container = document.getElementById('clipsList');
             
@@ -3244,6 +3345,8 @@ Example: A realistic vertical video of a professional presenter speaking directl
                         </div>
                     `;
                 }
+            } finally {
+                isExporting = false; // Always release lock
             }
         }
         
