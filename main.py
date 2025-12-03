@@ -1140,21 +1140,26 @@ async def list_outputs(
     List generated videos for a job.
     
     If approved_only=True, only returns videos from approved clips (selected variants).
+    Falls back to filesystem listing if job not in database (e.g., after server restart).
     """
     job = db.query(Job).filter(Job.id == job_id).first()
     
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    output_dir = Path(job.output_dir)
+    # Try to find output directory even without database entry
+    if job:
+        output_dir = Path(job.output_dir)
+    else:
+        # Fallback: check if directory exists directly
+        output_dir = app_config.outputs_dir / job_id
+        if not output_dir.exists():
+            raise HTTPException(status_code=404, detail="Job not found and no output directory exists")
     
     if not output_dir.exists():
         return {"job_id": job_id, "videos": [], "count": 0}
     
     videos = []
     
-    if approved_only:
-        # Only return approved clips' selected variants
+    if approved_only and job:
+        # Only return approved clips' selected variants (requires DB)
         clips = db.query(Clip).filter(
             Clip.job_id == job_id,
             Clip.approval_status == "approved"
@@ -1172,28 +1177,42 @@ async def list_outputs(
                         "variant": clip.selected_variant,
                     })
     else:
-        # Return all videos
+        # Return all videos from filesystem
         for f in output_dir.glob("*.mp4"):
+            # Try to extract clip index from filename (e.g., "1_image_00_..." -> clip 1)
+            clip_idx = None
+            try:
+                parts = f.stem.split("_")
+                if parts[0].isdigit():
+                    clip_idx = int(parts[0])
+            except:
+                pass
+            
             videos.append({
                 "filename": f.name,
                 "size": f.stat().st_size,
                 "url": f"/api/jobs/{job_id}/outputs/{f.name}",
+                "clip_index": clip_idx,
             })
     
-    videos.sort(key=lambda x: x.get("clip_index", 0) if approved_only else x["filename"])
+    videos.sort(key=lambda x: x.get("clip_index") or 0 if approved_only else x["filename"])
     
     return {"job_id": job_id, "videos": videos, "count": len(videos)}
 
 
 @app.get("/api/jobs/{job_id}/outputs/{filename}")
 async def download_output(job_id: str, filename: str, db: Session = Depends(get_db_session)):
-    """Download a generated video"""
+    """Download a generated video. Works even after server restart."""
     job = db.query(Job).filter(Job.id == job_id).first()
     
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
+    # Try to find output directory even without database entry
+    if job:
+        output_dir = Path(job.output_dir)
+    else:
+        # Fallback: check if directory exists directly
+        output_dir = app_config.outputs_dir / job_id
     
-    filepath = Path(job.output_dir) / filename
+    filepath = output_dir / filename
     
     if not filepath.exists():
         raise HTTPException(status_code=404, detail="File not found")
@@ -1228,6 +1247,8 @@ async def export_final_video(
     Export all approved clips as a single final video.
     Optionally applies trimming and Voice Activity Detection (VAD).
     
+    Works even after server restart by falling back to filesystem.
+    
     Rules for start frame trimming:
     - Never trim start frames from the FIRST clip (clip_index 0)
     - Never trim start frames from clips that start a "cut" transition scene
@@ -1235,17 +1256,98 @@ async def export_final_video(
     from video_processor import export_final_video as process_export, check_vad_available
     
     job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
     
-    # Get approved clips in order
-    clips = db.query(Clip).filter(
-        Clip.job_id == job_id,
-        Clip.approval_status == "approved"
-    ).order_by(Clip.clip_index).all()
+    # Determine output directory - fallback to filesystem if job not in DB
+    if job:
+        output_dir = Path(job.output_dir)
+        dialogue_json = job.dialogue_json
+    else:
+        # Fallback: check if directory exists directly
+        output_dir = app_config.outputs_dir / job_id
+        if not output_dir.exists():
+            raise HTTPException(status_code=404, detail="Job not found and no output directory exists")
+        dialogue_json = None
+        print(f"[Export] Job not in database, using filesystem fallback for {job_id}")
     
-    if not clips:
-        raise HTTPException(status_code=400, detail="No approved clips to export")
+    # Get clips - either from DB or filesystem
+    clip_info = []
+    cut_scene_first_clips = set()
+    
+    if job:
+        # Get approved clips from database
+        clips = db.query(Clip).filter(
+            Clip.job_id == job_id,
+            Clip.approval_status == "approved"
+        ).order_by(Clip.clip_index).all()
+        
+        if not clips:
+            raise HTTPException(status_code=400, detail="No approved clips to export")
+        
+        # Parse scenes for smart trim
+        try:
+            dialogue_data = json.loads(dialogue_json) if dialogue_json else {}
+            scenes = dialogue_data.get("scenes", [])
+            
+            if scenes and settings.smart_trim:
+                for scene in scenes:
+                    transition = scene.get("transition", None)
+                    scene_clips = scene.get("clips", [])
+                    if transition == "cut" and scene_clips:
+                        first_clip_of_scene = min(scene_clips)
+                        cut_scene_first_clips.add(first_clip_of_scene)
+                        print(f"[Export] Scene with 'cut' transition starts at clip {first_clip_of_scene}")
+        except Exception as e:
+            print(f"[Export] Warning: Could not parse scenes: {e}")
+        
+        # Collect clip file paths
+        for clip in clips:
+            if clip.output_filename:
+                clip_path = output_dir / clip.output_filename
+                if clip_path.exists():
+                    skip_start_trim = False
+                    if settings.smart_trim:
+                        skip_start_trim = (clip.clip_index == 0 or clip.clip_index in cut_scene_first_clips)
+                    
+                    clip_info.append({
+                        "path": clip_path,
+                        "clip_index": clip.clip_index,
+                        "skip_start_trim": skip_start_trim
+                    })
+                    
+                    if skip_start_trim:
+                        print(f"[Export] Clip {clip.clip_index}: SKIP start frame trim")
+    else:
+        # Fallback: get all MP4 files from filesystem
+        mp4_files = sorted(output_dir.glob("*.mp4"))
+        
+        if not mp4_files:
+            raise HTTPException(status_code=400, detail="No video files found in output directory")
+        
+        # Filter out any existing final exports
+        mp4_files = [f for f in mp4_files if not f.name.startswith("final_export")]
+        
+        print(f"[Export] Filesystem fallback: found {len(mp4_files)} video files")
+        
+        for i, mp4_file in enumerate(mp4_files):
+            # Try to extract clip index from filename
+            clip_idx = i
+            try:
+                parts = mp4_file.stem.split("_")
+                if parts[0].isdigit():
+                    clip_idx = int(parts[0])
+            except:
+                pass
+            
+            skip_start_trim = (i == 0) if settings.smart_trim else False
+            
+            clip_info.append({
+                "path": mp4_file,
+                "clip_index": clip_idx,
+                "skip_start_trim": skip_start_trim
+            })
+        
+        # Sort by clip index
+        clip_info.sort(key=lambda x: x["clip_index"])
     
     # Check VAD availability if requested
     if settings.remove_silence and not check_vad_available():
@@ -1254,64 +1356,15 @@ async def export_final_video(
             detail="VAD requires torch and numpy. Install with: pip install torch numpy"
         )
     
-    # Parse scenes to find "cut" transitions
-    # Clips that start a "cut" scene should NOT have start frames trimmed
-    cut_scene_first_clips = set()  # Set of clip indices that start a "cut" scene
-    
-    try:
-        dialogue_data = json.loads(job.dialogue_json) if job.dialogue_json else {}
-        scenes = dialogue_data.get("scenes", [])
-        
-        if scenes and settings.smart_trim:
-            for scene in scenes:
-                transition = scene.get("transition", None)
-                scene_clips = scene.get("clips", [])
-                
-                # If this scene has "cut" transition and has clips, mark the first clip
-                if transition == "cut" and scene_clips:
-                    first_clip_of_scene = min(scene_clips)
-                    cut_scene_first_clips.add(first_clip_of_scene)
-                    print(f"[Export] Scene with 'cut' transition starts at clip {first_clip_of_scene}")
-    except Exception as e:
-        print(f"[Export] Warning: Could not parse scenes: {e}")
-    
-    # Collect clip file paths with per-clip trim settings
-    clip_info = []
-    for clip in clips:
-        if clip.output_filename:
-            clip_path = Path(job.output_dir) / clip.output_filename
-            if clip_path.exists():
-                # Determine if we should skip start frame trimming
-                # Only apply smart trim rules if smart_trim is enabled
-                if settings.smart_trim:
-                    skip_start_trim = (
-                        clip.clip_index == 0 or  # First clip ever
-                        clip.clip_index in cut_scene_first_clips  # First clip of a "cut" scene
-                    )
-                else:
-                    skip_start_trim = False  # Trim all clips equally
-                
-                clip_info.append({
-                    "path": clip_path,
-                    "clip_index": clip.clip_index,
-                    "skip_start_trim": skip_start_trim
-                })
-                
-                if skip_start_trim:
-                    print(f"[Export] Clip {clip.clip_index}: SKIP start frame trim (smart trim: first clip or cut scene)")
-    
     if not clip_info:
         raise HTTPException(status_code=400, detail="No valid clip files found")
     
     print(f"[Export] Smart trim: {settings.smart_trim}, Start frames: {settings.frames_to_cut_start}, End frames: {settings.frames_to_cut_end}")
     
-    if not clip_info:
-        raise HTTPException(status_code=400, detail="No valid clip files found")
-    
     # Create output filename
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     output_filename = f"final_export_{timestamp}.mp4"
-    output_path = Path(job.output_dir) / output_filename
+    output_path = output_dir / output_filename
     
     try:
         print(f"[Export] Starting export for job {job_id}")
