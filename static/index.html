@@ -3235,7 +3235,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 // In storyboard mode, use_interpolation is always true (managed per-scene)
                 const useInterpolation = editorMode === 'storyboard' ? true : document.getElementById('togInterp').dataset.value==='true';
                 
-                const cfg={aspect_ratio:getSelectedAspect(),resolution:getSelectedResolution(),duration:document.getElementById('duration').value,language:document.getElementById('language').value,use_interpolation:useInterpolation,use_openai_prompt_tuning:useAI,use_frame_vision:useAI,custom_prompt:useAI?'':customPrompt,user_context:useAI?contextInput:'',single_image_mode:uploadedImages.length===1,max_retries_per_clip:5,parallel_clips:3,storyboard_mode:editorMode==='storyboard'};
+                const cfg={aspect_ratio:getSelectedAspect(),resolution:getSelectedResolution(),duration:document.getElementById('duration').value,language:document.getElementById('language').value,use_interpolation:useInterpolation,use_openai_prompt_tuning:useAI,use_frame_vision:useAI,custom_prompt:useAI?'':customPrompt,user_context:useAI?contextInput:'',single_image_mode:uploadedImages.length===1,max_retries_per_clip:5,parallel_clips:1,storyboard_mode:editorMode==='storyboard'};
                 
                 const payload = {config:cfg, dialogue_lines:lines, api_keys:{gemini_keys:[],openai_key:null}, job_id:uploadJobId};
                 if(scenesPayload) payload.scenes = scenesPayload;

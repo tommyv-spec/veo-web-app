@@ -163,7 +163,7 @@ class AppConfig:
     debug: bool = True
     
     # Workers
-    max_workers: int = 3  # Concurrent video generation jobs
+    max_workers: int = 1  # Concurrent video generation jobs (reduced for 512MB RAM limit)
     worker_poll_interval: float = 1.0
     
     # File limits

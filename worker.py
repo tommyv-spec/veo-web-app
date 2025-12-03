@@ -669,9 +669,16 @@ class JobWorker:
                     auto_cycle_mode = scenes_data is None or len(scenes_data) == 0
                     
                     if is_last_clip:
-                        # LAST CLIP: Never assign end frame - let it end naturally
-                        use_end_frame = False
-                        end_frame_reason = "last clip, no end frame (ends naturally)"
+                        # LAST CLIP: Check if clip mode is "blend"
+                        if clip_mode == "blend":
+                            # BLEND mode: Use same image as end frame for final interpolation
+                            use_end_frame = True
+                            actual_end_idx = start_idx  # Same image
+                            end_frame_reason = "last clip in blend mode: same image for final interpolation"
+                        else:
+                            # Other modes: No end frame - ends naturally
+                            use_end_frame = False
+                            end_frame_reason = "last clip, no end frame (ends naturally)"
                     else:
                         next_info = clip_info[i + 1]
                         next_scene = next_info["scene_index"]
@@ -690,9 +697,16 @@ class JobWorker:
                                 end_frame_reason = "auto-cycle: same image, natural continuation"
                         elif next_scene == scene_index:
                             # STORYBOARD MODE: Next clip is in SAME scene
-                            # No end frame - let it continue naturally
-                            use_end_frame = False
-                            end_frame_reason = "same scene, natural continuation"
+                            # Check if current clip mode is "blend" - if so, use interpolation
+                            if clip_mode == "blend":
+                                # BLEND mode: Use same image as end frame for interpolation/movement
+                                use_end_frame = True
+                                actual_end_idx = start_idx  # Same image
+                                end_frame_reason = "blend mode: same image for interpolation within scene"
+                            else:
+                                # CONTINUE mode: No end frame - natural continuation
+                                use_end_frame = False
+                                end_frame_reason = "same scene, natural continuation"
                         else:
                             # STORYBOARD MODE: Next clip is in DIFFERENT scene
                             next_transition = next_info["scene_transition"]
