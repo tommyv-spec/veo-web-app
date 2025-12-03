@@ -1228,12 +1228,23 @@ class JobWorker:
                     
                     # Save generation log if successful
                     if result.get("success") and result.get("output_path"):
+                        # Safely get frame names (handle None cases for single-image mode)
+                        start_frame_name = start_frame.name if start_frame and hasattr(start_frame, 'name') else str(start_frame) if start_frame else "unknown"
+                        
+                        # For end frame: prefer result's end_frame_used, then end_frame, or fall back to start_frame
+                        if result.get("end_frame_used") and hasattr(result["end_frame_used"], 'name'):
+                            end_frame_name = result["end_frame_used"].name
+                        elif end_frame and hasattr(end_frame, 'name'):
+                            end_frame_name = end_frame.name
+                        else:
+                            end_frame_name = start_frame_name  # Single image mode fallback
+                        
                         gen_log = GenerationLog(
                             job_id=job_id,
                             video_id=dialogue_id,
                             images_dir=images_dir_str,
-                            start_frame=start_frame.name,
-                            end_frame=result["end_frame_used"].name if result.get("end_frame_used") else end_frame.name,
+                            start_frame=start_frame_name,
+                            end_frame=end_frame_name,
                             dialogue_line=dialogue_text,
                             language=generator.config.language,
                             prompt_text=result.get("prompt_text", ""),
