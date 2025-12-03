@@ -1,1790 +1,1673 @@
 # -*- coding: utf-8 -*-
 """
-Veo Web App - Main FastAPI Application
+Background Worker for Veo Web App
 
-Features:
-- REST API for job management
-- Server-Sent Events for real-time progress
-- File upload handling
-- Static file serving
+Handles:
+- Job queue processing
+- Progress updates
+- Error recovery
+- Graceful shutdown
 """
 
-import os
 import json
-import uuid
-import shutil
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Dict, Any
-from contextlib import asynccontextmanager
-
-from fastapi import (
-    FastAPI, HTTPException, UploadFile, File, Form, 
-    BackgroundTasks, Depends, Query
-)
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, StreamingResponse, HTMLResponse
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+from typing import Dict, Optional, List, Set
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from queue import Queue, Empty
+import traceback
 
 from config import (
-    app_config, VideoConfig, APIKeysConfig, DialogueLine,
-    JobStatus, ClipStatus, SUPPORTED_IMAGE_FORMATS,
-    MAX_IMAGE_SIZE_BYTES, AspectRatio, Resolution, Duration,
-    ApprovalStatus, api_keys_config
+    JobStatus, ClipStatus, VideoConfig, APIKeysConfig, 
+    DialogueLine, app_config, get_gemini_keys_from_env, get_openai_key_from_env,
+    api_keys_config  # Global singleton for persistent key blocking
 )
 from models import (
-    init_db, get_db_session, Job, Clip, JobLog, BlacklistEntry,
-    get_job_logs_since, add_job_log
+    get_db, Job, Clip, JobLog, BlacklistEntry, GenerationLog,
+    add_job_log, update_job_progress
 )
-from worker import worker
-from error_handler import ErrorCode
+from veo_generator import VeoGenerator, list_images, GENAI_AVAILABLE
+from error_handler import VeoError, error_handler
 
 
-# ============ Pydantic Models ============
-
-class DialogueLineInput(BaseModel):
-    id: int
-    text: str
-    start_image_idx: Optional[int] = None  # Storyboard image assignment
-    scene_index: Optional[int] = None      # Which scene this clip belongs to
-    clip_mode: Optional[str] = "blend"     # 'blend' | 'continue' | 'fresh'
-    scene_transition: Optional[str] = None # 'blend' | 'cut' | null (for first scene)
-
-
-class SceneInput(BaseModel):
-    sceneIndex: int
-    imageIndex: int
-    clipMode: str = "blend"        # 'blend' | 'continue' | 'fresh'
-    transition: Optional[str] = None  # 'blend' | 'cut' | null for first scene
-    clips: List[int] = []          # List of clip indices in this scene
-
-
-class VideoConfigInput(BaseModel):
-    aspect_ratio: str = "9:16"
-    resolution: str = "720p"
-    duration: str = "8"
-    language: str = "English"
-    use_interpolation: bool = True
-    use_openai_prompt_tuning: bool = True
-    use_frame_vision: bool = True
-    max_retries_per_clip: int = 5
-    custom_prompt: str = ""  # User's custom prompt when AI is disabled
-    user_context: str = ""  # User context for AI prompt generation
-    single_image_mode: bool = False  # Use same image for start/end frames
-    storyboard_mode: bool = False    # Whether in storyboard mode
-
-
-class APIKeysInput(BaseModel):
-    gemini_keys: List[str] = []
-    openai_key: Optional[str] = None
-
-
-class CreateJobRequest(BaseModel):
-    config: VideoConfigInput
-    dialogue_lines: List[DialogueLineInput]
-    api_keys: APIKeysInput
-    job_id: Optional[str] = None  # Use existing upload job_id if provided
-    scenes: Optional[List[SceneInput]] = None  # Scene definitions for storyboard mode
-
-
-class JobResponse(BaseModel):
-    id: str
-    status: str
-    progress_percent: float
-    total_clips: int
-    completed_clips: int
-    failed_clips: int
-    skipped_clips: int
-    created_at: Optional[str]
-    started_at: Optional[str]
-    completed_at: Optional[str]
-
-
-class ClipResponse(BaseModel):
-    id: int
-    clip_index: int
-    dialogue_id: int
-    dialogue_text: str
-    status: str
-    retry_count: int
-    start_frame: Optional[str]
-    end_frame: Optional[str]
-    output_filename: Optional[str]
-    error_code: Optional[str]
-    error_message: Optional[str]
-    # New approval fields
-    approval_status: str = "pending_review"
-    generation_attempt: int = 1
-    attempts_remaining: int = 2
-    redo_reason: Optional[str] = None
-    versions: List[Dict] = []
-    # Variant fields
-    selected_variant: int = 1
-    total_variants: int = 0
-
-
-class RedoRequest(BaseModel):
-    reason: Optional[str] = None  # Optional reason for redo
-
-
-class ApprovalResponse(BaseModel):
-    clip_id: int
-    status: str
-    message: str
-    attempts_remaining: int
-
-
-class LogResponse(BaseModel):
-    id: int
-    created_at: str
-    level: str
-    category: Optional[str]
-    clip_index: Optional[int]
-    message: str
-
-
-class ErrorResponse(BaseModel):
-    code: str
-    message: str
-    details: Optional[Dict] = None
-
-
-# ============ Application Setup ============
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Application lifespan management"""
-    # Startup
-    init_db()
-    worker.start()
-    print("[App] Started")
+def get_api_keys_with_fallback(api_keys_json: str = None) -> APIKeysConfig:
+    """Get API keys - uses global singleton to persist blocked keys state."""
+    global api_keys_config
     
-    yield
+    api_keys_data = json.loads(api_keys_json) if api_keys_json else {}
+    gemini_keys = api_keys_data.get("gemini_keys", [])
+    openai_key = api_keys_data.get("openai_key")
     
-    # Shutdown
-    worker.stop()
-    print("[App] Shutdown complete")
+    # If job provides keys, update the global config (but keep blocked state)
+    if gemini_keys:
+        # Only update if different keys provided
+        if gemini_keys != api_keys_config.gemini_api_keys:
+            api_keys_config.gemini_api_keys = gemini_keys
+            print(f"[Worker] Updated Gemini keys from job: {len(gemini_keys)} keys", flush=True)
+    
+    if openai_key:
+        api_keys_config.openai_api_key = openai_key
+    
+    # Log current state
+    available = api_keys_config.get_available_key_count()
+    blocked = len(api_keys_config.blocked_keys)
+    print(f"[Worker] API Keys: {available} available, {blocked} blocked", flush=True)
+    
+    return api_keys_config
 
-
-app = FastAPI(
-    title="Veo 3.1 Video Generator",
-    description="Web interface for generating videos with Google Veo 3.1",
-    version="1.0.0",
-    lifespan=lifespan,
-)
-
-# CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-# ============ Static Files ============
-
-# Create static directory if not exists
-static_dir = app_config.base_dir / "static"
-static_dir.mkdir(exist_ok=True)
-
-# Mount static files
-app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-
-
-# ============ Root / UI ============
-
-@app.get("/", response_class=HTMLResponse)
-async def root():
-    """Serve the main UI"""
-    index_path = static_dir / "index.html"
-    if index_path.exists():
-        return FileResponse(index_path)
-    return HTMLResponse("<h1>Veo Web App</h1><p>UI not found. Place index.html in static/</p>")
-
-
-# ============ Image Upload ============
-
-@app.post("/api/upload")
-async def upload_images(
-    files: List[UploadFile] = File(...),
-    job_id: Optional[str] = Form(None),
-):
+class JobWorker:
     """
-    Upload images for video generation.
-    Creates a new job directory if job_id not provided.
-    Images are renamed sequentially to ensure correct ordering.
+    Background worker that processes video generation jobs.
+    
+    Features:
+    - Configurable worker pool
+    - Real-time progress updates
+    - Graceful shutdown
+    - Error recovery
     """
-    # Create or get job directory
-    if job_id is None:
-        job_id = str(uuid.uuid4())
     
-    job_dir = app_config.uploads_dir / job_id
-    job_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Count existing images to continue numbering
-    existing_images = [f for f in job_dir.iterdir() if f.suffix.lower() in SUPPORTED_IMAGE_FORMATS]
-    next_index = len(existing_images)
-    
-    uploaded = []
-    errors = []
-    
-    for file in files:
-        # Validate file type
-        ext = Path(file.filename).suffix.lower()
-        if ext not in SUPPORTED_IMAGE_FORMATS:
-            errors.append({
-                "filename": file.filename,
-                "error": f"Unsupported format: {ext}",
-                "code": ErrorCode.IMAGE_INVALID_FORMAT.value,
-            })
-            continue
+    def __init__(self, max_workers: int = 3):
+        self.max_workers = max_workers
+        self.executor: Optional[ThreadPoolExecutor] = None
+        self.running_jobs: Dict[str, VeoGenerator] = {}
+        self.job_queue: Queue = Queue()
+        self.shutdown_event = threading.Event()
+        self.worker_thread: Optional[threading.Thread] = None
         
-        # Check file size
-        content = await file.read()
-        if len(content) > MAX_IMAGE_SIZE_BYTES:
-            errors.append({
-                "filename": file.filename,
-                "error": f"File too large: {len(content) / 1024 / 1024:.1f}MB",
-                "code": ErrorCode.IMAGE_TOO_LARGE.value,
-            })
-            continue
+        # SSE subscribers (job_id -> list of queues)
+        self.subscribers: Dict[str, List[Queue]] = {}
+        self.subscribers_lock = threading.Lock()
+    
+    def start(self):
+        """Start the worker"""
+        if self.executor is not None:
+            return
         
-        # Save file with sequential name to ensure correct ordering
-        try:
-            # Use sequential naming: image_00.png, image_01.png, etc.
-            new_filename = f"image_{next_index:02d}{ext}"
-            filepath = job_dir / new_filename
-            with open(filepath, "wb") as f:
-                f.write(content)
-            uploaded.append({
-                "filename": new_filename,
-                "original_filename": file.filename,
-                "size": len(content),
-                "path": str(filepath),
-                "index": next_index,
-            })
-            next_index += 1
-        except Exception as e:
-            errors.append({
-                "filename": file.filename,
-                "error": str(e),
-                "code": ErrorCode.FILE_WRITE_ERROR.value,
-            })
-    
-    return {
-        "job_id": job_id,
-        "uploaded": uploaded,
-        "errors": errors,
-        "total_uploaded": len(uploaded),
-        "total_errors": len(errors),
-    }
-
-
-@app.get("/api/upload/{job_id}/images")
-async def list_uploaded_images(job_id: str):
-    """List images uploaded for a job"""
-    job_dir = app_config.uploads_dir / job_id
-    
-    if not job_dir.exists():
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    images = []
-    for f in job_dir.iterdir():
-        if f.suffix.lower() in SUPPORTED_IMAGE_FORMATS:
-            images.append({
-                "filename": f.name,
-                "size": f.stat().st_size,
-            })
-    
-    images.sort(key=lambda x: x["filename"])
-    
-    return {"job_id": job_id, "images": images, "count": len(images)}
-
-
-@app.delete("/api/upload/{job_id}")
-async def delete_uploaded_images(job_id: str):
-    """Delete all uploaded images for a job"""
-    job_dir = app_config.uploads_dir / job_id
-    
-    if job_dir.exists():
-        shutil.rmtree(job_dir)
-    
-    return {"status": "deleted", "job_id": job_id}
-
-
-# ============ Job Management ============
-
-@app.post("/api/jobs", response_model=JobResponse)
-async def create_job(
-    request: CreateJobRequest,
-    db: Session = Depends(get_db_session),
-):
-    """Create a new video generation job"""
-    # Use provided job_id (from upload) or generate new one
-    job_id = request.job_id if request.job_id else str(uuid.uuid4())
-    
-    # Validate images exist
-    images_dir = app_config.uploads_dir / job_id
-    
-    if not images_dir.exists() or not any(images_dir.iterdir()):
-        raise HTTPException(
-            status_code=400,
-            detail={"errors": ["No images uploaded. Please upload images first."], "code": ErrorCode.NO_IMAGES.value}
-        )
-    
-    # Create output directory
-    output_dir = app_config.outputs_dir / job_id
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Validate config
-    config = request.config
-    print(f"[main.py] Received config from UI: language={config.language}, user_context='{config.user_context[:50] if config.user_context else 'empty'}'")
-    errors = []
-    
-    if config.resolution == "1080p" and config.duration != "8":
-        errors.append("1080p requires 8 second duration")
-    
-    if config.use_interpolation and config.duration != "8":
-        errors.append("Interpolation requires 8 second duration")
-    
-    if not request.dialogue_lines:
-        errors.append("At least one dialogue line is required")
-    
-    # Check server-side API keys (not from request)
-    if not api_keys_config.gemini_api_keys:
-        errors.append("No Gemini API keys configured on server. Contact administrator.")
-    
-    if errors:
-        raise HTTPException(
-            status_code=400,
-            detail={"errors": errors, "code": ErrorCode.INVALID_CONFIG.value}
-        )
-    
-    # Use server-side API keys (ignore any keys from request)
-    api_keys_data = {
-        "gemini_keys": api_keys_config.gemini_api_keys,
-        "openai_key": api_keys_config.openai_api_key
-    }
-    
-    # Create job record
-    config_dict = config.model_dump()
-    print(f"[main.py] Creating job with config: language={config_dict.get('language')}, user_context='{config_dict.get('user_context', '')[:50] if config_dict.get('user_context') else 'empty'}'")
-    
-    # Convert dialogue lines to dict, preserving all clip settings
-    dialogue_list = [d.model_dump() for d in request.dialogue_lines]
-    print(f"[main.py] Dialogue lines with clip settings: {json.dumps(dialogue_list, indent=2)}")
-    
-    # Convert scenes if provided (storyboard mode)
-    scenes_list = None
-    if request.scenes:
-        scenes_list = [s.model_dump() for s in request.scenes]
-        print(f"[main.py] Scenes structure: {json.dumps(scenes_list, indent=2)}")
-    
-    job = Job(
-        id=job_id,
-        status=JobStatus.PENDING.value,
-        config_json=json.dumps(config_dict),
-        dialogue_json=json.dumps({"lines": dialogue_list, "scenes": scenes_list}),
-        api_keys_json=json.dumps(api_keys_data),
-        images_dir=str(images_dir),
-        output_dir=str(output_dir),
-        total_clips=len(request.dialogue_lines),
-    )
-    
-    db.add(job)
-    db.commit()
-    db.refresh(job)
-    
-    add_job_log(db, job_id, "Job created", "INFO", "system")
-    
-    return JobResponse(
-        id=job.id,
-        status=job.status,
-        progress_percent=job.progress_percent,
-        total_clips=job.total_clips,
-        completed_clips=job.completed_clips,
-        failed_clips=job.failed_clips,
-        skipped_clips=job.skipped_clips,
-        created_at=job.created_at.isoformat() if job.created_at else None,
-        started_at=job.started_at.isoformat() if job.started_at else None,
-        completed_at=job.completed_at.isoformat() if job.completed_at else None,
-    )
-
-
-@app.get("/api/jobs", response_model=List[JobResponse])
-async def list_jobs(
-    status: Optional[str] = None,
-    limit: int = Query(default=50, le=100),
-    offset: int = 0,
-    db: Session = Depends(get_db_session),
-):
-    """List all jobs"""
-    query = db.query(Job)
-    
-    if status:
-        query = query.filter(Job.status == status)
-    
-    jobs = query.order_by(Job.created_at.desc()).offset(offset).limit(limit).all()
-    
-    return [
-        JobResponse(
-            id=j.id,
-            status=j.status,
-            progress_percent=j.progress_percent,
-            total_clips=j.total_clips,
-            completed_clips=j.completed_clips,
-            failed_clips=j.failed_clips,
-            skipped_clips=j.skipped_clips,
-            created_at=j.created_at.isoformat() if j.created_at else None,
-            started_at=j.started_at.isoformat() if j.started_at else None,
-            completed_at=j.completed_at.isoformat() if j.completed_at else None,
-        )
-        for j in jobs
-    ]
-
-
-@app.get("/api/jobs/{job_id}", response_model=JobResponse)
-async def get_job(job_id: str, db: Session = Depends(get_db_session)):
-    """Get job details"""
-    job = db.query(Job).filter(Job.id == job_id).first()
-    
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    return JobResponse(
-        id=job.id,
-        status=job.status,
-        progress_percent=job.progress_percent,
-        total_clips=job.total_clips,
-        completed_clips=job.completed_clips,
-        failed_clips=job.failed_clips,
-        skipped_clips=job.skipped_clips,
-        created_at=job.created_at.isoformat() if job.created_at else None,
-        started_at=job.started_at.isoformat() if job.started_at else None,
-        completed_at=job.completed_at.isoformat() if job.completed_at else None,
-    )
-
-
-@app.get("/api/jobs/{job_id}/config")
-async def get_job_config(job_id: str, db: Session = Depends(get_db_session)):
-    """Get job configuration for cloning - returns config and dialogue data"""
-    job = db.query(Job).filter(Job.id == job_id).first()
-    
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    # Parse config and dialogue
-    config_data = json.loads(job.config_json) if job.config_json else {}
-    dialogue_raw = json.loads(job.dialogue_json) if job.dialogue_json else []
-    
-    # Handle both old format (list) and new format (dict with lines/scenes)
-    if isinstance(dialogue_raw, list):
-        dialogue_lines = dialogue_raw
-        scenes = None
-    else:
-        dialogue_lines = dialogue_raw.get("lines", [])
-        scenes = dialogue_raw.get("scenes", None)
-    
-    # Get list of images
-    images = []
-    if job.images_dir:
-        images_path = Path(job.images_dir)
-        if images_path.exists():
-            for img_file in sorted(images_path.glob("image_*.png")):
-                images.append({
-                    "filename": img_file.name,
-                    "url": f"/api/jobs/{job_id}/images/{img_file.name}"
-                })
-            for img_file in sorted(images_path.glob("image_*.jpg")):
-                images.append({
-                    "filename": img_file.name,
-                    "url": f"/api/jobs/{job_id}/images/{img_file.name}"
-                })
-    
-    return {
-        "job_id": job_id,
-        "config": config_data,
-        "dialogue_lines": dialogue_lines,
-        "scenes": scenes,
-        "images": images,
-        "images_dir": job.images_dir
-    }
-
-
-@app.delete("/api/jobs/{job_id}")
-async def delete_job(job_id: str, db: Session = Depends(get_db_session)):
-    """Delete a job and its data"""
-    job = db.query(Job).filter(Job.id == job_id).first()
-    
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    # Cancel if running
-    if job.status == JobStatus.RUNNING.value:
-        worker.cancel_job(job_id)
-    
-    # Delete files
-    images_dir = Path(job.images_dir)
-    output_dir = Path(job.output_dir)
-    
-    if images_dir.exists():
-        shutil.rmtree(images_dir)
-    if output_dir.exists():
-        shutil.rmtree(output_dir)
-    
-    # Delete database records
-    db.delete(job)
-    db.commit()
-    
-    return {"status": "deleted", "job_id": job_id}
-
-
-@app.post("/api/jobs/{job_id}/cancel")
-async def cancel_job(job_id: str, db: Session = Depends(get_db_session)):
-    """Cancel a running job"""
-    job = db.query(Job).filter(Job.id == job_id).first()
-    
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    if job.status != JobStatus.RUNNING.value:
-        raise HTTPException(status_code=400, detail="Job is not running")
-    
-    success = worker.cancel_job(job_id)
-    
-    if success:
-        add_job_log(db, job_id, "Job cancelled by user", "INFO", "system")
-        return {"status": "cancelled", "job_id": job_id}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to cancel job")
-
-
-@app.post("/api/jobs/{job_id}/pause")
-async def pause_job(job_id: str, db: Session = Depends(get_db_session)):
-    """Pause a running job"""
-    job = db.query(Job).filter(Job.id == job_id).first()
-    
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    if job.status != JobStatus.RUNNING.value:
-        raise HTTPException(status_code=400, detail="Job is not running")
-    
-    success = worker.pause_job(job_id)
-    
-    if success:
-        add_job_log(db, job_id, "Job paused by user", "INFO", "system")
-        return {"status": "paused", "job_id": job_id}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to pause job")
-
-
-@app.post("/api/jobs/{job_id}/resume")
-async def resume_job(job_id: str, db: Session = Depends(get_db_session)):
-    """Resume a paused job"""
-    job = db.query(Job).filter(Job.id == job_id).first()
-    
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    if job.status != JobStatus.PAUSED.value:
-        raise HTTPException(status_code=400, detail="Job is not paused")
-    
-    success = worker.resume_job(job_id)
-    
-    if success:
-        add_job_log(db, job_id, "Job resumed by user", "INFO", "system")
-        return {"status": "resumed", "job_id": job_id}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to resume job")
-
-
-# ============ Clips ============
-
-def deduplicate_versions(versions_json: str) -> list:
-    """Deduplicate versions by attempt number, keeping last one"""
-    if not versions_json:
-        return []
-    versions = json.loads(versions_json)
-    seen = {}
-    for v in versions:
-        attempt = v.get("attempt")
-        if attempt:
-            seen[attempt] = v
-    return sorted(seen.values(), key=lambda x: x.get("attempt", 0))
-
-@app.get("/api/jobs/{job_id}/clips", response_model=List[ClipResponse])
-async def get_job_clips(job_id: str, db: Session = Depends(get_db_session)):
-    """Get all clips for a job"""
-    job = db.query(Job).filter(Job.id == job_id).first()
-    
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    clips = db.query(Clip).filter(Clip.job_id == job_id).order_by(Clip.clip_index).all()
-    
-    return [
-        ClipResponse(
-            id=c.id,
-            clip_index=c.clip_index,
-            dialogue_id=c.dialogue_id,
-            dialogue_text=c.dialogue_text,
-            status=c.status,
-            retry_count=c.retry_count,
-            start_frame=c.start_frame,
-            end_frame=c.end_frame,
-            output_filename=c.output_filename,
-            error_code=c.error_code,
-            error_message=c.error_message,
-            approval_status=c.approval_status or "pending_review",
-            generation_attempt=c.generation_attempt or 1,
-            attempts_remaining=3 - (c.generation_attempt or 1),
-            redo_reason=c.redo_reason,
-            versions=deduplicate_versions(c.versions_json),
-            selected_variant=c.selected_variant or c.generation_attempt or 1,
-            total_variants=len(deduplicate_versions(c.versions_json)),
-        )
-        for c in clips
-    ]
-
-
-# ============ Clip Review & Approval ============
-
-@app.post("/api/clips/{clip_id}/approve", response_model=ApprovalResponse)
-async def approve_clip(clip_id: int, db: Session = Depends(get_db_session)):
-    """
-    Approve a clip - marks it as accepted by the user.
-    For 'continue' mode scenes, this allows the next clip to start generating.
-    """
-    clip = db.query(Clip).filter(Clip.id == clip_id).first()
-    
-    if not clip:
-        raise HTTPException(status_code=404, detail="Clip not found")
-    
-    if clip.status != ClipStatus.COMPLETED.value:
-        raise HTTPException(status_code=400, detail="Can only approve completed clips")
-    
-    if clip.approval_status == "max_attempts":
-        raise HTTPException(status_code=400, detail="Clip has reached max attempts - contact support")
-    
-    # Update approval status
-    clip.approval_status = "approved"
-    
-    # Update versions history
-    versions = json.loads(clip.versions_json) if clip.versions_json else []
-    for v in versions:
-        if v.get("attempt") == clip.generation_attempt:
-            v["approved"] = True
-    clip.versions_json = json.dumps(versions)
-    
-    db.commit()
-    
-    add_job_log(db, clip.job_id, f"Clip {clip.clip_index + 1} approved by user", "INFO", "approval")
-    
-    # Check if there's a next clip waiting for this approval (continue mode)
-    next_clip = db.query(Clip).filter(
-        Clip.job_id == clip.job_id,
-        Clip.clip_index == clip.clip_index + 1
-    ).first()
-    
-    next_clip_triggered = False
-    if next_clip and next_clip.status == ClipStatus.WAITING_APPROVAL.value:
-        # There's a clip waiting - it will be picked up by the worker's polling loop
-        add_job_log(db, clip.job_id, f"Clip {clip.clip_index + 2} can now proceed (was waiting for approval)", "INFO", "approval")
-        next_clip_triggered = True
-    
-    return ApprovalResponse(
-        clip_id=clip.id,
-        status="approved",
-        message="Clip approved" + (" - next clip will start generating" if next_clip_triggered else ""),
-        attempts_remaining=3 - clip.generation_attempt
-    )
-
-
-@app.post("/api/clips/{clip_id}/reject", response_model=ApprovalResponse)
-async def reject_clip(clip_id: int, db: Session = Depends(get_db_session)):
-    """
-    Reject a clip without triggering redo.
-    User can later choose to redo or leave as rejected.
-    """
-    clip = db.query(Clip).filter(Clip.id == clip_id).first()
-    
-    if not clip:
-        raise HTTPException(status_code=404, detail="Clip not found")
-    
-    if clip.status != ClipStatus.COMPLETED.value:
-        raise HTTPException(status_code=400, detail="Can only reject completed clips")
-    
-    clip.approval_status = "rejected"
-    db.commit()
-    
-    add_job_log(db, clip.job_id, f"Clip {clip.clip_index + 1} rejected by user", "INFO", "approval")
-    
-    return ApprovalResponse(
-        clip_id=clip.id,
-        status="rejected",
-        message="Clip has been rejected. You can redo it or leave as is.",
-        attempts_remaining=3 - clip.generation_attempt
-    )
-
-
-@app.delete("/api/clips/{clip_id}")
-async def delete_clip(clip_id: int, db: Session = Depends(get_db_session)):
-    """
-    Delete a clip and its video file.
-    """
-    clip = db.query(Clip).filter(Clip.id == clip_id).first()
-    
-    if not clip:
-        raise HTTPException(status_code=404, detail="Clip not found")
-    
-    job_id = clip.job_id
-    clip_index = clip.clip_index
-    
-    # Delete video file if exists
-    if clip.output_path:
-        try:
-            video_path = Path(clip.output_path)
-            if video_path.exists():
-                video_path.unlink()
-        except Exception as e:
-            print(f"Error deleting video file: {e}", flush=True)
-    
-    # Delete from database
-    db.delete(clip)
-    db.commit()
-    
-    # Update job stats
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if job:
-        remaining_clips = db.query(Clip).filter(Clip.job_id == job_id).count()
-        job.total_clips = remaining_clips
-        completed = db.query(Clip).filter(Clip.job_id == job_id, Clip.status == ClipStatus.COMPLETED.value).count()
-        job.completed_clips = completed
-        if remaining_clips > 0:
-            job.progress_percent = int((completed / remaining_clips) * 100)
-        db.commit()
-    
-    add_job_log(db, job_id, f"Clip {clip_index + 1} deleted by user", "INFO", "deletion")
-    
-    return {"success": True, "message": f"Clip {clip_index + 1} deleted"}
-
-
-@app.post("/api/clips/{clip_id}/select-variant/{variant_num}")
-async def select_clip_variant(clip_id: int, variant_num: int, db: Session = Depends(get_db_session)):
-    """
-    Select a specific variant for a clip.
-    Updates output_filename to point to the selected variant's video.
-    """
-    clip = db.query(Clip).filter(Clip.id == clip_id).first()
-    
-    if not clip:
-        raise HTTPException(status_code=404, detail="Clip not found")
-    
-    versions = json.loads(clip.versions_json) if clip.versions_json else []
-    
-    # Deduplicate versions by attempt number (keep last one)
-    seen = {}
-    for v in versions:
-        attempt = v.get("attempt")
-        if attempt:
-            seen[attempt] = v
-    versions = list(seen.values())
-    versions.sort(key=lambda x: x.get("attempt", 0))
-    
-    # Save cleaned versions back
-    clip.versions_json = json.dumps(versions)
-    
-    if not versions:
-        raise HTTPException(status_code=400, detail="No variants available")
-    
-    # Check variant is in valid range
-    if variant_num < 1 or variant_num > len(versions):
-        raise HTTPException(status_code=400, detail=f"Variant must be between 1 and {len(versions)}")
-    
-    # Find the requested variant
-    variant = None
-    for v in versions:
-        if v.get("attempt") == variant_num:
-            variant = v
-            break
-    
-    if not variant:
-        raise HTTPException(status_code=404, detail=f"Variant {variant_num} not found")
-    
-    # Update selected variant and output filename
-    clip.selected_variant = variant_num
-    clip.output_filename = variant.get("filename")
-    clip.approval_status = "pending_review"  # Reset approval when switching
-    db.commit()
-    
-    add_job_log(db, clip.job_id, f"Clip {clip.clip_index + 1} switched to variant {variant_num}", "INFO", "variant")
-    
-    return {
-        "success": True,
-        "selected_variant": variant_num,
-        "filename": variant.get("filename"),
-        "total_variants": len(versions)
-    }
-
-
-@app.post("/api/clips/{clip_id}/redo", response_model=ApprovalResponse)
-async def request_clip_redo(
-    clip_id: int, 
-    request: RedoRequest = None,
-    db: Session = Depends(get_db_session)
-):
-    """
-    Request a redo for a clip.
-    
-    - Attempt 1 → 2: Uses same logged parameters
-    - Attempt 2 → 3: Uses fresh parameters (no log)
-    - Attempt 3: No more redos allowed, must contact support
-    """
-    clip = db.query(Clip).filter(Clip.id == clip_id).first()
-    
-    if not clip:
-        raise HTTPException(status_code=404, detail="Clip not found")
-    
-    if clip.status != ClipStatus.COMPLETED.value:
-        raise HTTPException(status_code=400, detail="Can only redo completed clips")
-    
-    # Check attempt limit
-    if clip.generation_attempt >= 3:
-        clip.approval_status = "max_attempts"
-        db.commit()
-        raise HTTPException(
-            status_code=400, 
-            detail={
-                "code": "MAX_ATTEMPTS_REACHED",
-                "message": "Maximum 3 attempts reached. Please contact support for assistance.",
-                "support_email": "support@yourdomain.com"
-            }
-        )
-    
-    # Save current version to history before redo (avoid duplicates)
-    versions = json.loads(clip.versions_json) if clip.versions_json else []
-    existing_attempts = [v.get('attempt') for v in versions]
-    
-    # Only add if this attempt isn't already saved (avoid duplicates from worker)
-    if clip.generation_attempt not in existing_attempts and clip.output_filename:
-        versions.append({
-            "attempt": clip.generation_attempt,
-            "filename": clip.output_filename,
-            "generated_at": clip.completed_at.isoformat() if clip.completed_at else None,
-            "approved": False,
-            "start_frame": clip.start_frame,
-            "end_frame": clip.end_frame,
-        })
-        clip.versions_json = json.dumps(versions)
-    
-    # Increment attempt
-    new_attempt = clip.generation_attempt + 1
-    clip.generation_attempt = new_attempt
-    
-    # Determine if we use logged params
-    # Attempt 2: use logged params (same settings)
-    # Attempt 3: fresh generation (no logged params)
-    clip.use_logged_params = (new_attempt == 2)
-    
-    # Set status for redo queue
-    clip.status = ClipStatus.REDO_QUEUED.value
-    clip.approval_status = "rejected"
-    clip.redo_reason = request.reason if request else None
-    
-    # Clear previous output (keep in versions history)
-    clip.output_filename = None
-    clip.error_code = None
-    clip.error_message = None
-    
-    db.commit()
-    
-    add_job_log(
-        db, clip.job_id, 
-        f"Clip {clip.clip_index + 1} redo requested (attempt {new_attempt}/3, {'with' if clip.use_logged_params else 'without'} logged params)",
-        "INFO", "approval",
-        details={"reason": request.reason if request else None, "use_logged_params": clip.use_logged_params}
-    )
-    
-    return ApprovalResponse(
-        clip_id=clip.id,
-        status="redo_queued",
-        message=f"Redo queued (attempt {new_attempt}/3). {'Using same parameters.' if clip.use_logged_params else 'Using fresh parameters.'}",
-        attempts_remaining=3 - new_attempt
-    )
-
-
-@app.get("/api/clips/{clip_id}/versions")
-async def get_clip_versions(clip_id: int, db: Session = Depends(get_db_session)):
-    """Get all generated versions of a clip"""
-    clip = db.query(Clip).filter(Clip.id == clip_id).first()
-    
-    if not clip:
-        raise HTTPException(status_code=404, detail="Clip not found")
-    
-    versions = json.loads(clip.versions_json) if clip.versions_json else []
-    
-    # Add current version if completed
-    if clip.status == ClipStatus.COMPLETED.value and clip.output_filename:
-        versions.append({
-            "attempt": clip.generation_attempt,
-            "filename": clip.output_filename,
-            "generated_at": clip.completed_at.isoformat() if clip.completed_at else None,
-            "approved": clip.approval_status == "approved",
-            "start_frame": clip.start_frame,
-            "end_frame": clip.end_frame,
-            "current": True,
-        })
-    
-    return {
-        "clip_id": clip_id,
-        "dialogue_id": clip.dialogue_id,
-        "total_attempts": clip.generation_attempt,
-        "attempts_remaining": 3 - clip.generation_attempt,
-        "versions": versions,
-    }
-
-
-@app.post("/api/jobs/{job_id}/cleanup-versions")
-async def cleanup_clip_versions(job_id: str, db: Session = Depends(get_db_session)):
-    """
-    Clean up duplicate versions in all clips of a job.
-    Call this to fix clips that have duplicate entries in versions_json.
-    """
-    job = db.query(Job).filter(Job.id == job_id).first()
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    clips = db.query(Clip).filter(Clip.job_id == job_id).all()
-    cleaned_count = 0
-    
-    for clip in clips:
-        if not clip.versions_json:
-            continue
-            
-        versions = json.loads(clip.versions_json)
-        original_count = len(versions)
+        self.shutdown_event.clear()
+        self.executor = ThreadPoolExecutor(max_workers=self.max_workers)
         
-        # Deduplicate by attempt number
-        seen = {}
-        for v in versions:
-            attempt = v.get("attempt")
-            if attempt:
-                seen[attempt] = v
+        # Start job processor thread
+        self.worker_thread = threading.Thread(target=self._process_jobs, daemon=True)
+        self.worker_thread.start()
         
-        cleaned_versions = sorted(seen.values(), key=lambda x: x.get("attempt", 0))
+        print(f"[Worker] Started with {self.max_workers} workers")
+    
+    def stop(self):
+        """Stop the worker gracefully"""
+        print("[Worker] Shutting down...")
+        self.shutdown_event.set()
         
-        if len(cleaned_versions) < original_count:
-            clip.versions_json = json.dumps(cleaned_versions)
-            cleaned_count += 1
-            print(f"[Cleanup] Clip {clip.clip_index}: {original_count} -> {len(cleaned_versions)} versions", flush=True)
-    
-    db.commit()
-    
-    add_job_log(db, job_id, f"Cleaned up versions for {cleaned_count} clips", "INFO", "cleanup")
-    
-    return {
-        "success": True,
-        "clips_cleaned": cleaned_count,
-        "total_clips": len(clips)
-    }
-
-
-@app.get("/api/jobs/{job_id}/review-status")
-async def get_job_review_status(job_id: str, db: Session = Depends(get_db_session)):
-    """Get summary of clip approval statuses for a job"""
-    job = db.query(Job).filter(Job.id == job_id).first()
-    
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    clips = db.query(Clip).filter(Clip.job_id == job_id).all()
-    
-    summary = {
-        "total": len(clips),
-        "pending_review": 0,
-        "approved": 0,
-        "redo_queued": 0,
-        "max_attempts": 0,
-        "generating": 0,
-        "failed": 0,
-    }
-    
-    for c in clips:
-        if c.status == ClipStatus.COMPLETED.value:
-            if c.approval_status == "approved":
-                summary["approved"] += 1
-            elif c.approval_status == "max_attempts":
-                summary["max_attempts"] += 1
-            else:
-                summary["pending_review"] += 1
-        elif c.status == ClipStatus.REDO_QUEUED.value:
-            summary["redo_queued"] += 1
-        elif c.status in [ClipStatus.GENERATING.value, ClipStatus.PENDING.value]:
-            summary["generating"] += 1
-        elif c.status == ClipStatus.FAILED.value:
-            summary["failed"] += 1
-    
-    summary["all_approved"] = summary["approved"] == summary["total"]
-    summary["needs_attention"] = summary["max_attempts"] > 0
-    
-    return summary
-
-
-# ============ Logs ============
-
-@app.get("/api/jobs/{job_id}/logs", response_model=List[LogResponse])
-async def get_job_logs(
-    job_id: str,
-    since_id: int = 0,
-    limit: int = Query(default=100, le=500),
-    db: Session = Depends(get_db_session),
-):
-    """Get logs for a job (supports polling with since_id)"""
-    job = db.query(Job).filter(Job.id == job_id).first()
-    
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    logs = get_job_logs_since(db, job_id, since_id)[:limit]
-    
-    return [
-        LogResponse(
-            id=log.id,
-            created_at=log.created_at.isoformat() if log.created_at else "",
-            level=log.level,
-            category=log.category,
-            clip_index=log.clip_index,
-            message=log.message,
-        )
-        for log in logs
-    ]
-
-
-# ============ Server-Sent Events ============
-
-@app.get("/api/jobs/{job_id}/stream")
-async def stream_job_events(job_id: str, db: Session = Depends(get_db_session)):
-    """
-    Stream job events via Server-Sent Events.
-    
-    Events:
-    - progress: Clip progress update
-    - clip_started: Clip generation started
-    - clip_completed: Clip generation completed
-    - error: Error occurred
-    - job_completed: Job finished
-    """
-    job = db.query(Job).filter(Job.id == job_id).first()
-    
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    async def event_generator():
-        event_queue = worker.subscribe(job_id)
+        # Cancel all running jobs
+        for job_id, generator in list(self.running_jobs.items()):
+            generator.cancel()
         
-        try:
-            # Send initial status
-            yield f"data: {json.dumps({'type': 'status', 'status': job.status, 'progress': job.progress_percent})}\n\n"
-            
-            while True:
-                try:
-                    # Non-blocking check
-                    event = event_queue.get(timeout=30)
-                    yield f"data: {json.dumps(event)}\n\n"
-                    
-                    # Stop streaming if job completed
-                    if event.get("type") == "job_completed":
-                        break
-                        
-                except Exception:
-                    # Send keepalive
-                    yield f": keepalive\n\n"
-                    
-                    # Check if job is still active
-                    from models import get_db
-                    with get_db() as check_db:
-                        check_job = check_db.query(Job).filter(Job.id == job_id).first()
-                        if check_job and check_job.status in [
-                            JobStatus.COMPLETED.value,
-                            JobStatus.FAILED.value,
-                            JobStatus.CANCELLED.value,
-                        ]:
-                            break
-        finally:
-            worker.unsubscribe(job_id, event_queue)
-    
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        }
-    )
-
-
-# ============ Downloads ============
-
-@app.get("/api/jobs/{job_id}/outputs")
-async def list_outputs(
-    job_id: str, 
-    approved_only: bool = False,
-    db: Session = Depends(get_db_session)
-):
-    """
-    List generated videos for a job.
-    
-    If approved_only=True, only returns videos from approved clips (selected variants).
-    Falls back to filesystem listing if job not in database (e.g., after server restart).
-    """
-    job = db.query(Job).filter(Job.id == job_id).first()
-    
-    # Try to find output directory even without database entry
-    if job:
-        output_dir = Path(job.output_dir)
-    else:
-        # Fallback: check if directory exists directly
-        output_dir = app_config.outputs_dir / job_id
-        if not output_dir.exists():
-            raise HTTPException(status_code=404, detail="Job not found and no output directory exists")
-    
-    if not output_dir.exists():
-        return {"job_id": job_id, "videos": [], "count": 0}
-    
-    videos = []
-    
-    if approved_only and job:
-        # Only return approved clips' selected variants (requires DB)
-        clips = db.query(Clip).filter(
-            Clip.job_id == job_id,
-            Clip.approval_status == "approved"
-        ).order_by(Clip.clip_index).all()
+        if self.executor:
+            self.executor.shutdown(wait=True)
+            self.executor = None
         
-        for clip in clips:
-            if clip.output_filename:
-                filepath = output_dir / clip.output_filename
-                if filepath.exists():
-                    videos.append({
-                        "filename": clip.output_filename,
-                        "size": filepath.stat().st_size,
-                        "url": f"/api/jobs/{job_id}/outputs/{clip.output_filename}",
-                        "clip_index": clip.clip_index,
-                        "variant": clip.selected_variant,
-                    })
-    else:
-        # Return all videos from filesystem
-        for f in output_dir.glob("*.mp4"):
-            # Try to extract clip index from filename (e.g., "1_image_00_..." -> clip 1)
-            clip_idx = None
+        print("[Worker] Shutdown complete")
+    
+    def _process_jobs(self):
+        """Main job processing loop"""
+        while not self.shutdown_event.is_set():
             try:
-                parts = f.stem.split("_")
-                if parts[0].isdigit():
-                    clip_idx = int(parts[0])
-            except:
-                pass
+                # Check for pending jobs in database
+                self._check_pending_jobs()
+                
+                # Check for redo requests
+                self._check_redo_queue()
+                
+                time.sleep(app_config.worker_poll_interval)
+            except Exception as e:
+                print(f"[Worker] Error in job processor: {e}")
+                traceback.print_exc()
+                time.sleep(5)
+    
+    def _check_redo_queue(self):
+        """Check for clips that need redo and process them"""
+        with get_db() as db:
+            # Get clips queued for redo
+            redo_clips = db.query(Clip).filter(
+                Clip.status == ClipStatus.REDO_QUEUED.value
+            ).order_by(Clip.id.asc()).limit(5).all()
             
-            videos.append({
-                "filename": f.name,
-                "size": f.stat().st_size,
-                "url": f"/api/jobs/{job_id}/outputs/{f.name}",
-                "clip_index": clip_idx,
-            })
+            for clip in redo_clips:
+                if len(self.running_jobs) >= self.max_workers:
+                    break
+                
+                # Check if job is already being processed
+                if clip.job_id not in self.running_jobs:
+                    self._start_redo(clip.job_id, clip.id)
     
-    videos.sort(key=lambda x: x.get("clip_index") or 0 if approved_only else x["filename"])
-    
-    return {"job_id": job_id, "videos": videos, "count": len(videos)}
-
-
-@app.get("/api/jobs/{job_id}/outputs/{filename}")
-async def download_output(job_id: str, filename: str, db: Session = Depends(get_db_session)):
-    """Download a generated video. Works even after server restart."""
-    job = db.query(Job).filter(Job.id == job_id).first()
-    
-    # Try to find output directory even without database entry
-    if job:
-        output_dir = Path(job.output_dir)
-    else:
-        # Fallback: check if directory exists directly
-        output_dir = app_config.outputs_dir / job_id
-    
-    filepath = output_dir / filename
-    
-    if not filepath.exists():
-        raise HTTPException(status_code=404, detail="File not found")
-    
-    return FileResponse(
-        filepath,
-        media_type="video/mp4",
-        filename=filename,
-    )
-
-
-# ============ Final Video Export ============
-
-class ExportSettings(BaseModel):
-    frames_to_cut_start: int = Field(default=7, ge=0, le=30)
-    frames_to_cut_end: int = Field(default=7, ge=0, le=30)
-    smart_trim: bool = True  # Don't trim first clip / cut-to scenes
-    remove_silence: bool = False
-    vad_threshold: float = Field(default=0.5, ge=0.1, le=0.9)
-    vad_min_gap: float = Field(default=1.0, ge=0.1, le=5.0)
-    vad_pad_before: float = Field(default=0.1, ge=0.0, le=1.0)
-    vad_pad_after: float = Field(default=0.2, ge=0.0, le=1.0)
-
-
-@app.post("/api/jobs/{job_id}/export-final")
-async def export_final_video(
-    job_id: str,
-    settings: ExportSettings,
-    db: Session = Depends(get_db_session)
-):
-    """
-    Export all approved clips as a single final video.
-    Optionally applies trimming and Voice Activity Detection (VAD).
-    
-    Works even after server restart by falling back to filesystem.
-    
-    Rules for start frame trimming:
-    - Never trim start frames from the FIRST clip (clip_index 0)
-    - Never trim start frames from clips that start a "cut" transition scene
-    """
-    from video_processor import export_final_video as process_export, check_vad_available
-    
-    job = db.query(Job).filter(Job.id == job_id).first()
-    
-    # Determine output directory - fallback to filesystem if job not in DB
-    if job:
-        output_dir = Path(job.output_dir)
-        dialogue_json = job.dialogue_json
-    else:
-        # Fallback: check if directory exists directly
-        output_dir = app_config.outputs_dir / job_id
-        if not output_dir.exists():
-            raise HTTPException(status_code=404, detail="Job not found and no output directory exists")
-        dialogue_json = None
-        print(f"[Export] Job not in database, using filesystem fallback for {job_id}")
-    
-    # Get clips - either from DB or filesystem
-    clip_info = []
-    cut_scene_first_clips = set()
-    
-    if job:
-        # Get approved clips from database
-        clips = db.query(Clip).filter(
-            Clip.job_id == job_id,
-            Clip.approval_status == "approved"
-        ).order_by(Clip.clip_index).all()
+    def _start_redo(self, job_id: str, clip_id: int):
+        """Start processing a single clip redo"""
+        if self.executor is None:
+            return
         
-        if not clips:
-            raise HTTPException(status_code=400, detail="No approved clips to export")
+        self.executor.submit(self._run_redo, job_id, clip_id)
+    
+    def _check_pending_jobs(self):
+        """Check for and start pending jobs"""
+        if len(self.running_jobs) >= self.max_workers:
+            return
         
-        # Parse scenes for smart trim
+        with get_db() as db:
+            # Get pending jobs
+            pending = db.query(Job).filter(
+                Job.status == JobStatus.PENDING.value
+            ).order_by(Job.created_at.asc()).limit(
+                self.max_workers - len(self.running_jobs)
+            ).all()
+            
+            for job in pending:
+                if job.id not in self.running_jobs:
+                    self._start_job(job.id)
+    
+    def _start_job(self, job_id: str):
+        """Start processing a job"""
+        if self.executor is None:
+            return
+        
+        self.executor.submit(self._run_job, job_id)
+    
+    def _run_redo(self, job_id: str, clip_id: int):
+        """Run a single clip redo"""
+        generator = None
+        
         try:
-            dialogue_data = json.loads(dialogue_json) if dialogue_json else {}
-            scenes = dialogue_data.get("scenes", [])
-            
-            if scenes and settings.smart_trim:
-                for scene in scenes:
-                    transition = scene.get("transition", None)
-                    scene_clips = scene.get("clips", [])
-                    if transition == "cut" and scene_clips:
-                        first_clip_of_scene = min(scene_clips)
-                        cut_scene_first_clips.add(first_clip_of_scene)
-                        print(f"[Export] Scene with 'cut' transition starts at clip {first_clip_of_scene}")
-        except Exception as e:
-            print(f"[Export] Warning: Could not parse scenes: {e}")
-        
-        # Collect clip file paths
-        for clip in clips:
-            if clip.output_filename:
-                clip_path = output_dir / clip.output_filename
-                if clip_path.exists():
-                    skip_start_trim = False
-                    if settings.smart_trim:
-                        skip_start_trim = (clip.clip_index == 0 or clip.clip_index in cut_scene_first_clips)
+            with get_db() as db:
+                clip = db.query(Clip).filter(Clip.id == clip_id).first()
+                job = db.query(Job).filter(Job.id == job_id).first()
+                
+                if not clip or not job:
+                    return
+                
+                # Update clip status
+                clip.status = ClipStatus.GENERATING.value
+                clip.started_at = datetime.utcnow()
+                db.commit()
+                
+                add_job_log(
+                    db, job_id, 
+                    f"Starting redo for clip {clip.clip_index + 1} (attempt {clip.generation_attempt}/3)",
+                    "INFO", "redo"
+                )
+                
+                # Parse configuration
+                config_data = json.loads(job.config_json)
+                config = VideoConfig(
+                    aspect_ratio=config_data.get("aspect_ratio", "9:16"),
+                    resolution=config_data.get("resolution", "720p"),
+                    duration=config_data.get("duration", "8"),
+                    language=config_data.get("language", "English"),
+                    use_interpolation=config_data.get("use_interpolation", True),
+                    use_openai_prompt_tuning=config_data.get("use_openai_prompt_tuning", True),
+                    use_frame_vision=config_data.get("use_frame_vision", True),
+                    max_retries_per_clip=config_data.get("max_retries_per_clip", 5),
+                    custom_prompt=config_data.get("custom_prompt", ""),
+                    user_context=config_data.get("user_context", ""),
+                    single_image_mode=config_data.get("single_image_mode", False),
+                )
+                
+                # Parse API keys (with env fallback)
+                api_keys = get_api_keys_with_fallback(job.api_keys_json)
+                
+                # Get images
+                images_dir = Path(job.images_dir)
+                output_dir = Path(job.output_dir)
+                
+                images = list_images(images_dir, config)
+                if not images:
+                    raise ValueError(f"No images found in {images_dir}")
+                
+                # Create generator
+                generator = VeoGenerator(
+                    config=config,
+                    api_keys=api_keys,
+                    openai_key=api_keys.openai_api_key,
+                )
+                
+                # Set up callbacks
+                def on_progress(clip_index, status, message, details):
+                    self._handle_progress(job_id, clip_index, status, message, details)
+                
+                def on_error(error):
+                    self._handle_error(job_id, error)
+                
+                generator.on_progress = on_progress
+                generator.on_error = on_error
+                
+                # Find frames
+                start_frame = None
+                end_frame = None
+                start_index = 0
+                end_index = 0
+                
+                for i, img in enumerate(images):
+                    if img.name == clip.start_frame:
+                        start_frame = img
+                        start_index = i
+                    if clip.end_frame and img.name == clip.end_frame:
+                        end_frame = img
+                        end_index = i
+                
+                if not start_frame:
+                    # Use first image as fallback
+                    start_frame = images[0]
+                    start_index = 0
+                
+                # For interpolation: use the stored end_frame, or same image if not set
+                if config.use_interpolation:
+                    if end_frame:
+                        # Use the stored end frame
+                        pass
+                    elif clip.end_frame:
+                        # end_frame name is stored but file not found - try to find it
+                        for i, img in enumerate(images):
+                            if img.name == clip.end_frame:
+                                end_frame = img
+                                end_index = i
+                                break
                     
-                    clip_info.append({
-                        "path": clip_path,
-                        "clip_index": clip.clip_index,
-                        "skip_start_trim": skip_start_trim
-                    })
-                    
-                    if skip_start_trim:
-                        print(f"[Export] Clip {clip.clip_index}: SKIP start frame trim")
-    else:
-        # Fallback: get all MP4 files from filesystem
-        mp4_files = sorted(output_dir.glob("*.mp4"))
-        
-        if not mp4_files:
-            raise HTTPException(status_code=400, detail="No video files found in output directory")
-        
-        # Filter out any existing final exports
-        mp4_files = [f for f in mp4_files if not f.name.startswith("final_export")]
-        
-        print(f"[Export] Filesystem fallback: found {len(mp4_files)} video files")
-        
-        for i, mp4_file in enumerate(mp4_files):
-            # Try to extract clip index from filename
-            clip_idx = i
-            try:
-                parts = mp4_file.stem.split("_")
-                if parts[0].isdigit():
-                    clip_idx = int(parts[0])
-            except:
-                pass
-            
-            skip_start_trim = (i == 0) if settings.smart_trim else False
-            
-            clip_info.append({
-                "path": mp4_file,
-                "clip_index": clip_idx,
-                "skip_start_trim": skip_start_trim
-            })
-        
-        # Sort by clip index
-        clip_info.sort(key=lambda x: x["clip_index"])
-    
-    # Check VAD availability if requested
-    if settings.remove_silence and not check_vad_available():
-        raise HTTPException(
-            status_code=400,
-            detail="VAD requires torch and numpy. Install with: pip install torch numpy"
-        )
-    
-    if not clip_info:
-        raise HTTPException(status_code=400, detail="No valid clip files found")
-    
-    print(f"[Export] Smart trim: {settings.smart_trim}, Start frames: {settings.frames_to_cut_start}, End frames: {settings.frames_to_cut_end}")
-    
-    # Create output filename
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_filename = f"final_export_{timestamp}.mp4"
-    output_path = output_dir / output_filename
-    
-    try:
-        print(f"[Export] Starting export for job {job_id}")
-        print(f"[Export] Clips to process: {len(clip_info)}")
-        print(f"[Export] Output path: {output_path}")
-        
-        # Process the export with per-clip trim settings
-        stats = process_export(
-            clip_info=clip_info,
-            output_path=output_path,
-            frames_to_cut_start=settings.frames_to_cut_start,
-            frames_to_cut_end=settings.frames_to_cut_end,
-            remove_silence=settings.remove_silence,
-            vad_threshold=settings.vad_threshold,
-            vad_min_gap=settings.vad_min_gap,
-            vad_pad_before=settings.vad_pad_before,
-            vad_pad_after=settings.vad_pad_after
-        )
-        
-        print(f"[Export] Success! Stats: {stats}")
-        
-        return {
-            "success": True,
-            "filename": output_filename,
-            "download_url": f"/api/jobs/{job_id}/outputs/{output_filename}",
-            "stats": stats
-        }
-        
-    except Exception as e:
-        import traceback
-        print(f"[Export] ERROR: {str(e)}")
-        print(f"[Export] Traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Export failed: {str(e)}")
-
-
-@app.get("/api/vad-available")
-async def check_vad_availability():
-    """Check if VAD dependencies are installed."""
-    from video_processor import check_vad_available
-    return {"available": check_vad_available()}
-
-
-@app.get("/api/jobs/{job_id}/images/{filename}")
-async def get_job_image(job_id: str, filename: str, db: Session = Depends(get_db_session)):
-    """Get an image from a job's images directory"""
-    job = db.query(Job).filter(Job.id == job_id).first()
-    
-    if not job:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    if not job.images_dir:
-        raise HTTPException(status_code=404, detail="No images directory")
-    
-    filepath = Path(job.images_dir) / filename
-    
-    if not filepath.exists():
-        raise HTTPException(status_code=404, detail="Image not found")
-    
-    # Determine media type
-    suffix = filepath.suffix.lower()
-    media_types = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp'}
-    media_type = media_types.get(suffix, 'image/png')
-    
-    return FileResponse(filepath, media_type=media_type)
-
-
-# ============ Script Splitting ============
-
-class ScriptSplitRequest(BaseModel):
-    script: str
-    language: str = "English"
-
-# Speaking rates by language (words per second) for natural speech
-LANGUAGE_SPEAKING_RATES = {
-    "English": 2.5,      # ~150 wpm → 17-18 words per 7 sec
-    "Italian": 2.8,      # ~168 wpm → 19-20 words per 7 sec  
-    "Spanish": 2.8,      # ~168 wpm → 19-20 words per 7 sec
-    "French": 2.5,       # ~150 wpm → 17-18 words per 7 sec
-    "German": 2.2,       # ~132 wpm → 15-16 words per 7 sec
-    "Portuguese": 2.6,   # ~156 wpm → 18-19 words per 7 sec
-    "Dutch": 2.3,        # ~138 wpm → 16-17 words per 7 sec
-    "Polish": 2.4,       # ~144 wpm → 17 words per 7 sec
-    "Russian": 2.3,      # ~138 wpm → 16-17 words per 7 sec
-    "Japanese": 4.0,     # ~240 morae/min → 28 chars per 7 sec
-    "Chinese": 3.5,      # ~210 chars/min → 24-25 chars per 7 sec
-    "Korean": 3.5,       # Similar to Chinese
-    "Arabic": 2.5,       # ~150 wpm → 17-18 words per 7 sec
-    "Hindi": 2.6,        # ~156 wpm → 18-19 words per 7 sec
-}
-
-TARGET_DURATION_SECONDS = 7
-
-@app.post("/api/split-script")
-async def split_script(request: ScriptSplitRequest):
-    """
-    Split a full script into ~7 second dialogue lines using OpenAI.
-    Preserves the EXACT original text - only splits, never rewrites.
-    Every line MUST be approximately 7 seconds (enforced via post-processing).
-    """
-    import os
-    
-    # Get OpenAI API key
-    openai_key = os.environ.get("OPENAI_API_KEY")
-    if not openai_key:
-        raise HTTPException(status_code=400, detail="OpenAI API key not configured")
-    
-    # Get language-specific rate
-    words_per_sec = LANGUAGE_SPEAKING_RATES.get(request.language, 2.5)
-    target_words = int(words_per_sec * TARGET_DURATION_SECONDS)
-    min_words = max(10, target_words - 5)  # Minimum words per line
-    
-    # Count total words to estimate expected clips
-    total_words = len(request.script.split())
-    expected_clips = max(1, round(total_words / target_words))
-    
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=openai_key)
-        
-        prompt = f"""TASK: Split this script into chunks of EXACTLY ~{target_words} words each.
-
-⚠️ ABSOLUTE REQUIREMENTS:
-1. EVERY chunk MUST have AT LEAST {min_words} words (this is ~7 seconds of speech)
-2. NEVER create a chunk with less than {min_words} words
-3. If a sentence is short, COMBINE it with the next sentence(s) until you reach {min_words}+ words
-4. The LAST chunk can be slightly shorter only if all remaining text is less than {min_words} words
-5. Preserve EXACT original text - do NOT add, remove, or change any words
-
-ORIGINAL SCRIPT ({total_words} total words):
-"{request.script}"
-
-MATH: {total_words} words ÷ {target_words} words = ~{expected_clips} chunks expected
-
-EXAMPLES of what NOT to do:
-❌ ["Short sentence.", "Another short one."] - BAD, each under {min_words} words
-✅ ["Short sentence. Another short one. And more text here."] - GOOD, combined to reach {min_words}+ words
-
-OUTPUT: JSON array only. Each string MUST have {min_words}+ words.
-["chunk with {min_words}+ words here", "another chunk with {min_words}+ words"]"""
-
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=4000
-        )
-        
-        result = response.choices[0].message.content.strip()
-        
-        # Parse JSON - handle potential markdown code blocks
-        if result.startswith("```"):
-            result = result.split("```")[1]
-            if result.startswith("json"):
-                result = result[4:]
-            result = result.strip()
-        
-        lines = json.loads(result)
-        
-        if not isinstance(lines, list) or len(lines) == 0:
-            raise ValueError("Invalid response format")
-        
-        # POST-PROCESSING: Merge any lines that are too short
-        merged_lines = []
-        buffer = ""
-        
-        for line in lines:
-            if buffer:
-                buffer += " " + line.strip()
-            else:
-                buffer = line.strip()
-            
-            word_count = len(buffer.split())
-            
-            # If buffer has enough words, add it to merged_lines
-            if word_count >= min_words:
-                merged_lines.append(buffer)
-                buffer = ""
-        
-        # Handle remaining buffer
-        if buffer:
-            if merged_lines:
-                # Append to last line if buffer is too short
-                buffer_words = len(buffer.split())
-                if buffer_words < min_words:
-                    merged_lines[-1] = merged_lines[-1] + " " + buffer
+                    if not end_frame:
+                        # No specific end frame - use same image for interpolation
+                        end_frame = start_frame
+                        end_index = start_index
                 else:
-                    merged_lines.append(buffer)
+                    # No interpolation - no end frame needed
+                    end_frame = None
+                    end_index = start_index
+                
+                # Initialize voice profile for consistency
+                voice_id = generator.initialize_voice_profile(start_frame)
+                add_job_log(db, job_id, f"Voice Profile for redo: {voice_id}", "INFO", "voice")
+                
+                # Determine prompt to use
+                prompt_text = None
+                redo_feedback = clip.redo_reason  # Get user's feedback
+                
+                if clip.use_logged_params and clip.prompt_text:
+                    prompt_text = clip.prompt_text
+                    add_job_log(db, job_id, f"Using logged parameters for redo", "INFO", "redo")
+                else:
+                    add_job_log(db, job_id, f"Using fresh parameters for redo", "INFO", "redo")
+                
+                if redo_feedback:
+                    add_job_log(db, job_id, f"User feedback for redo: {redo_feedback}", "INFO", "redo")
+                
+                self._broadcast_event(job_id, {
+                    "type": "redo_started",
+                    "clip_id": clip_id,
+                    "clip_index": clip.clip_index,
+                    "attempt": clip.generation_attempt,
+                    "use_logged_params": clip.use_logged_params,
+                    "redo_feedback": redo_feedback,
+                })
+            
+            # Generate clip (outside db context to avoid long transactions)
+            # Use start_frame as scene_image for redo (it's the original scene image)
+            result = generator.generate_single_clip(
+                start_frame=start_frame,
+                end_frame=end_frame,
+                dialogue_line=clip.dialogue_text,
+                dialogue_id=clip.dialogue_id,
+                clip_index=clip.clip_index,
+                output_dir=output_dir,
+                images_list=images,
+                current_end_index=end_index,
+                scene_image=start_frame,  # For redo, use start_frame as scene image
+                redo_feedback=redo_feedback,  # Pass user's feedback
+            )
+            
+            # Update clip with result
+            with get_db() as db:
+                clip = db.query(Clip).filter(Clip.id == clip_id).first()
+                
+                if clip:
+                    clip.completed_at = datetime.utcnow()
+                    
+                    if clip.started_at:
+                        clip.duration_seconds = (clip.completed_at - clip.started_at).total_seconds()
+                    
+                    if result["success"]:
+                        new_filename = result["output_path"].name if result["output_path"] else None
+                        
+                        # Add to versions history (avoid duplicates)
+                        versions = json.loads(clip.versions_json) if clip.versions_json else []
+                        existing_attempts = [v.get('attempt') for v in versions]
+                        
+                        if clip.generation_attempt not in existing_attempts:
+                            versions.append({
+                                "attempt": clip.generation_attempt,
+                                "filename": new_filename,
+                                "generated_at": datetime.utcnow().isoformat(),
+                            })
+                            clip.versions_json = json.dumps(versions)
+                        
+                        # Update current output and select new variant
+                        clip.status = ClipStatus.COMPLETED.value
+                        clip.output_filename = new_filename
+                        clip.selected_variant = clip.generation_attempt
+                        clip.prompt_text = result.get("prompt_text")
+                        clip.approval_status = "pending_review"  # Reset to pending review
+                        clip.error_code = None
+                        clip.error_message = None
+                        
+                        if result.get("end_frame_used"):
+                            clip.end_frame = result["end_frame_used"].name
+                        
+                        add_job_log(
+                            db, job_id,
+                            f"Redo completed for clip {clip.clip_index + 1} (attempt {clip.generation_attempt}/3)",
+                            "INFO", "redo"
+                        )
+                    else:
+                        clip.status = ClipStatus.FAILED.value
+                        if result["error"]:
+                            clip.error_code = result["error"].code.value
+                            clip.error_message = result["error"].message
+                        
+                        add_job_log(
+                            db, job_id,
+                            f"Redo failed for clip {clip.clip_index + 1}: {result.get('error', 'Unknown error')}",
+                            "ERROR", "redo"
+                        )
+                    
+                    db.commit()
+                
+                self._broadcast_event(job_id, {
+                    "type": "redo_completed",
+                    "clip_id": clip_id,
+                    "clip_index": clip.clip_index,
+                    "success": result["success"],
+                    "attempt": clip.generation_attempt,
+                    "output": result["output_path"].name if result.get("output_path") else None,
+                })
+                
+        except Exception as e:
+            error = error_handler.classify_exception(e, {"job_id": job_id, "clip_id": clip_id})
+            self._handle_error(job_id, error)
+            
+            with get_db() as db:
+                clip = db.query(Clip).filter(Clip.id == clip_id).first()
+                if clip:
+                    clip.status = ClipStatus.FAILED.value
+                    clip.error_code = error.code.value
+                    clip.error_message = error.message
+                    db.commit()
+    
+    def _run_job(self, job_id: str):
+        """Run a single job"""
+        generator = None
+        
+        try:
+            with get_db() as db:
+                job = db.query(Job).filter(Job.id == job_id).first()
+                if not job:
+                    return
+                
+                # Update status
+                job.status = JobStatus.RUNNING.value
+                job.started_at = datetime.utcnow()
+                db.commit()
+                
+                add_job_log(db, job_id, "Job started", "INFO", "system")
+                
+                # Parse configuration
+                config_data = json.loads(job.config_json)
+                print(f"[Worker] Job {job_id[:8]}: Raw config_data = {config_data}")
+                print(f"[Worker] Job {job_id[:8]}: Language from config = {config_data.get('language')}")
+                
+                config = VideoConfig(
+                    aspect_ratio=config_data.get("aspect_ratio", "9:16"),
+                    resolution=config_data.get("resolution", "720p"),
+                    duration=config_data.get("duration", "8"),
+                    language=config_data.get("language", "English"),
+                    use_interpolation=config_data.get("use_interpolation", True),
+                    use_openai_prompt_tuning=config_data.get("use_openai_prompt_tuning", True),
+                    use_frame_vision=config_data.get("use_frame_vision", True),
+                    max_retries_per_clip=config_data.get("max_retries_per_clip", 5),
+                    custom_prompt=config_data.get("custom_prompt", ""),
+                    user_context=config_data.get("user_context", ""),
+                    single_image_mode=config_data.get("single_image_mode", False),
+                )
+                
+                add_job_log(db, job_id, f"Language: {config.language}", "INFO", "config")
+                
+                # Parse API keys (with env fallback)
+                api_keys = get_api_keys_with_fallback(job.api_keys_json)
+                
+                # Parse dialogue data (new format includes scenes)
+                dialogue_raw = json.loads(job.dialogue_json)
+                
+                # Handle both old format (list) and new format (dict with lines/scenes)
+                if isinstance(dialogue_raw, list):
+                    # Old format: just a list of lines
+                    dialogue_data = dialogue_raw
+                    scenes_data = None
+                    last_frame_index = None
+                else:
+                    # New format: {lines: [...], scenes: [...], last_frame_index: ...}
+                    dialogue_data = dialogue_raw.get("lines", [])
+                    scenes_data = dialogue_raw.get("scenes", None)
+                    last_frame_index = dialogue_raw.get("last_frame_index", None)
+                
+                # Store scenes data for processing
+                storyboard_mode = config_data.get("storyboard_mode", False)
+                print(f"[Worker] Storyboard mode: {storyboard_mode}", flush=True)
+                if scenes_data:
+                    print(f"[Worker] Scenes: {json.dumps(scenes_data, indent=2)}", flush=True)
+                if last_frame_index is not None:
+                    print(f"[Worker] Last frame index: {last_frame_index}", flush=True)
+                
+                # Get images
+                images_dir = Path(job.images_dir)
+                output_dir = Path(job.output_dir)
+                output_dir.mkdir(parents=True, exist_ok=True)
+                
+                images = list_images(images_dir, config)
+                if not images:
+                    raise ValueError(f"No images found in {images_dir}")
+                
+                # Log image order for debugging
+                print(f"[Worker] Loaded {len(images)} images in order:", flush=True)
+                for idx, img in enumerate(images):
+                    print(f"  [{idx}] {img.name}", flush=True)
+                
+                # Create generator
+                generator = VeoGenerator(
+                    config=config,
+                    api_keys=api_keys,
+                    openai_key=api_keys.openai_api_key,
+                )
+                
+                # Set up callbacks
+                def on_progress(clip_index, status, message, details):
+                    self._handle_progress(job_id, clip_index, status, message, details)
+                
+                def on_error(error: VeoError):
+                    self._handle_error(job_id, error)
+                
+                generator.on_progress = on_progress
+                generator.on_error = on_error
+                
+                # Initialize voice profile ONCE for entire job (use first image as reference)
+                voice_id = generator.initialize_voice_profile(images[0])
+                add_job_log(db, job_id, f"Voice Profile initialized: {voice_id}", "INFO", "voice")
+                
+                self.running_jobs[job_id] = generator
+            
+            # Process clips (pass scenes_data for storyboard mode)
+            self._process_clips(job_id, generator, dialogue_data, images, output_dir, scenes_data, last_frame_index)
+            
+        except Exception as e:
+            error = error_handler.classify_exception(e, {"job_id": job_id})
+            self._handle_error(job_id, error)
+            
+            # Only mark as failed if no clips succeeded
+            with get_db() as db:
+                job = db.query(Job).filter(Job.id == job_id).first()
+                if job:
+                    clips = db.query(Clip).filter(Clip.job_id == job_id).all()
+                    successful = sum(1 for c in clips if c.status == ClipStatus.COMPLETED.value)
+                    
+                    if successful == 0:
+                        # No clips succeeded - mark job as failed
+                        job.status = JobStatus.FAILED.value
+                    else:
+                        # Some clips succeeded - mark as completed with failures
+                        job.status = JobStatus.COMPLETED.value
+                    
+                    job.completed_at = datetime.utcnow()
+                    db.commit()
+                    
+                    add_job_log(
+                        db, job_id, 
+                        f"Job ended with error: {error.message}", 
+                        "ERROR", "system",
+                        details=error.to_dict()
+                    )
+        
+        finally:
+            if job_id in self.running_jobs:
+                del self.running_jobs[job_id]
+    
+    def _process_clips(
+        self,
+        job_id: str,
+        generator: VeoGenerator,
+        dialogue_data: List[Dict],
+        images: List[Path],
+        output_dir: Path,
+        scenes_data: Optional[List[Dict]] = None,
+        last_frame_index: Optional[int] = None,
+    ):
+        """Process all clips for a job - with parallel generation support and scene-aware sequencing"""
+        from concurrent.futures import ThreadPoolExecutor, as_completed, wait, FIRST_COMPLETED
+        import subprocess
+        
+        # Check for single image mode
+        single_image_mode = getattr(generator.config, 'single_image_mode', False) or len(images) == 1
+        
+        images_dir_str = str(images[0].parent)
+        
+        total_clips = len(dialogue_data)
+        completed = 0
+        failed = 0
+        skipped = 0
+        
+        # Get parallel clip count from config (default 3)
+        parallel_clips = getattr(generator.config, 'parallel_clips', 3)
+        
+        # Key exhaustion tracking
+        no_keys_retries = 0
+        max_no_keys_retries = 3
+        no_keys_wait_seconds = 300  # 5 minutes
+        
+        # Log last frame
+        if last_frame_index is not None:
+            print(f"[Worker] Last frame index set: {last_frame_index} ({images[last_frame_index].name if last_frame_index < len(images) else 'INVALID'})", flush=True)
+        
+        # === BUILD SCENE-AWARE CLIP STRUCTURE ===
+        num_images = len(images)
+        use_interpolation = getattr(generator.config, 'use_interpolation', True)
+        
+        print(f"[Worker] Processing {total_clips} clips with {num_images} images", flush=True)
+        print(f"[Worker] Scenes data: {scenes_data}", flush=True)
+        
+        # Build clip info with scene awareness
+        clip_info = []  # List of dicts with all clip metadata
+        
+        for i, line_data in enumerate(dialogue_data):
+            info = {
+                "index": i,
+                "text": line_data["text"],
+                "dialogue_id": line_data["id"],
+                "image_idx": line_data.get("start_image_idx", i % num_images) if not single_image_mode else 0,
+                "scene_index": line_data.get("scene_index", 0),
+                "clip_mode": line_data.get("clip_mode", "blend"),  # 'blend' | 'continue' | 'fresh'
+                "scene_transition": line_data.get("scene_transition"),  # 'blend' | 'cut' | None
+                "requires_previous": False,  # Will be set below
+                "start_frame": None,  # Will be set or calculated
+                "end_frame": None,    # Will be set or calculated
+            }
+            
+            # Determine if this clip requires the previous clip to complete first
+            # This happens when clip_mode is 'continue' AND it's not the first clip in its scene
+            if info["clip_mode"] == "continue" and i > 0:
+                prev_scene = dialogue_data[i-1].get("scene_index", 0)
+                if prev_scene == info["scene_index"]:
+                    # Same scene, continue mode - must wait for previous clip
+                    info["requires_previous"] = True
+            
+            clip_info.append(info)
+            print(f"[Worker] Clip {i}: scene={info['scene_index']}, mode={info['clip_mode']}, requires_prev={info['requires_previous']}", flush=True)
+        
+        # Calculate initial frame assignments
+        # 
+        # FRAME ASSIGNMENT LOGIC:
+        # 
+        # For each clip, we need to determine:
+        # 1. START FRAME: Where the clip begins
+        # 2. END FRAME: Where the clip ends (can be None for no interpolation)
+        #
+        # The logic depends on clip_mode:
+        #
+        # BLEND mode (standard):
+        #   - Start: assigned image
+        #   - End: depends on NEXT clip (allows smooth transitions)
+        #
+        # CONTINUE mode:
+        #   - Start: extracted from previous clip's last frame (set at runtime)
+        #   - End: depends on NEXT clip (allows smooth transitions)
+        #
+        # FRESH mode:
+        #   - Start: always original image
+        #   - End: NONE (completely standalone clips, no interpolation)
+        #
+        # END FRAME determination (for BLEND and CONTINUE modes only):
+        #   - If LAST clip of video:
+        #     - If Last Frame defined: use Last Frame
+        #     - Else: None (no interpolation)
+        #   - If NEXT clip is in SAME scene:
+        #     - None (no end frame, natural continuation)
+        #   - If NEXT clip is in DIFFERENT scene:
+        #     - If transition = "blend": next scene's image
+        #     - If transition = "cut": None
+        #
+        with get_db() as db:
+            for i, info in enumerate(clip_info):
+                start_idx = info["image_idx"]
+                clip_mode = info["clip_mode"]
+                scene_transition = info["scene_transition"]
+                scene_index = info["scene_index"]
+                
+                # Default start: our assigned image
+                actual_start_idx = start_idx
+                
+                # Determine END FRAME based on what comes AFTER this clip
+                use_end_frame = False
+                actual_end_idx = None
+                end_frame_reason = ""
+                
+                # FRESH mode: never use end frame (completely standalone clips)
+                if clip_mode == "fresh":
+                    use_end_frame = False
+                    end_frame_reason = "fresh mode, no end frame"
+                # SINGLE IMAGE MODE: Always use same image as end frame for interpolation
+                elif single_image_mode and generator.config.use_interpolation:
+                    use_end_frame = True
+                    actual_end_idx = start_idx  # Same image for smoother motion
+                    end_frame_reason = "single image mode, same frame for interpolation"
+                else:
+                    # BLEND and CONTINUE modes: determine end frame based on context
+                    is_last_clip = (i == len(clip_info) - 1)
+                    
+                    # Check if we're in auto-cycle mode (no explicit scenes defined)
+                    auto_cycle_mode = scenes_data is None or len(scenes_data) == 0
+                    
+                    if is_last_clip:
+                        # LAST CLIP: Never assign end frame - let it end naturally
+                        use_end_frame = False
+                        end_frame_reason = "last clip, no end frame (ends naturally)"
+                    else:
+                        next_info = clip_info[i + 1]
+                        next_scene = next_info["scene_index"]
+                        next_image_idx = next_info["image_idx"]
+                        
+                        if auto_cycle_mode:
+                            # AUTO-CYCLE MODE: Check if next clip uses a different image
+                            if next_image_idx != start_idx:
+                                # Different image - blend to it
+                                use_end_frame = True
+                                actual_end_idx = next_image_idx
+                                end_frame_reason = f"auto-cycle: blend to next image {next_image_idx + 1}"
+                            else:
+                                # Same image - no end frame needed
+                                use_end_frame = False
+                                end_frame_reason = "auto-cycle: same image, natural continuation"
+                        elif next_scene == scene_index:
+                            # STORYBOARD MODE: Next clip is in SAME scene
+                            # No end frame - let it continue naturally
+                            use_end_frame = False
+                            end_frame_reason = "same scene, natural continuation"
+                        else:
+                            # STORYBOARD MODE: Next clip is in DIFFERENT scene
+                            next_transition = next_info["scene_transition"]
+                            
+                            if next_transition == "blend":
+                                # Blend to next scene - morph toward next scene's image
+                                use_end_frame = True
+                                actual_end_idx = next_info["image_idx"]
+                                end_frame_reason = f"blend to scene {next_scene}"
+                            else:
+                                # Cut to next scene - no end frame needed
+                                use_end_frame = False
+                                end_frame_reason = "cut to next scene"
+                
+                # Set frame names
+                start_frame_name = images[actual_start_idx].name
+                
+                if use_end_frame and actual_end_idx is not None:
+                    end_frame_name = images[actual_end_idx].name
+                else:
+                    end_frame_name = None
+                    actual_end_idx = actual_start_idx  # For compatibility, but won't be used
+                
+                info["start_frame"] = start_frame_name
+                info["end_frame"] = end_frame_name
+                info["start_idx"] = actual_start_idx
+                info["end_idx"] = actual_end_idx if use_end_frame else None
+                info["use_end_frame"] = use_end_frame
+                
+                print(f"[Worker] Clip {i}: {start_frame_name} → {end_frame_name if end_frame_name else 'NONE'} (mode={clip_mode}, reason={end_frame_reason})", flush=True)
+                
+                # Determine initial status
+                # For "continue" mode clips (except first in scene), set to WAITING_APPROVAL
+                initial_status = ClipStatus.PENDING.value
+                if info["requires_previous"]:
+                    initial_status = ClipStatus.WAITING_APPROVAL.value
+                    print(f"[Worker] Clip {i}: Set to WAITING_APPROVAL (requires previous clip approval)", flush=True)
+                
+                # Create clip record
+                clip = Clip(
+                    job_id=job_id,
+                    clip_index=i,
+                    dialogue_id=info["dialogue_id"],
+                    dialogue_text=info["text"],
+                    status=initial_status,
+                    start_frame=start_frame_name,
+                    end_frame=end_frame_name,
+                )
+                db.add(clip)
+            
+            db.commit()
+        
+        # Build clip_frames list for processing
+        clip_frames = []
+        for i, info in enumerate(clip_info):
+            start_frame = images[info["start_idx"]]
+            
+            # Only set end_frame if this clip should use interpolation
+            if info.get("use_end_frame") and info.get("end_idx") is not None:
+                end_frame = images[info["end_idx"]]
             else:
-                # Only one line in total
-                merged_lines.append(buffer)
+                end_frame = None
+            
+            clip_frames.append({
+                "start_index": info["start_idx"],
+                "start_frame": start_frame,
+                "end_index": info["end_idx"],
+                "end_frame": end_frame,
+                "clip_mode": info["clip_mode"],
+                "requires_previous": info["requires_previous"],
+            })
         
-        # Clean up whitespace
-        merged_lines = [" ".join(line.split()) for line in merged_lines]
+        # Log complete frame assignment summary
+        print(f"\n{'='*70}", flush=True)
+        print(f"[Worker] FRAME ASSIGNMENT SUMMARY", flush=True)
+        print(f"{'='*70}", flush=True)
+        print(f"Total clips: {len(clip_frames)}", flush=True)
+        print(f"Last Frame Index: {last_frame_index}", flush=True)
+        print(f"", flush=True)
+        for i, cf in enumerate(clip_frames):
+            mode = cf["clip_mode"]
+            req_prev = cf["requires_previous"]
+            start = cf["start_frame"].name if hasattr(cf["start_frame"], 'name') else str(cf["start_frame"])
+            end = cf["end_frame"].name if cf["end_frame"] and hasattr(cf["end_frame"], 'name') else ("NONE" if cf["end_frame"] is None else str(cf["end_frame"]))
+            status = "WAITING_APPROVAL" if req_prev else "PENDING"
+            
+            print(f"  Clip {i}: [{mode.upper()}] {start} → {end}", flush=True)
+            print(f"           requires_previous={req_prev}, status={status}", flush=True)
+            if mode == "continue":
+                if req_prev:
+                    print(f"           → Will extract start frame from clip {i-1} at runtime", flush=True)
+                else:
+                    print(f"           → First of scene, will use original image", flush=True)
+        print(f"{'='*70}\n", flush=True)
         
-        # Calculate average duration estimate using language-specific rate
-        total_words_result = sum(len(line.split()) for line in merged_lines)
-        avg_words = total_words_result / len(merged_lines) if merged_lines else 0
-        avg_duration = round(avg_words / words_per_sec, 1)
+        # Track completed AND APPROVED clips for 'continue' mode frame extraction
+        approved_clip_videos = {}  # clip_index -> video_path (only approved ones)
+        completed_clip_videos = {}  # clip_index -> video_path (all completed, for tracking)
         
-        # Calculate per-line stats
-        line_stats = []
-        for line in merged_lines:
-            wc = len(line.split())
-            dur = round(wc / words_per_sec, 1)
-            line_stats.append({"words": wc, "duration_sec": dur})
+        # Queue of pending clip indices (only PENDING status, not WAITING_APPROVAL)
+        pending_clips = [i for i, info in enumerate(clip_info) if not info["requires_previous"]]
+        waiting_clips = [i for i, info in enumerate(clip_info) if info["requires_previous"]]
         
-        return {
-            "success": True,
-            "lines": merged_lines,
-            "count": len(merged_lines),
-            "avg_duration": avg_duration,
-            "total_words": total_words_result,
-            "target_words_per_line": target_words,
-            "min_words_per_line": min_words,
-            "language": request.language,
-            "line_stats": line_stats
-        }
+        print(f"[Worker] Initial queue: {len(pending_clips)} pending, {len(waiting_clips)} waiting for approval", flush=True)
         
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to parse AI response: {str(e)}")
-    except ImportError:
-        raise HTTPException(status_code=500, detail="OpenAI library not installed")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Script splitting failed: {str(e)}")
-
-
-# ============ Error Codes Reference ============
-
-@app.get("/api/error-codes")
-async def get_error_codes():
-    """Get list of all error codes and their meanings"""
-    return {
-        code.value: {
-            "name": code.name,
-            "value": code.value,
-        }
-        for code in ErrorCode
-    }
-
-
-# ============ Health Check ============
-
-@app.get("/api/health")
-async def health_check():
-    """Health check endpoint"""
-    # Check if genai SDK is available
-    try:
-        from veo_generator import GENAI_AVAILABLE
-        sdk_status = "installed" if GENAI_AVAILABLE else "not_installed"
-    except:
-        sdk_status = "unknown"
-    
-    return {
-        "status": "healthy",
-        "timestamp": datetime.utcnow().isoformat(),
-        "workers": {
-            "running_jobs": len(worker.running_jobs),
-            "max_workers": worker.max_workers,
-        },
-        "sdk": {
-            "google_genai": sdk_status,
-            "message": "Video generation available" if sdk_status == "installed" else "Install google-genai for video generation"
-        }
-    }
-
-
-# ============ Admin - API Keys ============
-
-@app.get("/api/admin/keys")
-async def get_api_keys_status():
-    """
-    Check status of API keys configured on the server.
-    
-    Keys are loaded from .env file:
-    - GEMINI_API_KEY_1, GEMINI_API_KEY_2, etc.
-    - OPENAI_API_KEY (optional)
-    """
-    status = api_keys_config.get_status()
-    
-    # Add masked preview of keys with block status
-    masked_keys = []
-    for i, key in enumerate(api_keys_config.gemini_api_keys):
-        if len(key) > 12:
-            masked = f"{key[:8]}...{key[-4:]}"
-        else:
-            masked = "***"
+        def check_keys_available():
+            """Check if any API keys are available"""
+            available = generator.api_keys.get_available_key_count()
+            return available > 0
         
-        is_blocked = api_keys_config.is_key_blocked(i)
-        blocked_info = None
-        if is_blocked and i in api_keys_config.blocked_keys:
-            from datetime import datetime, timedelta
-            block_time = api_keys_config.blocked_keys[i]
-            unblock_time = block_time + timedelta(hours=api_keys_config.block_duration_hours)
-            remaining = unblock_time - datetime.now()
-            blocked_info = {
-                "blocked_at": block_time.isoformat(),
-                "unblocks_at": unblock_time.isoformat(),
-                "remaining_hours": round(max(0, remaining.total_seconds() / 3600), 1)
+        def send_no_keys_alert(job_id: str, retry_count: int):
+            """Alert admin that keys are exhausted"""
+            alert_msg = f"🚨 API KEYS EXHAUSTED - Job {job_id[:8]} paused (retry {retry_count}/{max_no_keys_retries})"
+            print(f"\n{'='*60}", flush=True)
+            print(alert_msg, flush=True)
+            print(f"{'='*60}\n", flush=True)
+            
+            # Log to database
+            with get_db() as db:
+                add_job_log(
+                    db, job_id,
+                    f"⚠️ All API keys exhausted! Waiting {no_keys_wait_seconds}s before retry {retry_count}/{max_no_keys_retries}",
+                    "WARNING", "system",
+                    details={"keys_status": generator.api_keys.get_status()}
+                )
+            
+            # Broadcast to UI
+            self._broadcast_event(job_id, {
+                "type": "keys_exhausted",
+                "retry_count": retry_count,
+                "max_retries": max_no_keys_retries,
+                "wait_seconds": no_keys_wait_seconds,
+                "message": f"All API keys exhausted. Waiting {no_keys_wait_seconds//60} minutes... (attempt {retry_count}/{max_no_keys_retries})"
+            })
+            
+            # TODO: Add webhook/email alert here
+            # self._send_admin_alert(alert_msg, job_id)
+        
+        def extract_frame_from_video(video_path: Path, frame_offset: int = -8) -> Optional[Path]:
+            """Extract a frame from video. frame_offset=-8 means 8 frames from the end."""
+            try:
+                # Get video duration
+                probe_cmd = [
+                    "ffprobe", "-v", "error", "-select_streams", "v:0",
+                    "-show_entries", "stream=duration,r_frame_rate",
+                    "-of", "csv=p=0", str(video_path)
+                ]
+                probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+                if probe_result.returncode != 0:
+                    print(f"[Worker] ffprobe failed: {probe_result.stderr}", flush=True)
+                    return None
+                
+                # Parse duration and fps
+                parts = probe_result.stdout.strip().split(',')
+                if len(parts) < 2:
+                    print(f"[Worker] Could not parse ffprobe output: {probe_result.stdout}", flush=True)
+                    return None
+                    
+                fps_str = parts[0]
+                duration_str = parts[1] if len(parts) > 1 else "8"
+                
+                # Calculate fps from fraction (e.g., "30000/1001" or "30/1")
+                if '/' in fps_str:
+                    num, den = fps_str.split('/')
+                    fps = float(num) / float(den)
+                else:
+                    fps = float(fps_str) if fps_str else 30.0
+                
+                duration = float(duration_str) if duration_str else 8.0
+                
+                # Calculate timestamp for frame_offset from end
+                # frame_offset = -8 means 8 frames before end
+                frames_from_end = abs(frame_offset)
+                seconds_from_end = frames_from_end / fps
+                timestamp = max(0, duration - seconds_from_end)
+                
+                print(f"[Worker] Extracting frame at {timestamp:.3f}s (fps={fps:.2f}, duration={duration:.2f}s, offset={frame_offset})", flush=True)
+                
+                # Extract frame
+                output_frame = video_path.parent / f"{video_path.stem}_lastframe.jpg"
+                extract_cmd = [
+                    "ffmpeg", "-y", "-ss", str(timestamp), "-i", str(video_path),
+                    "-frames:v", "1", "-q:v", "2", str(output_frame)
+                ]
+                extract_result = subprocess.run(extract_cmd, capture_output=True, text=True)
+                
+                if extract_result.returncode == 0 and output_frame.exists():
+                    print(f"[Worker] Extracted frame to {output_frame.name}", flush=True)
+                    return output_frame
+                else:
+                    print(f"[Worker] ffmpeg frame extraction failed: {extract_result.stderr}", flush=True)
+                    return None
+                    
+            except Exception as e:
+                print(f"[Worker] Frame extraction error: {e}", flush=True)
+                return None
+        
+        def enhance_frame_with_nano_banana(frame_path: Path, original_scene_image: Optional[Path] = None) -> Optional[Path]:
+            """
+            Enhance an extracted frame using Nano Banana Pro (Gemini 3 Pro Image).
+            Upscales and improves quality of the image.
+            
+            If original_scene_image is provided, also corrects facial features to match
+            the original person (fixes AI drift in facial appearance).
+            """
+            try:
+                import google.genai as genai
+                from google.genai import types
+                import base64
+                
+                # Get API key from the keys config
+                api_keys = get_gemini_keys_from_env()
+                if not api_keys:
+                    print("[Worker] No Gemini API keys available for Nano Banana Pro enhancement", flush=True)
+                    return frame_path  # Return original if no API key
+                
+                # Use first available key
+                api_key = api_keys[0]
+                client = genai.Client(api_key=api_key)
+                
+                # Read the extracted frame
+                with open(frame_path, 'rb') as f:
+                    frame_bytes = f.read()
+                
+                # Determine mime type
+                suffix = frame_path.suffix.lower()
+                mime_type = {
+                    '.jpg': 'image/jpeg',
+                    '.jpeg': 'image/jpeg',
+                    '.png': 'image/png',
+                    '.webp': 'image/webp'
+                }.get(suffix, 'image/jpeg')
+                
+                print(f"[Worker] Enhancing frame with Nano Banana Pro: {frame_path.name}", flush=True)
+                
+                # Build the prompt parts
+                parts = [
+                    types.Part.from_bytes(data=frame_bytes, mime_type=mime_type),
+                ]
+                
+                # If we have original scene image, include it for facial consistency
+                if original_scene_image and original_scene_image.exists():
+                    print(f"[Worker] Including original scene image for facial consistency: {original_scene_image.name}", flush=True)
+                    
+                    with open(original_scene_image, 'rb') as f:
+                        original_bytes = f.read()
+                    
+                    original_suffix = original_scene_image.suffix.lower()
+                    original_mime = {
+                        '.jpg': 'image/jpeg',
+                        '.jpeg': 'image/jpeg',
+                        '.png': 'image/png',
+                        '.webp': 'image/webp'
+                    }.get(original_suffix, 'image/jpeg')
+                    
+                    parts.append(types.Part.from_bytes(data=original_bytes, mime_type=original_mime))
+                    
+                    prompt_text = (
+                        "The first image is an extracted video frame. The second image shows the original person. "
+                        "Enhance the first image while correcting the facial features to match the original person in the second image. "
+                        "This is NOT a face swap - it's the same person, but the AI video generation may have slightly altered their appearance. "
+                        "Correct any facial drift: restore accurate facial structure, skin tone, eye shape, nose shape, and other features to match the original. "
+                        "Also upscale to higher resolution, reduce compression artifacts, and improve overall image quality. "
+                        "Keep the exact pose, expression, lighting, background, and composition from the first image - only correct the facial features and enhance quality."
+                    )
+                else:
+                    # No reference image - just enhance quality
+                    prompt_text = (
+                        "Upscale this image to higher resolution while preserving all details. "
+                        "Enhance the image quality, reduce any compression artifacts, "
+                        "and improve sharpness and clarity. Keep the exact same content, "
+                        "colors, and composition - only improve the quality."
+                    )
+                
+                parts.append(types.Part.from_text(text=prompt_text))
+                
+                contents = [
+                    types.Content(
+                        role="user",
+                        parts=parts
+                    )
+                ]
+                
+                # Configure for image output
+                config = types.GenerateContentConfig(
+                    response_modalities=["IMAGE"],
+                    temperature=0.2  # Low temperature for faithful reproduction
+                )
+                
+                # Generate enhanced image
+                response = client.models.generate_content(
+                    model="gemini-3-pro-image-preview",  # Nano Banana Pro
+                    contents=contents,
+                    config=config
+                )
+                
+                # Extract enhanced image from response
+                enhanced_path = frame_path.parent / f"{frame_path.stem}_enhanced.png"
+                
+                if response.candidates and response.candidates[0].content.parts:
+                    for part in response.candidates[0].content.parts:
+                        if hasattr(part, 'inline_data') and part.inline_data:
+                            # Save enhanced image
+                            with open(enhanced_path, 'wb') as f:
+                                f.write(part.inline_data.data)
+                            print(f"[Worker] Enhanced frame saved to {enhanced_path.name}", flush=True)
+                            return enhanced_path
+                
+                print("[Worker] Nano Banana Pro did not return an image, using original frame", flush=True)
+                return frame_path
+                
+            except ImportError as e:
+                print(f"[Worker] google-genai SDK not available for enhancement: {e}", flush=True)
+                return frame_path
+            except Exception as e:
+                print(f"[Worker] Frame enhancement error: {e}", flush=True)
+                return frame_path  # Return original on error
+        
+        def process_single_clip(clip_index: int):
+            """Process a single clip - runs in thread"""
+            if generator.cancelled:
+                return {"clip_index": clip_index, "success": False, "skipped": True}
+            
+            line_data = dialogue_data[clip_index]
+            dialogue_id = line_data["id"]
+            dialogue_text = line_data["text"]
+            frames = clip_frames[clip_index]
+            
+            start_frame = frames["start_frame"]
+            end_frame = frames["end_frame"]  # Can be None if no interpolation needed
+            start_index = frames["start_index"]
+            end_index = frames["end_index"]  # Can be None if no interpolation needed
+            clip_mode = frames.get("clip_mode", "blend")
+            requires_previous = frames.get("requires_previous", False)
+            
+            # Store the original scene image for facial consistency correction
+            original_scene_image = frames["start_frame"]  # The original image for this scene
+            
+            # Handle "continue" mode - use extracted frame from APPROVED previous clip
+            # ONLY if requires_previous is True (meaning previous clip is in SAME scene)
+            if clip_mode == "continue" and requires_previous and clip_index > 0:
+                prev_video = approved_clip_videos.get(clip_index - 1)
+                if prev_video and Path(prev_video).exists():
+                    extracted = extract_frame_from_video(Path(prev_video), frame_offset=-9)
+                    if extracted:
+                        # Enhance the extracted frame using Nano Banana Pro
+                        # Pass the original scene image for facial consistency correction
+                        enhanced = enhance_frame_with_nano_banana(extracted, original_scene_image)
+                        start_frame = enhanced
+                        print(f"[Worker] Clip {clip_index}: Using {'enhanced' if enhanced != extracted else 'extracted'} frame from APPROVED clip {clip_index - 1}", flush=True)
+                    else:
+                        print(f"[Worker] Clip {clip_index}: Frame extraction failed, using original image", flush=True)
+                else:
+                    print(f"[Worker] Clip {clip_index}: Approved previous clip video not found, using original image", flush=True)
+            elif clip_mode == "continue" and not requires_previous:
+                # First clip of scene in Continue mode - use original image
+                print(f"[Worker] Clip {clip_index}: Continue mode but first of scene, using original image", flush=True)
+            
+            # Get frame names for logging/database (handle both Path objects and strings)
+            def get_frame_name(frame):
+                if frame is None:
+                    return None
+                if hasattr(frame, 'name'):
+                    return frame.name
+                if hasattr(frame, 'stem'):
+                    return Path(frame).name
+                return str(frame).split('/')[-1] if '/' in str(frame) else str(frame)
+            
+            start_frame_name = get_frame_name(start_frame)
+            end_frame_name = get_frame_name(end_frame) if end_frame else None
+            
+            # Update clip status to generating
+            with get_db() as db:
+                clip = db.query(Clip).filter(
+                    Clip.job_id == job_id,
+                    Clip.clip_index == clip_index
+                ).first()
+                
+                if clip:
+                    clip.status = ClipStatus.GENERATING.value
+                    clip.started_at = datetime.utcnow()
+                    clip.start_frame = start_frame_name
+                    clip.end_frame = end_frame_name
+                    db.commit()
+            
+            # Log exact frame assignment for debugging
+            print(f"[Worker] CLIP {clip_index} FRAME ASSIGNMENT:", flush=True)
+            print(f"  - start_frame: {start_frame_name} (mode={clip_mode})", flush=True)
+            print(f"  - end_frame: {end_frame_name if end_frame_name else 'NONE (no interpolation)'}", flush=True)
+            
+            self._broadcast_event(job_id, {
+                "type": "clip_started",
+                "clip_index": clip_index,
+                "dialogue_id": dialogue_id,
+                "start_frame": start_frame_name,
+                "end_frame": end_frame_name,
+            })
+            
+            # Check if start frame is blacklisted (only for Path objects, not extracted frames)
+            if hasattr(start_frame, 'exists') and start_frame in generator.blacklist:
+                result = self._get_next_clean_start(generator, images, start_index)
+                if result:
+                    start_index, start_frame = result
+                else:
+                    with get_db() as db:
+                        clip = db.query(Clip).filter(
+                            Clip.job_id == job_id,
+                            Clip.clip_index == clip_index
+                        ).first()
+                        if clip:
+                            clip.status = ClipStatus.FAILED.value
+                            clip.error_code = "ALL_IMAGES_BLACKLISTED"
+                            clip.error_message = "No clean images available"
+                            db.commit()
+                    return {"clip_index": clip_index, "success": False, "failed": True}
+            
+            # Generate clip
+            try:
+                print(f"[Worker] Generating clip {clip_index + 1}/{total_clips} in parallel...", flush=True)
+                
+                # Get the original scene image for prompt analysis
+                # This is the uploaded image for this scene (not the extracted frame in CONTINUE mode)
+                scene_image = images[start_index] if start_index < len(images) else images[0]
+                
+                # Calculate dynamic duration for LAST CLIP
+                # Last clip picks from 4, 6, or 8 seconds based on expected speech duration
+                override_duration = None
+                is_last_clip = clip_index == total_clips - 1
+                
+                if is_last_clip:
+                    # Estimate speech duration based on word count
+                    word_count = len(dialogue_text.split())
+                    language = generator.config.language if hasattr(generator.config, 'language') else 'English'
+                    
+                    # Words per second by language (approximate)
+                    wps_map = {
+                        "English": 2.5, "Italian": 2.8, "Spanish": 2.8, "French": 2.5, "German": 2.2,
+                        "Portuguese": 2.7, "Dutch": 2.4, "Polish": 2.3, "Russian": 2.2,
+                        "Japanese": 3.0, "Korean": 3.0, "Chinese": 3.2, "Arabic": 2.3, "Hindi": 2.6, "Turkish": 2.5
+                    }
+                    wps = wps_map.get(language, 2.5)
+                    estimated_duration = word_count / wps
+                    
+                    # Pick the duration slightly above the estimated (4, 6, or 8 seconds)
+                    if estimated_duration <= 3.5:
+                        override_duration = "4"
+                    elif estimated_duration <= 5.5:
+                        override_duration = "6"
+                    else:
+                        override_duration = "8"
+                    
+                    print(f"[Worker] LAST CLIP: {word_count} words, ~{estimated_duration:.1f}s speech → using {override_duration}s duration", flush=True)
+                
+                result = generator.generate_single_clip(
+                    start_frame=start_frame,
+                    end_frame=end_frame,  # Can be None
+                    dialogue_line=dialogue_text,
+                    dialogue_id=dialogue_id,
+                    clip_index=clip_index,
+                    output_dir=output_dir,
+                    images_list=images,
+                    current_end_index=end_index if end_index is not None else start_index,
+                    scene_image=scene_image,  # Original scene image for prompt analysis
+                    override_duration=override_duration,  # Dynamic duration for last clip
+                )
+                
+                # Log the FULL prompt that was sent to Veo (no truncation)
+                if result.get("prompt_text"):
+                    full_prompt = result["prompt_text"]
+                    with get_db() as db:
+                        add_job_log(
+                            db, job_id,
+                            f"📝 FULL PROMPT for clip {clip_index + 1}:\n{full_prompt}",
+                            "INFO", "prompt"
+                        )
+                
+                # Check if failed due to no keys
+                if not result["success"]:
+                    error = result.get("error")
+                    if error and hasattr(error, 'code'):
+                        if error.code.value in ["API_KEY_INVALID", "API_QUOTA_EXCEEDED", "RATE_LIMIT_429"]:
+                            return {"clip_index": clip_index, "success": False, "no_keys": True, "result": result}
+                
+            except Exception as gen_error:
+                print(f"[Worker] Clip {clip_index} CRASHED: {type(gen_error).__name__}: {str(gen_error)[:200]}", flush=True)
+                result = {
+                    "success": False,
+                    "error": gen_error,
+                    "output_path": None,
+                    "end_frame_used": None,
+                    "end_index": end_index,
+                }
+            
+            # Update clip record
+            try:
+                with get_db() as db:
+                    clip = db.query(Clip).filter(
+                        Clip.job_id == job_id,
+                        Clip.clip_index == clip_index
+                    ).first()
+                    
+                    if clip:
+                        clip.completed_at = datetime.utcnow()
+                        
+                        if clip.started_at:
+                            clip.duration_seconds = (
+                                clip.completed_at - clip.started_at
+                            ).total_seconds()
+                        
+                        if result["success"]:
+                            new_filename = result["output_path"].name if result.get("output_path") else None
+                            
+                            versions = [{
+                                "attempt": 1,
+                                "filename": new_filename,
+                                "generated_at": datetime.utcnow().isoformat(),
+                            }]
+                            clip.versions_json = json.dumps(versions)
+                            clip.selected_variant = 1
+                            
+                            clip.status = ClipStatus.COMPLETED.value
+                            clip.approval_status = "pending_review"
+                            clip.output_filename = new_filename
+                            clip.prompt_text = result.get("prompt_text")
+                        else:
+                            clip.status = ClipStatus.FAILED.value
+                            error_obj = result.get("error")
+                            if error_obj:
+                                clip.error_code = error_obj.code.value if hasattr(error_obj, 'code') else "UNKNOWN"
+                                clip.error_message = str(error_obj.message if hasattr(error_obj, 'message') else error_obj)[:500]
+                        
+                        db.commit()
+                    
+                    # Save generation log if successful
+                    if result.get("success") and result.get("output_path"):
+                        # Safely get frame names (handle None cases for single-image mode)
+                        start_frame_name = start_frame.name if start_frame and hasattr(start_frame, 'name') else str(start_frame) if start_frame else "unknown"
+                        
+                        # For end frame: prefer result's end_frame_used, then end_frame, or fall back to start_frame
+                        if result.get("end_frame_used") and hasattr(result["end_frame_used"], 'name'):
+                            end_frame_name = result["end_frame_used"].name
+                        elif end_frame and hasattr(end_frame, 'name'):
+                            end_frame_name = end_frame.name
+                        else:
+                            end_frame_name = start_frame_name  # Single image mode fallback
+                        
+                        gen_log = GenerationLog(
+                            job_id=job_id,
+                            video_id=dialogue_id,
+                            images_dir=images_dir_str,
+                            start_frame=start_frame_name,
+                            end_frame=end_frame_name,
+                            dialogue_line=dialogue_text,
+                            language=generator.config.language,
+                            prompt_text=result.get("prompt_text", ""),
+                            video_filename=result["output_path"].name,
+                            aspect_ratio=generator.config.aspect_ratio if isinstance(generator.config.aspect_ratio, str) else generator.config.aspect_ratio.value,
+                            resolution=generator.config.resolution if isinstance(generator.config.resolution, str) else generator.config.resolution.value,
+                            duration=generator.config.duration if isinstance(generator.config.duration, str) else generator.config.duration.value,
+                        )
+                        db.add(gen_log)
+                        db.commit()
+            except Exception as db_error:
+                print(f"[Worker] DB error updating clip {clip_index}: {db_error}")
+            
+            self._broadcast_event(job_id, {
+                "type": "clip_completed",
+                "clip_index": clip_index,
+                "success": result["success"],
+                "output": result["output_path"].name if result.get("output_path") else None,
+            })
+            
+            return {
+                "clip_index": clip_index,
+                "success": result["success"],
+                "result": result,
             }
         
-        masked_keys.append({
-            "index": i + 1,
-            "masked": masked,
-            "is_current": i == api_keys_config.current_key_index,
-            "is_blocked": is_blocked,
-            "blocked_info": blocked_info
+        # Process clips with queue-based approach
+        # Continue while there are pending clips OR waiting clips (approval pending)
+        while (pending_clips or waiting_clips) and not generator.cancelled:
+            # Check if keys are available before starting batch
+            if not check_keys_available():
+                no_keys_retries += 1
+                
+                if no_keys_retries > max_no_keys_retries:
+                    # Max retries reached - fail job with contact support message
+                    error_msg = "All API keys exhausted. Please contact support for assistance."
+                    
+                    with get_db() as db:
+                        # Mark remaining clips as failed
+                        for clip_idx in pending_clips:
+                            clip = db.query(Clip).filter(
+                                Clip.job_id == job_id,
+                                Clip.clip_index == clip_idx
+                            ).first()
+                            if clip:
+                                clip.status = ClipStatus.FAILED.value
+                                clip.error_code = "API_KEYS_EXHAUSTED"
+                                clip.error_message = error_msg
+                        db.commit()
+                        
+                        add_job_log(
+                            db, job_id,
+                            f"❌ Job failed: {error_msg}",
+                            "ERROR", "system"
+                        )
+                    
+                    self._broadcast_event(job_id, {
+                        "type": "job_failed_no_keys",
+                        "message": error_msg,
+                        "contact": "Please contact support to resolve this issue."
+                    })
+                    
+                    failed += len(pending_clips)
+                    break
+                
+                # Alert and wait
+                send_no_keys_alert(job_id, no_keys_retries)
+                
+                # Wait with periodic checks (allow cancellation)
+                wait_end = time.time() + no_keys_wait_seconds
+                while time.time() < wait_end and not generator.cancelled:
+                    if check_keys_available():
+                        print(f"[Worker] ✅ Keys available again, resuming...", flush=True)
+                        with get_db() as db:
+                            add_job_log(db, job_id, "✅ API keys available, resuming generation", "INFO", "system")
+                        break
+                    time.sleep(10)  # Check every 10 seconds
+                
+                continue  # Re-check keys at top of loop
+            
+            # Reset retry counter when keys are available
+            no_keys_retries = 0
+            
+            # Determine batch size based on available keys
+            available_keys = generator.api_keys.get_available_key_count()
+            
+            # For continue mode clips in waiting_clips, check if previous clip is APPROVED
+            newly_ready = []
+            still_waiting = []
+            
+            for clip_idx in waiting_clips:
+                prev_idx = clip_idx - 1
+                # Check if previous clip is approved
+                if prev_idx in approved_clip_videos:
+                    # Previous clip is approved, move this to pending
+                    newly_ready.append(clip_idx)
+                    # Update clip status from WAITING_APPROVAL to PENDING
+                    with get_db() as db:
+                        clip = db.query(Clip).filter(
+                            Clip.job_id == job_id,
+                            Clip.clip_index == clip_idx
+                        ).first()
+                        if clip and clip.status == ClipStatus.WAITING_APPROVAL.value:
+                            clip.status = ClipStatus.PENDING.value
+                            db.commit()
+                            print(f"[Worker] Clip {clip_idx}: Previous approved, moved to PENDING", flush=True)
+                else:
+                    still_waiting.append(clip_idx)
+            
+            # Update waiting_clips
+            waiting_clips = still_waiting
+            
+            # Add newly ready clips to pending
+            if newly_ready:
+                pending_clips.extend(newly_ready)
+                print(f"[Worker] {len(newly_ready)} clips now ready after approval", flush=True)
+            
+            # All pending clips are ready (no dependency check needed anymore - that's handled by waiting_clips)
+            ready_clips = pending_clips.copy()
+            
+            if not ready_clips:
+                # No clips ready - check if we're waiting for approvals
+                if waiting_clips:
+                    # Still have clips waiting for approval - pause job processing
+                    print(f"[Worker] {len(waiting_clips)} clips waiting for user approval", flush=True)
+                    time.sleep(2)  # Check every 2 seconds for approvals
+                    
+                    # Check database for any approved clips
+                    with get_db() as db:
+                        for clip_idx in waiting_clips:
+                            prev_idx = clip_idx - 1
+                            prev_clip = db.query(Clip).filter(
+                                Clip.job_id == job_id,
+                                Clip.clip_index == prev_idx
+                            ).first()
+                            if prev_clip and prev_clip.approval_status == "approved":
+                                # Found an approval! Add to approved_clip_videos
+                                if prev_idx not in approved_clip_videos:
+                                    video_path = None
+                                    if prev_clip.output_filename:
+                                        video_path = str(output_dir / prev_clip.output_filename)
+                                    approved_clip_videos[prev_idx] = video_path
+                                    print(f"[Worker] Detected approval for clip {prev_idx}", flush=True)
+                    
+                    continue
+                else:
+                    # Nothing pending and nothing waiting - we're done
+                    break
+            
+            batch_size = min(parallel_clips, available_keys, len(ready_clips))
+            
+            if batch_size == 0:
+                continue
+            
+            # Get next batch of clips
+            batch = ready_clips[:batch_size]
+            # Remove processed clips from pending
+            pending_clips = [c for c in pending_clips if c not in batch]
+            
+            print(f"[Worker] Processing batch of {batch_size} clips ({available_keys} keys available, {len(waiting_clips)} awaiting approval)", flush=True)
+            
+            # Process batch in parallel
+            with ThreadPoolExecutor(max_workers=batch_size) as clip_executor:
+                futures = {
+                    clip_executor.submit(process_single_clip, i): i 
+                    for i in batch
+                }
+                
+                requeue_clips = []
+                
+                for future in as_completed(futures):
+                    clip_index = futures[future]
+                    try:
+                        result = future.result()
+                        
+                        if result.get("no_keys"):
+                            # Re-queue this clip for later
+                            requeue_clips.append(clip_index)
+                            print(f"[Worker] Clip {clip_index} failed due to no keys, re-queuing", flush=True)
+                        elif result.get("success"):
+                            completed += 1
+                            # Track completed video for "continue" mode
+                            inner_result = result.get("result", {})
+                            if inner_result.get("output_path"):
+                                completed_clip_videos[clip_index] = str(inner_result["output_path"])
+                                print(f"[Worker] Tracked completed video for clip {clip_index}: {inner_result['output_path'].name}", flush=True)
+                        elif result.get("skipped"):
+                            skipped += 1
+                        else:
+                            failed += 1
+                            # For failed clips, still mark as "done" so dependent clips can fall back
+                            completed_clip_videos[clip_index] = None
+                        
+                        # Update job progress
+                        with get_db() as db:
+                            job = db.query(Job).filter(Job.id == job_id).first()
+                            if job:
+                                job.completed_clips = completed
+                                job.failed_clips = failed
+                                job.skipped_clips = skipped
+                                processed = completed + failed + skipped
+                                job.progress_percent = (processed / total_clips) * 100 if total_clips > 0 else 0
+                                db.commit()
+                        
+                    except Exception as e:
+                        print(f"[Worker] Future error for clip {clip_index}: {e}")
+                        failed += 1
+                        # Mark as done so dependents can proceed
+                        completed_clip_videos[clip_index] = None
+                
+                # Add re-queued clips back to pending
+                if requeue_clips:
+                    pending_clips = requeue_clips + pending_clips
+                    print(f"[Worker] Re-queued {len(requeue_clips)} clips, {len(pending_clips)} pending", flush=True)
+        
+        # Job completed - calculate status from actual clip data
+        actual_completed = 0
+        actual_failed = 0
+        actual_skipped = 0
+        final_status = "unknown"
+        
+        with get_db() as db:
+            job = db.query(Job).filter(Job.id == job_id).first()
+            if job:
+                # Recalculate stats from actual clips in database
+                clips = db.query(Clip).filter(Clip.job_id == job_id).all()
+                actual_completed = sum(1 for c in clips if c.status == ClipStatus.COMPLETED.value)
+                actual_failed = sum(1 for c in clips if c.status == ClipStatus.FAILED.value)
+                actual_skipped = sum(1 for c in clips if c.status == ClipStatus.SKIPPED.value)
+                
+                job.completed_clips = actual_completed
+                job.failed_clips = actual_failed
+                job.skipped_clips = actual_skipped
+                job.progress_percent = 100.0
+                
+                if generator.cancelled:
+                    job.status = JobStatus.CANCELLED.value
+                elif actual_completed == 0 and actual_failed > 0:
+                    job.status = JobStatus.FAILED.value
+                else:
+                    job.status = JobStatus.COMPLETED.value
+                
+                job.completed_at = datetime.utcnow()
+                final_status = job.status
+                db.commit()
+                
+                add_job_log(
+                    db, job_id,
+                    f"Job completed: {actual_completed} success, {actual_failed} failed, {actual_skipped} skipped",
+                    "INFO", "system"
+                )
+            
+            # Save blacklist
+            for img_path in generator.blacklist:
+                entry = BlacklistEntry(
+                    job_id=job_id,
+                    image_filename=img_path.name,
+                    reason="generation_failed",
+                )
+                db.add(entry)
+            db.commit()
+        
+        self._broadcast_event(job_id, {
+            "type": "job_completed",
+            "status": final_status,
+            "completed": actual_completed,
+            "failed": actual_failed,
+            "skipped": actual_skipped,
         })
     
-    return {
-        **status,
-        "gemini_keys": masked_keys,
-        "openai_masked": f"{api_keys_config.openai_api_key[:8]}...{api_keys_config.openai_api_key[-4:]}" if api_keys_config.openai_api_key else None,
-        "config_file": ".env",
-        "block_duration_hours": api_keys_config.block_duration_hours,
-        "instructions": "Add keys to .env file and restart server to update"
-    }
+    def _get_next_clean_image(
+        self,
+        generator: VeoGenerator,
+        images: List[Path],
+        current_index: int,
+    ) -> Optional[tuple]:
+        """Get next non-blacklisted image"""
+        total = len(images)
+        
+        for offset in range(1, min(generator.config.max_image_attempts + 1, total + 1)):
+            new_index = (current_index + offset) % total
+            candidate = images[new_index]
+            
+            if candidate not in generator.blacklist:
+                return (new_index, candidate)
+        
+        return None
+    
+    def _get_next_clean_start(
+        self,
+        generator: VeoGenerator,
+        images: List[Path],
+        current_index: int,
+    ) -> Optional[tuple]:
+        """Get next non-blacklisted start frame"""
+        return self._get_next_clean_image(generator, images, current_index)
+    
+    def _handle_progress(
+        self,
+        job_id: str,
+        clip_index: int,
+        status: str,
+        message: str,
+        details: Optional[Dict],
+    ):
+        """Handle progress update from generator"""
+        with get_db() as db:
+            add_job_log(
+                db, job_id, message,
+                level="INFO" if status != "error" else "ERROR",
+                category="clip",
+                clip_index=clip_index,
+                details=details
+            )
+        
+        self._broadcast_event(job_id, {
+            "type": "progress",
+            "clip_index": clip_index,
+            "status": status,
+            "message": message,
+            "details": details,
+        })
+    
+    def _handle_error(self, job_id: str, error: VeoError):
+        """Handle error from generator"""
+        with get_db() as db:
+            add_job_log(
+                db, job_id,
+                error.message,
+                level="ERROR",
+                category="error",
+                details=error.to_dict()
+            )
+        
+        self._broadcast_event(job_id, {
+            "type": "error",
+            "error": error.to_dict(),
+        })
+    
+    # ============ SSE Subscription Management ============
+    
+    def subscribe(self, job_id: str) -> Queue:
+        """Subscribe to job events"""
+        event_queue = Queue()
+        
+        with self.subscribers_lock:
+            if job_id not in self.subscribers:
+                self.subscribers[job_id] = []
+            self.subscribers[job_id].append(event_queue)
+            print(f"[Worker] Subscribed to job {job_id[:8]}, total subscribers: {len(self.subscribers[job_id])}", flush=True)
+        
+        return event_queue
+    
+    def unsubscribe(self, job_id: str, event_queue: Queue):
+        """Unsubscribe from job events"""
+        with self.subscribers_lock:
+            if job_id in self.subscribers:
+                if event_queue in self.subscribers[job_id]:
+                    self.subscribers[job_id].remove(event_queue)
+                    print(f"[Worker] Unsubscribed from job {job_id[:8]}, remaining: {len(self.subscribers[job_id])}", flush=True)
+                if not self.subscribers[job_id]:
+                    del self.subscribers[job_id]
+    
+    def _broadcast_event(self, job_id: str, event: Dict):
+        """Broadcast event to all subscribers"""
+        print(f"[Worker] Broadcasting event: {event.get('type')} for job {job_id[:8]}", flush=True)
+        with self.subscribers_lock:
+            if job_id in self.subscribers:
+                subscriber_count = len(self.subscribers[job_id])
+                print(f"[Worker] Broadcasting to {subscriber_count} subscribers", flush=True)
+                for queue in self.subscribers[job_id]:
+                    try:
+                        queue.put_nowait(event)
+                    except Exception as e:
+                        print(f"[Worker] Failed to broadcast: {e}", flush=True)
+            else:
+                print(f"[Worker] No subscribers for job {job_id[:8]}", flush=True)
+    
+    # ============ Job Control ============
+    
+    def cancel_job(self, job_id: str) -> bool:
+        """Cancel a running job"""
+        if job_id in self.running_jobs:
+            self.running_jobs[job_id].cancel()
+            return True
+        return False
+    
+    def pause_job(self, job_id: str) -> bool:
+        """Pause a running job"""
+        if job_id in self.running_jobs:
+            self.running_jobs[job_id].pause()
+            
+            with get_db() as db:
+                job = db.query(Job).filter(Job.id == job_id).first()
+                if job:
+                    job.status = JobStatus.PAUSED.value
+                    db.commit()
+            
+            return True
+        return False
+    
+    def resume_job(self, job_id: str) -> bool:
+        """Resume a paused job"""
+        if job_id in self.running_jobs:
+            self.running_jobs[job_id].resume()
+            
+            with get_db() as db:
+                job = db.query(Job).filter(Job.id == job_id).first()
+                if job:
+                    job.status = JobStatus.RUNNING.value
+                    db.commit()
+            
+            return True
+        return False
+    
+    def get_job_status(self, job_id: str) -> Optional[Dict]:
+        """Get current job status"""
+        with get_db() as db:
+            job = db.query(Job).filter(Job.id == job_id).first()
+            if job:
+                return job.to_dict()
+        return None
 
 
-@app.post("/api/admin/keys/unblock/{key_index}")
-async def unblock_api_key(key_index: int):
-    """
-    Manually unblock a specific API key before the 12h timeout.
-    key_index is 1-based (1, 2, 3, etc.)
-    """
-    actual_index = key_index - 1  # Convert to 0-based
-    
-    if actual_index < 0 or actual_index >= len(api_keys_config.gemini_api_keys):
-        raise HTTPException(status_code=400, detail=f"Invalid key index. Must be 1-{len(api_keys_config.gemini_api_keys)}")
-    
-    if actual_index not in api_keys_config.blocked_keys:
-        return {
-            "success": True,
-            "message": f"Key {key_index} was not blocked",
-            "key_index": key_index
-        }
-    
-    del api_keys_config.blocked_keys[actual_index]
-    api_keys_config._save_blocked_keys()  # Persist to disk
-    
-    return {
-        "success": True,
-        "message": f"Key {key_index} has been unblocked",
-        "key_index": key_index,
-        "available_keys": api_keys_config.get_available_key_count(),
-        "blocked_keys": len(api_keys_config.blocked_keys)
-    }
-
-
-@app.post("/api/admin/keys/unblock-all")
-async def unblock_all_api_keys():
-    """
-    Unblock all API keys at once.
-    """
-    blocked_count = len(api_keys_config.blocked_keys)
-    api_keys_config.blocked_keys.clear()
-    api_keys_config._save_blocked_keys()  # Persist to disk
-    
-    return {
-        "success": True,
-        "message": f"Unblocked {blocked_count} keys",
-        "unblocked_count": blocked_count,
-        "available_keys": api_keys_config.get_available_key_count()
-    }
-
-
-@app.post("/api/admin/keys/rotate")
-async def rotate_api_key(block_current: bool = False):
-    """Manually rotate to the next Gemini API key"""
-    if not api_keys_config.gemini_api_keys:
-        raise HTTPException(status_code=400, detail="No Gemini keys configured")
-    
-    old_index = api_keys_config.current_key_index
-    api_keys_config.rotate_key(block_current=block_current)
-    new_index = api_keys_config.current_key_index
-    
-    return {
-        "success": True,
-        "previous_index": old_index,
-        "current_index": new_index,
-        "total_keys": len(api_keys_config.gemini_api_keys)
-    }
-
-
-@app.post("/api/admin/keys/reload")
-async def reload_api_keys():
-    """
-    Reload API keys from .env file without restarting server.
-    Useful after updating .env file.
-    """
-    from config import get_gemini_keys_from_env, get_openai_key_from_env
-    from dotenv import load_dotenv
-    
-    # Reload .env file
-    load_dotenv(override=True)
-    
-    # Update keys
-    old_count = len(api_keys_config.gemini_api_keys)
-    api_keys_config.gemini_api_keys = get_gemini_keys_from_env()
-    api_keys_config.openai_api_key = get_openai_key_from_env()
-    api_keys_config.current_key_index = 0  # Reset to first key
-    
-    new_count = len(api_keys_config.gemini_api_keys)
-    
-    return {
-        "success": True,
-        "previous_gemini_count": old_count,
-        "current_gemini_count": new_count,
-        "openai_configured": api_keys_config.openai_api_key is not None,
-        "message": f"Loaded {new_count} Gemini key(s) from .env"
-    }
-
-
-# ============ Main Entry Point ============
-
-if __name__ == "__main__":
-    import uvicorn
-    
-    uvicorn.run(
-        "main:app",
-        host=app_config.host,
-        port=app_config.port,
-        reload=app_config.debug,
-    )
+# Singleton worker instance
+worker = JobWorker(max_workers=app_config.max_workers)
