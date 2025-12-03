@@ -2850,7 +2850,11 @@ Example: A realistic vertical video of a professional presenter speaking directl
             document.getElementById('fileInput').click();
         }
         
-        document.querySelectorAll('.toggle').forEach(t=>t.onclick=()=>{t.classList.toggle('active');t.dataset.value=t.classList.contains('active')});
+        document.querySelectorAll('.toggle').forEach(t=>{
+            // Skip autosplit toggles - they have their own handler
+            if(t.id === 'autoSplitToggle' || t.id === 'autoSplitToggleStoryboard') return;
+            t.onclick=()=>{t.classList.toggle('active');t.dataset.value=t.classList.contains('active')};
+        });
         document.getElementById('togAI').addEventListener('click',function(){
             const isAIEnabled = this.dataset.value==='true';
             document.getElementById('customPromptSection').style.display=isAIEnabled?'none':'block';

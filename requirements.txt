@@ -17,6 +17,9 @@ google-genai>=1.0.0
 # OpenAI (for prompt tuning and auto-split)
 openai>=1.10.0
 
+# Image Processing (for celebrity filter bypass)
+Pillow>=10.0.0
+
 # Utilities
 python-dotenv>=1.0.0
 aiofiles>=23.0.0
