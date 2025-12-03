@@ -293,23 +293,45 @@ def trim_video(
     cut_end_seconds = frames_end / fps
     target_duration = max(0.1, duration - cut_start_seconds - cut_end_seconds)
     
+    # Try stream copy first (uses minimal memory)
+    cmd_copy = [
+        FFMPEG_BIN, "-y",
+        "-ss", f"{cut_start_seconds:.6f}",
+        "-i", str(src),
+        "-t", f"{target_duration:.6f}",
+        "-c", "copy",  # Stream copy = almost no memory usage
+        "-avoid_negative_ts", "make_zero",
+        str(out)
+    ]
+    
+    print(f"[VideoProcessor]   Trying stream copy (low memory)...")
+    code, _, err = run(cmd_copy)
+    if code == 0:
+        print(f"[VideoProcessor]   trim_video completed (stream copy)")
+        return
+    
+    print(f"[VideoProcessor]   Stream copy failed, falling back to re-encode...")
+    
+    # Fallback to re-encoding with memory optimizations
     cmd = [
         FFMPEG_BIN, "-y",
         "-ss", f"{cut_start_seconds:.6f}",
         "-i", str(src),
         "-t", f"{target_duration:.6f}",
-        "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",  # Higher CRF = less memory
         "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", "192k",
+        "-threads", "1",  # Limit threads to reduce memory
+        "-c:a", "aac", "-b:a", "128k",  # Lower audio bitrate
+        "-max_muxing_queue_size", "1024",  # Limit muxing buffer
         str(out)
     ]
     
-    print(f"[VideoProcessor]   Running ffmpeg: {' '.join(cmd[:5])}...")
+    print(f"[VideoProcessor]   Running ffmpeg re-encode...")
     code, _, err = run(cmd)
     if code != 0:
         print(f"[VideoProcessor]   ERROR: {err}")
         raise RuntimeError(f"Failed to trim video: {err}")
-    print(f"[VideoProcessor]   trim_video completed")
+    print(f"[VideoProcessor]   trim_video completed (re-encoded)")
 
 
 def concat_videos(files: List[Path], output: Path) -> None:
@@ -340,9 +362,11 @@ def concat_videos(files: List[Path], output: Path) -> None:
         cmd_re = [
             FFMPEG_BIN, "-y",
             "-f", "concat", "-safe", "0", "-i", str(listfile),
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
             "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "192k",
+            "-threads", "1",  # Limit threads to reduce memory
+            "-c:a", "aac", "-b:a", "128k",
+            "-max_muxing_queue_size", "1024",
             str(output)
         ]
         code, _, err = run(cmd_re)
