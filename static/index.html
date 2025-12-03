@@ -964,6 +964,13 @@ Example: A realistic vertical video of a professional presenter speaking directl
             const dialogueInput = document.getElementById('dialogueInput');
             if (!dialogueInput || !dialogueInput.value.trim()) return;
             
+            // Check if auto-split is enabled - if OFF, don't resplit
+            const autoSplitEnabled = isAutoSplitEnabled();
+            if (!autoSplitEnabled) {
+                console.log(`[updateWordsPerLine] Auto-split is OFF, skipping re-split`);
+                return;
+            }
+            
             // Get the target words from input
             const targetWords = parseInt(document.getElementById('wordsPerLine')?.value) || 18;
             console.log(`[updateWordsPerLine] Target: ${targetWords} words`);
@@ -1121,8 +1128,23 @@ Example: A realistic vertical video of a professional presenter speaking directl
             
             console.log(`[Language] Changed to ${lang}, reset words per line to ${defaultWords}`);
             
-            // Re-split with new language settings
-            updateWordsPerLine();
+            // Check if auto-split is enabled
+            const autoSplitEnabled = isAutoSplitEnabled();
+            
+            if (autoSplitEnabled) {
+                // Re-split with new language settings
+                updateWordsPerLine();
+            } else {
+                // Auto-split is OFF - just show a message, don't resplit
+                const status = document.getElementById('splitStatus');
+                if(status){
+                    status.style.display = 'block';
+                    status.textContent = `ℹ️ Language: ${lang} (auto-split OFF - lines unchanged)`;
+                    status.style.color = 'var(--accent)';
+                    setTimeout(() => { status.style.display = 'none'; }, 3000);
+                }
+                console.log(`[Language] Auto-split is OFF, not re-splitting`);
+            }
         }
         
         // Add language change listener
