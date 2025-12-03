@@ -2873,28 +2873,47 @@ Example: A realistic vertical video of a professional presenter speaking directl
             const lines = text.split('\n').filter(l => l.trim());
             const hasLineNumbers = lines.every(l => /^\d+\|/.test(l.trim()));
             
+            // Check if auto-split is enabled
+            const autoSplitEnabled = isAutoSplitEnabled();
+            
             if(!hasLineNumbers && text.length > 50){
-                // Auto-split the raw text
-                const language = document.getElementById('language').value;
-                const wps = SPEAKING_RATES[language] || 2.5;
-                
-                // Use custom words per line if set, otherwise calculate from speaking rate
-                const customWords = parseInt(document.getElementById('wordsPerLine')?.value) || 0;
-                const targetWords = customWords > 0 ? customWords : Math.round(wps * 6);
-                const minWords = Math.round(targetWords * 0.7);
-                const maxWords = Math.round(targetWords * 1.3);
-                
-                const splitLines = smartSplitText(text, minWords, targetWords, maxWords);
-                const formatted = splitLines.map((line, i) => `${i + 1}|${line}`).join('\n');
-                input.value = formatted;
-                
-                // Show brief status
-                const status = document.getElementById('splitStatus');
-                if(status){
-                    status.style.display = 'block';
-                    status.textContent = `✓ Auto-split into ${splitLines.length} clips`;
-                    status.style.color = 'var(--success)';
-                    setTimeout(() => { status.style.display = 'none'; }, 3000);
+                if(autoSplitEnabled) {
+                    // AUTO-SPLIT ON: Split the raw text into clips based on speaking rate
+                    const language = document.getElementById('language').value;
+                    const wps = SPEAKING_RATES[language] || 2.5;
+                    
+                    // Use custom words per line if set, otherwise calculate from speaking rate
+                    const customWords = parseInt(document.getElementById('wordsPerLine')?.value) || 0;
+                    const targetWords = customWords > 0 ? customWords : Math.round(wps * 6);
+                    const minWords = Math.round(targetWords * 0.7);
+                    const maxWords = Math.round(targetWords * 1.3);
+                    
+                    const splitLines = smartSplitText(text, minWords, targetWords, maxWords);
+                    const formatted = splitLines.map((line, i) => `${i + 1}|${line}`).join('\n');
+                    input.value = formatted;
+                    
+                    // Show brief status
+                    const status = document.getElementById('splitStatus');
+                    if(status){
+                        status.style.display = 'block';
+                        status.textContent = `✓ Auto-split into ${splitLines.length} clips`;
+                        status.style.color = 'var(--success)';
+                        setTimeout(() => { status.style.display = 'none'; }, 3000);
+                    }
+                } else {
+                    // AUTO-SPLIT OFF: Each line in input = 1 clip (just add line numbers)
+                    const manualLines = text.split('\n').map(l => l.trim()).filter(l => l);
+                    const formatted = manualLines.map((line, i) => `${i + 1}|${line}`).join('\n');
+                    input.value = formatted;
+                    
+                    // Show brief status
+                    const status = document.getElementById('splitStatus');
+                    if(status){
+                        status.style.display = 'block';
+                        status.textContent = `✓ ${manualLines.length} lines (1 line = 1 clip)`;
+                        status.style.color = 'var(--accent)';
+                        setTimeout(() => { status.style.display = 'none'; }, 3000);
+                    }
                 }
             }
         }
@@ -2983,6 +3002,21 @@ Example: A realistic vertical video of a professional presenter speaking directl
             const dialogueInput = document.getElementById('dialogueInput');
             const text = dialogueInput.value.trim();
             if(!text) return;
+            
+            // Check if auto-split is enabled
+            const autoSplitEnabled = isAutoSplitEnabled();
+            
+            if(!autoSplitEnabled) {
+                // AUTO-SPLIT OFF: Don't resplit, just show a message
+                const status = document.getElementById('splitStatus');
+                if(status){
+                    status.style.display = 'block';
+                    status.textContent = `ℹ️ Auto-split is OFF - lines unchanged`;
+                    status.style.color = 'var(--accent)';
+                    setTimeout(() => { status.style.display = 'none'; }, 3000);
+                }
+                return;
+            }
             
             // Get all text content (remove line numbers if present)
             const rawText = text.split('\n')
