@@ -34,10 +34,20 @@ try:
     from google import genai
     from google.genai import types
     GENAI_AVAILABLE = True
+
+def describe_subject_for_continuity(image_path: str) -> str:
+    """Describe subject for continuity across clips (stub)"""
+    return ""
+
 except ImportError:
     genai = None
     types = None
     GENAI_AVAILABLE = False
+
+def describe_subject_for_continuity(image_path: str) -> str:
+    """Describe subject for continuity across clips (stub)"""
+    return ""
+
     print("[WARNING] google-genai not installed. Video generation disabled.")
 
 from config import (
