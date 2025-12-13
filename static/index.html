@@ -3661,11 +3661,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
                                     Smart Trim <span style="color:var(--success);font-size:10px;">✓ Recommended</span>
                                     <span style="font-size:10px;color:var(--text-muted);display:block;">Skip first clip & scene cuts</span>
                                 </span>
-                                <div class="toggle ${toggleClass}" id="modalSmartTrim" 
-                                    onclick="this.classList.toggle('active')"
-                                    style="width:40px;height:22px;background:${toggleBg};border-radius:11px;position:relative;cursor:pointer;transition:background 0.2s;">
-                                    <div style="width:18px;height:18px;background:white;border-radius:50%;position:absolute;top:2px;${togglePosition};transition:all 0.2s;"></div>
-                                </div>
+                                <div class="toggle ${toggleClass}" id="modalSmartTrim"></div>
                             </div>
                         </div>
                         
@@ -3675,11 +3671,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
                                     🔊 Enhance Audio
                                     <span style="font-size:10px;color:var(--text-muted);display:block;">Noise reduction & normalization</span>
                                 </span>
-                                <div class="toggle" id="modalEnhanceAudio" 
-                                    onclick="this.classList.toggle('active')"
-                                    style="width:40px;height:22px;background:var(--bg-elevated);border-radius:11px;position:relative;cursor:pointer;transition:background 0.2s;">
-                                    <div style="width:18px;height:18px;background:white;border-radius:50%;position:absolute;top:2px;left:2px;transition:all 0.2s;"></div>
-                                </div>
+                                <div class="toggle" id="modalEnhanceAudio"></div>
                             </div>
                         </div>
                         
@@ -3702,6 +3694,10 @@ Example: A realistic vertical video of a professional presenter speaking directl
             `;
             
             document.body.insertAdjacentHTML('beforeend', modalHtml);
+            
+            // Setup toggle click handlers
+            document.getElementById('modalSmartTrim').onclick = function() { this.classList.toggle('active'); };
+            document.getElementById('modalEnhanceAudio').onclick = function() { this.classList.toggle('active'); };
             
             // Wait for user confirmation
             return new Promise((resolve) => {
@@ -4053,7 +4049,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     <div style="background:var(--bg-card);border-radius:var(--radius-lg);padding:24px;max-width:450px;width:90%;box-shadow:0 20px 40px rgba(0,0,0,0.5);">
                         <h3 style="margin:0 0 16px;font-size:16px;display:flex;align-items:center;gap:8px;">
                             🎤 Voice Clone
-                            <span style="font-size:10px;color:var(--text-muted);font-weight:normal;">~$0.05/swap via Replicate</span>
+                            <span style="font-size:10px;color:var(--text-muted);font-weight:normal;">via Replicate API</span>
                         </h3>
                         
                         <div style="margin-bottom:16px;">
@@ -4077,22 +4073,9 @@ Example: A realistic vertical video of a professional presenter speaking directl
                             </p>
                         </div>
                         
-                        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
-                            <div>
-                                <label style="font-size:11px;color:var(--text-muted);margin-bottom:4px;display:block;">Language</label>
-                                <select id="voiceLanguage" style="width:100%;padding:10px;background:var(--bg-input);border:1px solid var(--border-color);border-radius:var(--radius-sm);color:var(--text-primary);font-size:12px;">
-                                    <option value="EN">English</option>
-                                    <option value="ES">Spanish</option>
-                                    <option value="FR">French</option>
-                                    <option value="ZH">Chinese</option>
-                                    <option value="JP">Japanese</option>
-                                    <option value="KR">Korean</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label style="font-size:11px;color:var(--text-muted);margin-bottom:4px;display:block;">Speed</label>
-                                <input type="number" id="voiceSpeed" value="1.0" min="0.5" max="2.0" step="0.1"
-                                    style="width:100%;padding:10px;background:var(--bg-input);border:1px solid var(--border-color);border-radius:var(--radius-sm);color:var(--text-primary);font-size:12px;">
+                        <div style="margin-bottom:16px;padding:10px;background:var(--bg-elevated);border-radius:var(--radius-sm);border:1px dashed var(--border-color);">
+                            <div style="font-size:11px;color:var(--text-muted);">
+                                🎯 <strong>HierSpeech++</strong>: Voice-to-voice conversion (~$0.06). Preserves exact timing/prosody.
                             </div>
                         </div>
                         
@@ -4103,7 +4086,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
                             </button>
                             <button id="confirmVoiceSwapBtn" 
                                 style="padding:10px 20px;background:var(--accent);border:none;border-radius:var(--radius-sm);color:white;cursor:pointer;font-weight:600;">
-                                🎤 Clone Voice
+                                🎤 Clone Voice (~$0.06)
                             </button>
                         </div>
                     </div>
@@ -4133,19 +4116,18 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     return;
                 }
                 
-                const language = document.getElementById('voiceLanguage').value;
-                const speed = parseFloat(document.getElementById('voiceSpeed').value) || 1.0;
-                
                 document.getElementById('voiceSwapModal').remove();
                 
-                await doVoiceSwap(jobId, latestExport, voiceFile, language, speed, selectedVoiceClips);
+                await doVoiceSwap(jobId, latestExport, voiceFile, selectedVoiceClips);
             };
         }
         
-        async function doVoiceSwap(jobId, videoFilename, voiceFile, language, speed, clipVoiceRefs = []) {
+        async function doVoiceSwap(jobId, videoFilename, voiceFile, clipVoiceRefs = []) {
             isVoiceSwapping = true;
             
             const container = document.getElementById('clipsList');
+            
+            const timeMsg = 'Voice conversion takes 30-90 seconds';
             
             // Add progress indicator
             const progressHtml = `
@@ -4153,9 +4135,9 @@ Example: A realistic vertical video of a professional presenter speaking directl
                     <div style="display:flex;align-items:center;justify-content:space-between;width:100%">
                         <div style="display:flex;align-items:center;gap:12px">
                             <div class="export-spinner"></div>
-                            <h3 style="margin:0;font-size:14px;color:white;">🎤 Cloning Voice...</h3>
+                            <h3 style="margin:0;font-size:14px;color:white;">🎤 Cloning Voice (HierSpeech++)...</h3>
                         </div>
-                        <span style="font-size:11px;color:rgba(255,255,255,0.7);">This may take 30-60 seconds</span>
+                        <span style="font-size:11px;color:rgba(255,255,255,0.7);">${timeMsg}</span>
                     </div>
                 </div>
             `;
@@ -4164,8 +4146,6 @@ Example: A realistic vertical video of a professional presenter speaking directl
             try {
                 const formData = new FormData();
                 formData.append('video_filename', videoFilename);
-                formData.append('language', language);
-                formData.append('speed', speed.toString());
                 
                 // Either upload voice file or reference multiple clips' audio
                 if (voiceFile) {
@@ -4194,9 +4174,10 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 // Update progress to success
                 const progressEl = container.querySelector('.voice-swap-progress');
                 if (progressEl) {
+                    const costInfo = result.cost_estimate || '~$0.06';
                     progressEl.innerHTML = `
                         <div style="display:flex;align-items:center;justify-content:space-between;width:100%">
-                            <h3 style="margin:0;font-size:14px;color:white;">✅ Voice Clone Complete!</h3>
+                            <h3 style="margin:0;font-size:14px;color:white;">✅ Voice Clone Complete! (${costInfo})</h3>
                             <div style="display:flex;gap:8px;">
                                 <a href="${result.download_url}" download style="padding:6px 12px;background:white;color:#9333ea;border-radius:var(--radius-sm);font-size:12px;font-weight:600;text-decoration:none;">📥 Download</a>
                                 <button onclick="this.closest('.voice-swap-progress').remove()" style="padding:6px 12px;background:rgba(255,255,255,0.2);color:white;border:none;border-radius:var(--radius-sm);font-size:12px;cursor:pointer;">✕</button>
