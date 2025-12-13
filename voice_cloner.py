@@ -239,7 +239,7 @@ def check_replicate_available() -> dict:
     }
 
 
-# For sync contexts (FastAPI endpoints)
+# For sync contexts (FastAPI endpoints already in async loop)
 def voice_swap_video_sync(
     video_path: Path,
     reference_voice_path: Path,
@@ -248,12 +248,26 @@ def voice_swap_video_sync(
     speed: float = 1.0,
     progress_callback=None
 ) -> dict:
-    """Synchronous wrapper for voice_swap_video"""
-    return asyncio.run(voice_swap_video(
-        video_path,
-        reference_voice_path,
-        output_path,
-        language,
-        speed,
-        progress_callback
-    ))
+    """Synchronous wrapper for voice_swap_video - handles nested event loops"""
+    import concurrent.futures
+    
+    def run_in_thread():
+        # Create new event loop in this thread
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(voice_swap_video(
+                video_path,
+                reference_voice_path,
+                output_path,
+                language,
+                speed,
+                progress_callback
+            ))
+        finally:
+            loop.close()
+    
+    # Run in a separate thread to avoid event loop conflicts
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future = executor.submit(run_in_thread)
+        return future.result(timeout=300)  # 5 minute timeout
