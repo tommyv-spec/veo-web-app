@@ -94,6 +94,22 @@ async def upload_to_tmpfiles(file_path: Path) -> str:
             return url
 
 
+async def get_model_version(model: str) -> str:
+    """Get the latest version of a Replicate model."""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.get(
+            f"https://api.replicate.com/v1/models/{model}",
+            headers={"Authorization": f"Bearer {REPLICATE_API_TOKEN}"}
+        )
+        response.raise_for_status()
+        data = response.json()
+        version = data.get("latest_version", {}).get("id")
+        if not version:
+            raise ValueError(f"Could not get version for model {model}")
+        logger.info(f"[VoiceConvert] Got model version: {version[:20]}...")
+        return version
+
+
 async def voice_convert_replicate(
     source_audio_url: str,
     target_voice_url: str,
@@ -119,6 +135,9 @@ async def voice_convert_replicate(
     if not REPLICATE_API_TOKEN:
         raise ValueError("REPLICATE_API_TOKEN not set. Get one from https://replicate.com")
     
+    # First get the model version
+    version = await get_model_version(HIERSPEECH_MODEL)
+    
     headers = {
         "Authorization": f"Bearer {REPLICATE_API_TOKEN}",
         "Content-Type": "application/json",
@@ -130,6 +149,7 @@ async def voice_convert_replicate(
     # - target_voice: voice to clone (like OpenVoice's tgt_se)
     # - NO input_text: this triggers voice conversion mode (not TTS)
     payload = {
+        "version": version,
         "input": {
             "input_sound": source_audio_url,      # Source speech (content to keep)
             "target_voice": target_voice_url,      # Target voice to clone into
@@ -143,9 +163,9 @@ async def voice_convert_replicate(
     logger.info(f"  Target: {target_voice_url[:60]}...")
     
     async with httpx.AsyncClient(timeout=300.0) as client:
-        # Create prediction using models endpoint
+        # Create prediction using /v1/predictions endpoint with version
         response = await client.post(
-            f"https://api.replicate.com/v1/models/{HIERSPEECH_MODEL}/predictions",
+            "https://api.replicate.com/v1/predictions",
             headers=headers,
             json=payload
         )

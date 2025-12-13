@@ -858,24 +858,18 @@ Example: A realistic vertical video of a professional presenter speaking directl
                                     </ul>
                                     <p style="color:var(--success);">📥 Once all approved, click Download!</p>
                                 </div>
-                                
-                                <!-- Voice Sample Pre-Upload -->
-                                <div style="margin-top:16px;padding:12px;background:var(--bg-elevated);border-radius:var(--radius-md);border:1px dashed var(--border-color);">
-                                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
-                                        <span style="font-size:12px;font-weight:600;">🎤 Voice Sample (optional)</span>
-                                        <span id="voiceSampleStatus" style="font-size:10px;color:var(--text-muted);">Not uploaded</span>
-                                    </div>
-                                    <input type="file" id="preVoiceSample" accept="audio/*,.mp3,.wav,.m4a,.ogg" style="display:none;">
-                                    <button class="btn btn-secondary btn-sm" style="width:100%;font-size:11px;" onclick="document.getElementById('preVoiceSample').click()">
-                                        📁 Upload voice to clone
-                                    </button>
-                                    <p style="font-size:10px;color:var(--text-muted);margin-top:6px;">
-                                        Pre-upload saves time. Or click 🎤 on any clip to use its voice.
-                                    </p>
-                                </div>
                             </span>
                         </span>
                         <div style="display:flex;align-items:center;gap:8px;">
+                            <!-- Voice Sample Pre-Upload -->
+                            <div style="padding:6px 10px;background:var(--bg-elevated);border-radius:var(--radius-sm);border:1px solid var(--border-color);display:flex;align-items:center;gap:8px;">
+                                <span style="font-size:11px;">🎤</span>
+                                <span id="voiceSampleStatus" style="font-size:10px;color:var(--text-muted);">Not uploaded</span>
+                                <input type="file" id="preVoiceSample" accept="audio/*,.mp3,.wav,.m4a,.ogg" style="display:none;">
+                                <button class="btn btn-secondary btn-sm" style="font-size:10px;padding:3px 8px;" onclick="document.getElementById('preVoiceSample').click()" title="Pre-upload voice sample for cloning">
+                                    Upload
+                                </button>
+                            </div>
                             <div id="jobActions"></div>
                             <button class="btn btn-secondary btn-sm" onclick="collapseResults()" title="Collapse panel" style="padding:6px 10px;">✕</button>
                         </div>
