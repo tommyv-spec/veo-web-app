@@ -228,3 +228,84 @@ def import_audio(video_path: Path, audio_path: Path, output_path: Path) -> bool:
         True if successful
     """
     return replace_audio(video_path, audio_path, output_path)
+
+
+def concatenate_audio_files(audio_files: list, output_path: Path) -> bool:
+    """
+    Concatenate multiple audio files into one.
+    Used for combining multiple clips' audio as voice reference.
+    
+    Args:
+        audio_files: List of audio file paths
+        output_path: Output concatenated audio file
+    
+    Returns:
+        True if successful
+    """
+    if not audio_files:
+        return False
+    
+    if len(audio_files) == 1:
+        import shutil
+        shutil.copy(audio_files[0], output_path)
+        return True
+    
+    try:
+        import numpy as np
+        import soundfile as sf
+        
+        all_data = []
+        target_rate = None
+        
+        for audio_file in audio_files:
+            if not Path(audio_file).exists():
+                continue
+            data, rate = sf.read(str(audio_file))
+            
+            # Set target rate from first file
+            if target_rate is None:
+                target_rate = rate
+            
+            # Convert to mono if stereo
+            if len(data.shape) > 1:
+                data = data.mean(axis=1)
+            
+            all_data.append(data)
+        
+        if not all_data:
+            return False
+        
+        # Concatenate all audio
+        combined = np.concatenate(all_data)
+        
+        # Write output
+        sf.write(str(output_path), combined, target_rate)
+        logger.info(f"Concatenated {len(all_data)} audio files ({len(combined)/target_rate:.1f}s total)")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to concatenate audio: {e}")
+        
+        # Fallback: use ffmpeg concat
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as f:
+                for audio_file in audio_files:
+                    f.write(f"file '{audio_file}'\n")
+                concat_list = f.name
+            
+            cmd = [
+                FFMPEG_BIN, "-y", "-f", "concat", "-safe", "0",
+                "-i", concat_list,
+                "-c", "copy",
+                str(output_path)
+            ]
+            code, _, err = run_cmd(cmd)
+            os.unlink(concat_list)
+            
+            if code != 0:
+                logger.error(f"FFmpeg concat failed: {err}")
+                return False
+            return True
+        except Exception as e2:
+            logger.error(f"FFmpeg fallback also failed: {e2}")
+            return False

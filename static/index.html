@@ -452,8 +452,10 @@
         .clip-video .video-container { width: 100%; height: 100%; position: relative; }
         .clip-video .video-container video { width: 100%; height: 100%; object-fit: contain; }
         .video-download-btn { position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,0.7); border: none; border-radius: 6px; padding: 6px 8px; cursor: pointer; font-size: 14px; opacity: 0; transition: opacity 0.2s; z-index: 10; }
-        .video-container:hover .video-download-btn { opacity: 1; }
+        .video-container:hover .video-download-btn, .video-container:hover .video-voice-btn { opacity: 1; }
         .video-download-btn:hover { background: rgba(99, 102, 241, 0.9); }
+        .video-voice-btn { position: absolute; top: 8px; right: 42px; background: rgba(147, 51, 234, 0.8); border: none; border-radius: 6px; padding: 6px 8px; cursor: pointer; font-size: 14px; opacity: 0; transition: opacity 0.2s; z-index: 10; }
+        .video-voice-btn:hover { background: rgba(147, 51, 234, 1); }
         
         .variant-nav { position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 4px; background: rgba(0, 0, 0, 0.8); padding: 4px 8px; border-radius: 12px; backdrop-filter: blur(4px); }
         .variant-btn { background: transparent; border: none; color: white; cursor: pointer; font-size: 10px; padding: 2px 6px; opacity: 0.8; transition: opacity 0.2s; }
@@ -856,6 +858,21 @@ Example: A realistic vertical video of a professional presenter speaking directl
                                     </ul>
                                     <p style="color:var(--success);">📥 Once all approved, click Download!</p>
                                 </div>
+                                
+                                <!-- Voice Sample Pre-Upload -->
+                                <div style="margin-top:16px;padding:12px;background:var(--bg-elevated);border-radius:var(--radius-md);border:1px dashed var(--border-color);">
+                                    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+                                        <span style="font-size:12px;font-weight:600;">🎤 Voice Sample (optional)</span>
+                                        <span id="voiceSampleStatus" style="font-size:10px;color:var(--text-muted);">Not uploaded</span>
+                                    </div>
+                                    <input type="file" id="preVoiceSample" accept="audio/*,.mp3,.wav,.m4a,.ogg" style="display:none;">
+                                    <button class="btn btn-secondary btn-sm" style="width:100%;font-size:11px;" onclick="document.getElementById('preVoiceSample').click()">
+                                        📁 Upload voice to clone
+                                    </button>
+                                    <p style="font-size:10px;color:var(--text-muted);margin-top:6px;">
+                                        Pre-upload saves time. Or click 🎤 on any clip to use its voice.
+                                    </p>
+                                </div>
                             </span>
                         </span>
                         <div style="display:flex;align-items:center;gap:8px;">
@@ -876,6 +893,19 @@ Example: A realistic vertical video of a professional presenter speaking directl
 
     <script>
         let uploadJobId=null, uploadedImages=[], uploadedFilesData=[], selectedJobId=null, lastLogId=0, clipStates={}, hasJobs=false;
+        let preUploadedVoiceSample = null; // Pre-uploaded voice for cloning
+        let selectedVoiceClips = []; // Multiple clips for voice reference (1-4 clips)
+        
+        // Voice sample pre-upload handler
+        document.getElementById('preVoiceSample')?.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                preUploadedVoiceSample = file;
+                selectedVoiceClips = []; // Clear clip selection
+                document.getElementById('voiceSampleStatus').textContent = `✓ ${file.name}`;
+                document.getElementById('voiceSampleStatus').style.color = 'var(--success)';
+            }
+        });
         let lastFrameIndex = null; // Index of image to use as last frame (end of video)
         const API='/api';
         
@@ -3423,7 +3453,7 @@ Example: A realistic vertical video of a professional presenter speaking directl
             if(redoQueued)vid=`<div class="generating-state"><div class="generating-spinner">🔄</div><div class="generating-text">Redo queued...</div></div>`;else if(generating)vid=`<div class="generating-state"><div class="generating-spinner">🎬</div><div class="generating-text">Generating...</div></div>`;
             else if(waitingApproval)vid=`<div class="pending-state"><div class="pending-icon">⏸️</div><div class="pending-text">Awaiting<br>Approval</div></div>`;
             else if(pending)vid=`<div class="pending-state"><div class="pending-icon">⏳</div><div class="pending-text">Waiting...</div></div>`;
-            else if(c.output_filename)vid=`<div class="video-container"><video controls preload="auto" playsinline><source src="${API}/jobs/${jid}/outputs/${c.output_filename}?t=${Date.now()}" type="video/mp4"></video><button class="video-download-btn" onclick="event.stopPropagation();downloadClip('${API}/jobs/${jid}/outputs/${c.output_filename}','clip_${c.clip_index+1}.mp4')" title="Download clip">📥</button></div>`;
+            else if(c.output_filename)vid=`<div class="video-container"><video controls preload="auto" playsinline><source src="${API}/jobs/${jid}/outputs/${c.output_filename}?t=${Date.now()}" type="video/mp4"></video><button class="video-voice-btn" data-clip="${c.output_filename}" onclick="event.stopPropagation();useClipVoice('${jid}','${c.output_filename}',${c.clip_index})" title="Select for voice reference (2-3 clips recommended)">🎤</button><button class="video-download-btn" onclick="event.stopPropagation();downloadClip('${API}/jobs/${jid}/outputs/${c.output_filename}','clip_${c.clip_index+1}.mp4')" title="Download clip">📥</button></div>`;
             else if(failed)vid=`<div class="failed-state"><div class="failed-icon">❌</div><div class="failed-text">Failed</div></div>`;
             else vid='<div style="color:var(--text-muted);font-size:10px">🎬</div>';
             let variantNav='';
@@ -3921,6 +3951,63 @@ Example: A realistic vertical video of a professional presenter speaking directl
         // ============ Voice Swap (Replicate/OpenVoice) ============
         let isVoiceSwapping = false;
         
+        // Toggle clip voice selection (multi-select, 1-4 clips)
+        function useClipVoice(jobId, clipFilename, clipIndex) {
+            const clipRef = { jobId, filename: clipFilename, index: clipIndex };
+            const existingIdx = selectedVoiceClips.findIndex(c => c.filename === clipFilename);
+            
+            if (existingIdx >= 0) {
+                // Deselect
+                selectedVoiceClips.splice(existingIdx, 1);
+            } else {
+                // Select (max 4)
+                if (selectedVoiceClips.length >= 4) {
+                    showToast('⚠️ Max 4 clips. Deselect one first.', 'var(--warning)');
+                    return;
+                }
+                selectedVoiceClips.push(clipRef);
+                preUploadedVoiceSample = null; // Clear file upload
+            }
+            
+            // Update status display
+            updateVoiceStatus();
+            
+            // Update clip visual states
+            updateClipVoiceButtons();
+        }
+        
+        function updateVoiceStatus() {
+            const statusEl = document.getElementById('voiceSampleStatus');
+            if (!statusEl) return;
+            
+            if (selectedVoiceClips.length === 0) {
+                statusEl.textContent = 'Not selected';
+                statusEl.style.color = 'var(--text-muted)';
+            } else {
+                const clipNums = selectedVoiceClips.map(c => `#${c.index + 1}`).join(', ');
+                const quality = selectedVoiceClips.length >= 2 ? '✓✓' : '✓';
+                statusEl.textContent = `${quality} Clips ${clipNums}`;
+                statusEl.style.color = 'var(--success)';
+            }
+        }
+        
+        function updateClipVoiceButtons() {
+            // Add/remove selected state from voice buttons
+            document.querySelectorAll('.video-voice-btn').forEach(btn => {
+                const isSelected = selectedVoiceClips.some(c => btn.dataset.clip === c.filename);
+                btn.style.background = isSelected ? 'var(--success)' : 'rgba(147, 51, 234, 0.8)';
+                btn.textContent = isSelected ? '✓' : '🎤';
+            });
+        }
+        
+        function showToast(message, bgColor = 'var(--success)') {
+            const toast = document.createElement('div');
+            toast.style.cssText = `position:fixed;bottom:20px;right:20px;background:${bgColor};color:white;padding:12px 20px;border-radius:8px;z-index:10000;font-size:13px;`;
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 2000);
+        }
+        
         async function openVoiceSwap(jobId) {
             if (isVoiceSwapping) {
                 alert('Voice swap already in progress');
@@ -3953,6 +4040,19 @@ Example: A realistic vertical video of a professional presenter speaking directl
             
             const latestExport = exportedFiles[exportedFiles.length - 1];
             
+            // Check for pre-uploaded voice or selected clips
+            const hasPreUpload = preUploadedVoiceSample !== null;
+            const hasClipVoices = selectedVoiceClips.length > 0;
+            const clipCount = selectedVoiceClips.length;
+            const qualityLabel = clipCount >= 3 ? '⭐⭐⭐ Excellent' : clipCount === 2 ? '⭐⭐ Good' : clipCount === 1 ? '⭐ Basic' : '';
+            
+            const voiceSourceText = hasPreUpload 
+                ? `✓ ${preUploadedVoiceSample.name}` 
+                : hasClipVoices 
+                    ? `✓ ${clipCount} clip${clipCount > 1 ? 's' : ''} selected (${qualityLabel})`
+                    : 'No voice selected';
+            const voiceSourceColor = (hasPreUpload || hasClipVoices) ? 'var(--success)' : 'var(--text-muted)';
+            
             // Show voice swap modal
             const modalHtml = `
                 <div id="voiceSwapModal" style="position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.8);display:flex;align-items:center;justify-content:center;z-index:10000;">
@@ -3970,9 +4070,17 @@ Example: A realistic vertical video of a professional presenter speaking directl
                         </div>
                         
                         <div style="margin-bottom:16px;">
-                            <label style="font-size:11px;color:var(--text-muted);margin-bottom:4px;display:block;">Voice Sample (10+ seconds recommended)</label>
-                            <input type="file" id="voiceSampleInput" accept="audio/*,.mp3,.wav,.m4a,.ogg" 
-                                style="width:100%;padding:10px;background:var(--bg-input);border:1px solid var(--border-color);border-radius:var(--radius-sm);color:var(--text-primary);font-size:12px;">
+                            <label style="font-size:11px;color:var(--text-muted);margin-bottom:4px;display:block;">Voice Reference</label>
+                            <div style="padding:10px;background:var(--bg-input);border-radius:var(--radius-sm);font-size:12px;color:${voiceSourceColor};display:flex;justify-content:space-between;align-items:center;">
+                                <span id="modalVoiceSource">${voiceSourceText}</span>
+                                <label style="cursor:pointer;color:var(--accent);font-size:11px;">
+                                    Upload file
+                                    <input type="file" id="voiceSampleInput" accept="audio/*,.mp3,.wav,.m4a,.ogg" style="display:none;">
+                                </label>
+                            </div>
+                            <p style="font-size:10px;color:var(--text-muted);margin-top:4px;">
+                                💡 Click 🎤 on 2-3 clips for best quality (max 4). More clips = better voice match.
+                            </p>
                         </div>
                         
                         <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
@@ -3994,10 +4102,6 @@ Example: A realistic vertical video of a professional presenter speaking directl
                             </div>
                         </div>
                         
-                        <p style="font-size:11px;color:var(--text-muted);margin:0 0 16px;padding:8px;background:var(--bg-elevated);border-radius:var(--radius-sm);">
-                            💡 Upload a clear audio sample of the voice you want. The AI will clone this voice onto your video.
-                        </p>
-                        
                         <div style="display:flex;gap:8px;justify-content:flex-end;">
                             <button onclick="document.getElementById('voiceSwapModal').remove()" 
                                 style="padding:10px 20px;background:var(--bg-elevated);border:1px solid var(--border-color);border-radius:var(--radius-sm);color:var(--text-primary);cursor:pointer;">
@@ -4014,10 +4118,24 @@ Example: A realistic vertical video of a professional presenter speaking directl
             
             document.body.insertAdjacentHTML('beforeend', modalHtml);
             
+            // Handle file input change in modal
+            document.getElementById('voiceSampleInput').addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    preUploadedVoiceSample = file;
+                    selectedVoiceClips = []; // Clear clip selection if file uploaded
+                    document.getElementById('modalVoiceSource').textContent = `✓ ${file.name}`;
+                    document.getElementById('modalVoiceSource').style.color = 'var(--success)';
+                    updateClipVoiceButtons();
+                }
+            });
+            
             document.getElementById('confirmVoiceSwapBtn').onclick = async () => {
-                const voiceFile = document.getElementById('voiceSampleInput').files[0];
-                if (!voiceFile) {
-                    alert('Please select a voice sample file');
+                // Use pre-uploaded file, or file from modal, or clip voices
+                let voiceFile = document.getElementById('voiceSampleInput').files[0] || preUploadedVoiceSample;
+                
+                if (!voiceFile && selectedVoiceClips.length === 0) {
+                    alert('Please select a voice sample file or click 🎤 on 1-4 clips to use their voices');
                     return;
                 }
                 
@@ -4026,11 +4144,11 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 
                 document.getElementById('voiceSwapModal').remove();
                 
-                await doVoiceSwap(jobId, latestExport, voiceFile, language, speed);
+                await doVoiceSwap(jobId, latestExport, voiceFile, language, speed, selectedVoiceClips);
             };
         }
         
-        async function doVoiceSwap(jobId, videoFilename, voiceFile, language, speed) {
+        async function doVoiceSwap(jobId, videoFilename, voiceFile, language, speed, clipVoiceRefs = []) {
             isVoiceSwapping = true;
             
             const container = document.getElementById('clipsList');
@@ -4051,10 +4169,17 @@ Example: A realistic vertical video of a professional presenter speaking directl
             
             try {
                 const formData = new FormData();
-                formData.append('voice_sample', voiceFile);
                 formData.append('video_filename', videoFilename);
                 formData.append('language', language);
                 formData.append('speed', speed.toString());
+                
+                // Either upload voice file or reference multiple clips' audio
+                if (voiceFile) {
+                    formData.append('voice_sample', voiceFile);
+                } else if (clipVoiceRefs && clipVoiceRefs.length > 0) {
+                    // Send array of clip filenames as JSON
+                    formData.append('reference_clips', JSON.stringify(clipVoiceRefs.map(c => c.filename)));
+                }
                 
                 const response = await fetch(
                     `${API}/jobs/${jobId}/voice-swap`,

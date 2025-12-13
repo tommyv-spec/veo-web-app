@@ -1,8 +1,14 @@
 """
-Voice Cloning Module using Replicate API (OpenVoice)
-- Hosted voice cloning without needing GPU server
-- ~$0.05 per voice swap
-- Works with Render free tier (just API calls)
+Voice Cloning Module using Replicate API (HierSpeech++)
+
+HierSpeech++ does ACTUAL voice-to-voice conversion (like OpenVoice ToneColorConverter):
+- Takes source audio (speech content to keep)
+- Takes target voice (voice to clone)
+- Outputs source speech with target voice characteristics
+
+This mimics OpenVoice's converter.convert() functionality:
+- audio_src_path -> input_sound
+- tgt_se (target speaker embedding) -> target_voice
 
 Setup:
 1. Get API key from https://replicate.com
@@ -12,9 +18,7 @@ Setup:
 import os
 import asyncio
 import httpx
-import base64
 import tempfile
-import time
 from pathlib import Path
 from typing import Optional
 import logging
@@ -22,15 +26,63 @@ import logging
 logger = logging.getLogger(__name__)
 
 REPLICATE_API_TOKEN = os.environ.get("REPLICATE_API_TOKEN", "")
-OPENVOICE_MODEL = "chenxwh/openvoice:b31457fa10fea1dd33f5c2f85b0a73d2c3a46e7c66728d8ff0f21ad80744f9c7"
 
-# Supported languages for OpenVoice V2
+# HierSpeech++ for audio-to-audio voice conversion
+# Similar to OpenVoice's ToneColorConverter
+HIERSPEECH_MODEL = "adirik/hierspeechpp"
+
+# Supported languages
 SUPPORTED_LANGUAGES = ["EN", "ES", "FR", "ZH", "JP", "KR"]
+
+
+async def upload_file_to_replicate(file_path: Path) -> str:
+    """
+    Upload file to Replicate's file hosting service.
+    Returns a URL that can be used as input to models.
+    """
+    if not REPLICATE_API_TOKEN:
+        raise ValueError("REPLICATE_API_TOKEN not set")
+    
+    # First, create an upload URL
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        # Get upload URL from Replicate
+        response = await client.post(
+            "https://api.replicate.com/v1/files",
+            headers={
+                "Authorization": f"Bearer {REPLICATE_API_TOKEN}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "filename": file_path.name,
+                "content_type": "audio/wav"
+            }
+        )
+        
+        if response.status_code == 201:
+            data = response.json()
+            upload_url = data.get("upload_url")
+            file_url = data.get("urls", {}).get("get")
+            
+            # Upload the file
+            with open(file_path, "rb") as f:
+                upload_response = await client.put(
+                    upload_url,
+                    content=f.read(),
+                    headers={"Content-Type": "audio/wav"}
+                )
+                upload_response.raise_for_status()
+            
+            logger.info(f"Uploaded {file_path.name} to Replicate: {file_url}")
+            return file_url
+        else:
+            # Fallback to tmpfiles.org
+            logger.info("Replicate file upload not available, using tmpfiles.org")
+            return await upload_to_tmpfiles(file_path)
 
 
 async def upload_to_tmpfiles(file_path: Path) -> str:
     """Upload file to tmpfiles.org and return URL (free, no auth needed)"""
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=120.0) as client:
         with open(file_path, "rb") as f:
             files = {"file": (file_path.name, f)}
             response = await client.post("https://tmpfiles.org/api/v1/upload", files=files)
@@ -38,23 +90,28 @@ async def upload_to_tmpfiles(file_path: Path) -> str:
             data = response.json()
             # Convert tmpfiles.org URL to direct download URL
             url = data["data"]["url"].replace("tmpfiles.org/", "tmpfiles.org/dl/")
+            logger.info(f"Uploaded {file_path.name} -> {url}")
             return url
 
 
-async def clone_voice_replicate(
+async def voice_convert_replicate(
     source_audio_url: str,
-    reference_voice_url: str,
-    language: str = "EN",
-    speed: float = 1.0
+    target_voice_url: str,
+    denoise_ratio: float = 0.7,
+    output_sample_rate: int = 44100
 ) -> Optional[str]:
     """
-    Clone voice using Replicate's hosted OpenVoice model.
+    Convert voice using Replicate's HierSpeech++ model.
+    
+    This is equivalent to OpenVoice's ToneColorConverter.convert():
+    - source_audio_url = audio_src_path (the speech to convert)
+    - target_voice_url = reference voice (tgt_se - target speaker embedding)
     
     Args:
-        source_audio_url: URL to audio that needs voice changed
-        reference_voice_url: URL to reference voice sample (10+ seconds recommended)
-        language: Language code (EN, ES, FR, ZH, JP, KR)
-        speed: Speech speed multiplier (0.5-2.0)
+        source_audio_url: URL to source audio (speech content to keep)
+        target_voice_url: URL to target voice sample (voice to clone)
+        denoise_ratio: Noise reduction (0-1, recommended 0.6-0.8)
+        output_sample_rate: Output sample rate
     
     Returns:
         URL to the output audio file, or None if failed
@@ -63,62 +120,91 @@ async def clone_voice_replicate(
         raise ValueError("REPLICATE_API_TOKEN not set. Get one from https://replicate.com")
     
     headers = {
-        "Authorization": f"Token {REPLICATE_API_TOKEN}",
-        "Content-Type": "application/json"
+        "Authorization": f"Bearer {REPLICATE_API_TOKEN}",
+        "Content-Type": "application/json",
+        "Prefer": "wait"  # Wait for result instead of polling
     }
     
-    # Start prediction
+    # HierSpeech++ parameters for voice conversion:
+    # - input_sound: source audio (like OpenVoice's audio_src_path)
+    # - target_voice: voice to clone (like OpenVoice's tgt_se)
+    # - NO input_text: this triggers voice conversion mode (not TTS)
     payload = {
-        "version": OPENVOICE_MODEL.split(":")[1],
         "input": {
-            "audio": source_audio_url,
-            "reference_speaker": reference_voice_url,
-            "language": language,
-            "speed": speed
+            "input_sound": source_audio_url,      # Source speech (content to keep)
+            "target_voice": target_voice_url,      # Target voice to clone into
+            "denoise_ratio": denoise_ratio,
+            "output_sample_rate": output_sample_rate
         }
     }
     
+    logger.info(f"[VoiceConvert] Calling HierSpeech++...")
+    logger.info(f"  Source: {source_audio_url[:60]}...")
+    logger.info(f"  Target: {target_voice_url[:60]}...")
+    
     async with httpx.AsyncClient(timeout=300.0) as client:
-        # Create prediction
+        # Create prediction using models endpoint
         response = await client.post(
-            "https://api.replicate.com/v1/predictions",
+            f"https://api.replicate.com/v1/models/{HIERSPEECH_MODEL}/predictions",
             headers=headers,
             json=payload
         )
+        
+        # Handle errors
+        if response.status_code == 422:
+            error_detail = response.json()
+            logger.error(f"[VoiceConvert] 422 Validation Error: {error_detail}")
+            raise ValueError(f"Invalid input: {error_detail}")
+        
+        if response.status_code == 401:
+            logger.error("[VoiceConvert] 401 Unauthorized - check REPLICATE_API_TOKEN")
+            raise ValueError("Invalid API token")
+        
         response.raise_for_status()
         prediction = response.json()
         
-        prediction_id = prediction["id"]
-        logger.info(f"Started Replicate prediction: {prediction_id}")
+        logger.info(f"[VoiceConvert] Prediction created: id={prediction.get('id')}, status={prediction.get('status')}")
         
-        # Poll for completion
-        max_attempts = 120  # 2 minutes max
+        # Check if we got immediate result (with Prefer: wait header)
+        if prediction.get("status") == "succeeded":
+            output_url = prediction.get("output")
+            if output_url:
+                logger.info(f"[VoiceConvert] Complete (immediate): {output_url}")
+                return output_url
+        
+        # Poll for completion if not immediate
+        prediction_id = prediction["id"]
+        logger.info(f"[VoiceConvert] Polling for result... (id={prediction_id})")
+        
+        max_attempts = 180  # 3 minutes max
         for attempt in range(max_attempts):
-            response = await client.get(
+            await asyncio.sleep(1)
+            
+            poll_response = await client.get(
                 f"https://api.replicate.com/v1/predictions/{prediction_id}",
-                headers=headers
+                headers={"Authorization": f"Bearer {REPLICATE_API_TOKEN}"}
             )
-            response.raise_for_status()
-            prediction = response.json()
+            poll_response.raise_for_status()
+            prediction = poll_response.json()
             
             status = prediction["status"]
             
             if status == "succeeded":
-                output_url = prediction["output"]
-                logger.info(f"Voice cloning complete: {output_url}")
+                output_url = prediction.get("output")
+                logger.info(f"[VoiceConvert] Complete: {output_url}")
                 return output_url
             elif status == "failed":
                 error = prediction.get("error", "Unknown error")
-                logger.error(f"Voice cloning failed: {error}")
-                return None
+                logger.error(f"[VoiceConvert] Failed: {error}")
+                raise ValueError(f"Voice conversion failed: {error}")
             elif status == "canceled":
-                logger.warning("Voice cloning was canceled")
+                logger.warning("[VoiceConvert] Canceled")
                 return None
             
-            # Wait before next poll
-            await asyncio.sleep(1)
+            if attempt % 15 == 0:
+                logger.info(f"[VoiceConvert] Still processing... ({attempt}s, status={status})")
         
-        logger.error("Voice cloning timed out")
+        logger.error("[VoiceConvert] Timed out after 3 minutes")
         return None
 
 
@@ -130,9 +216,10 @@ async def download_audio(url: str, output_path: Path) -> bool:
             response.raise_for_status()
             with open(output_path, "wb") as f:
                 f.write(response.content)
+            logger.info(f"[VoiceConvert] Downloaded audio to {output_path}")
             return True
     except Exception as e:
-        logger.error(f"Failed to download audio: {e}")
+        logger.error(f"[VoiceConvert] Download failed: {e}")
         return False
 
 
@@ -147,18 +234,22 @@ async def voice_swap_video(
     """
     Complete voice swap pipeline for video.
     
+    This mimics OpenVoice's workflow:
+    1. Extract audio from video (like extract_audio in your script)
+    2. Convert voice using HierSpeech++ (like converter.convert())
+    3. Replace audio in video (like replace_audio in your script)
+    
     Args:
         video_path: Input video file
-        reference_voice_path: Reference voice sample (audio file)
+        reference_voice_path: Reference voice sample (the voice to clone - like voice_to_clone)
         output_path: Output video with swapped voice
-        language: Language code
-        speed: Speech speed
+        language: Language code (informational)
+        speed: Speech speed (informational)
         progress_callback: Optional callback for progress updates
     
     Returns:
         dict with processing stats
     """
-    import asyncio
     from audio_processor import extract_audio, replace_audio
     
     if not REPLICATE_API_TOKEN:
@@ -166,64 +257,68 @@ async def voice_swap_video(
     
     stats = {
         "success": False,
-        "cost_estimate": "$0.05"
+        "cost_estimate": "$0.06"
     }
     
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
         
-        # Step 1: Extract audio from video
+        # Step 1: Extract audio from video (like your extract_audio function)
         if progress_callback:
             progress_callback("Extracting audio from video...")
         
         source_audio = temp_path / "source_audio.wav"
         if not extract_audio(video_path, source_audio):
-            return {"success": False, "error": "Failed to extract audio"}
+            return {"success": False, "error": "Failed to extract audio from video"}
         
-        # Step 2: Upload files to temporary hosting
+        logger.info(f"[VoiceSwap] Extracted source audio: {source_audio.stat().st_size} bytes")
+        
+        # Step 2: Upload files for processing
         if progress_callback:
             progress_callback("Uploading audio files...")
         
         try:
             source_url = await upload_to_tmpfiles(source_audio)
-            reference_url = await upload_to_tmpfiles(reference_voice_path)
+            target_url = await upload_to_tmpfiles(reference_voice_path)
         except Exception as e:
+            logger.error(f"[VoiceSwap] Upload failed: {e}")
             return {"success": False, "error": f"Failed to upload files: {e}"}
         
-        # Step 3: Call Replicate API
+        # Step 3: Convert voice (like converter.convert() in OpenVoice)
         if progress_callback:
-            progress_callback("Processing voice clone (this may take 30-60 seconds)...")
+            progress_callback("Converting voice (30-90 seconds)...")
         
         try:
-            output_url = await clone_voice_replicate(
-                source_url,
-                reference_url,
-                language=language,
-                speed=speed
+            output_url = await voice_convert_replicate(
+                source_audio_url=source_url,
+                target_voice_url=target_url,
+                denoise_ratio=0.7
             )
         except Exception as e:
-            return {"success": False, "error": f"Voice cloning failed: {e}"}
+            logger.error(f"[VoiceSwap] Conversion error: {e}")
+            return {"success": False, "error": f"Voice conversion failed: {e}"}
         
         if not output_url:
-            return {"success": False, "error": "Voice cloning returned no output"}
+            return {"success": False, "error": "Voice conversion returned no output"}
         
-        # Step 4: Download result
+        # Step 4: Download converted audio
         if progress_callback:
-            progress_callback("Downloading processed audio...")
+            progress_callback("Downloading converted audio...")
         
-        cloned_audio = temp_path / "cloned_audio.wav"
-        if not await download_audio(output_url, cloned_audio):
-            return {"success": False, "error": "Failed to download cloned audio"}
+        converted_audio = temp_path / "converted_audio.mp3"
+        if not await download_audio(output_url, converted_audio):
+            return {"success": False, "error": "Failed to download converted audio"}
         
-        # Step 5: Replace audio in video
+        # Step 5: Replace audio in video (like your replace_audio function)
         if progress_callback:
             progress_callback("Creating final video...")
         
-        if not replace_audio(video_path, cloned_audio, output_path):
+        if not replace_audio(video_path, converted_audio, output_path):
             return {"success": False, "error": "Failed to create output video"}
         
         stats["success"] = True
-        
+        logger.info(f"[VoiceSwap] Complete! Output: {output_path}")
+    
     if progress_callback:
         progress_callback("Voice swap complete!")
     
@@ -239,7 +334,7 @@ def check_replicate_available() -> dict:
     }
 
 
-# For sync contexts (FastAPI endpoints already in async loop)
+# Synchronous wrapper for FastAPI endpoints
 def voice_swap_video_sync(
     video_path: Path,
     reference_voice_path: Path,
@@ -248,11 +343,13 @@ def voice_swap_video_sync(
     speed: float = 1.0,
     progress_callback=None
 ) -> dict:
-    """Synchronous wrapper for voice_swap_video - handles nested event loops"""
+    """
+    Synchronous wrapper for voice_swap_video.
+    Handles nested event loops in FastAPI.
+    """
     import concurrent.futures
     
     def run_in_thread():
-        # Create new event loop in this thread
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
@@ -267,7 +364,6 @@ def voice_swap_video_sync(
         finally:
             loop.close()
     
-    # Run in a separate thread to avoid event loop conflicts
     with concurrent.futures.ThreadPoolExecutor() as executor:
         future = executor.submit(run_in_thread)
         return future.result(timeout=300)  # 5 minute timeout

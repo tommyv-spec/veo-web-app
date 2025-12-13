@@ -1965,7 +1965,8 @@ async def voice_swap_video_endpoint(
     video_filename: str = Form(...),
     language: str = Form("EN"),
     speed: float = Form(1.0),
-    voice_sample: UploadFile = File(...),
+    voice_sample: UploadFile = File(None),
+    reference_clips: str = Form(None),  # JSON array of clip filenames
     db: Session = Depends(get_db_session)
 ):
     """
@@ -1975,13 +1976,17 @@ async def voice_swap_video_endpoint(
     
     Args:
         job_id: Job ID
-        request: VoiceSwapRequest with video_filename, language, speed
+        video_filename: Video file to process
+        language: Target language (EN, ES, FR, ZH, JP, KR)
+        speed: Playback speed (0.5-2.0)
         voice_sample: Reference voice audio file (10+ seconds recommended)
+        reference_clips: OR use clips' audio as reference (JSON array of filenames, 1-4 clips)
     
     Returns:
         New video file with cloned voice
     """
     from voice_cloner import check_replicate_available, voice_swap_video_sync
+    from audio_processor import extract_audio, concatenate_audio_files
     
     # Check if configured
     status = check_replicate_available()
@@ -1989,6 +1994,23 @@ async def voice_swap_video_endpoint(
         raise HTTPException(
             status_code=503, 
             detail="Voice cloning not configured. Add REPLICATE_API_TOKEN to environment."
+        )
+    
+    # Parse reference clips if provided
+    clip_filenames = []
+    if reference_clips:
+        try:
+            clip_filenames = json.loads(reference_clips)
+            if len(clip_filenames) > 4:
+                raise HTTPException(status_code=400, detail="Maximum 4 reference clips allowed")
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid reference_clips format")
+    
+    # Must have either voice_sample or reference_clips
+    if not voice_sample and not clip_filenames:
+        raise HTTPException(
+            status_code=400, 
+            detail="Must provide either voice_sample file or reference_clips array"
         )
     
     job = db.query(Job).filter(Job.id == job_id).first()
@@ -2001,15 +2023,47 @@ async def voice_swap_video_endpoint(
     if not video_path.exists():
         raise HTTPException(status_code=404, detail="Video file not found")
     
-    # Save voice sample
-    voice_ext = Path(voice_sample.filename).suffix or ".wav"
-    temp_voice = output_dir / f"temp_voice_sample{voice_ext}"
+    temp_voice = None
+    temp_audio_files = []
     
     try:
-        # Save uploaded voice sample
-        content = await voice_sample.read()
-        with open(temp_voice, "wb") as f:
-            f.write(content)
+        # Get voice reference - either from upload or from clip audio(s)
+        if voice_sample and voice_sample.filename:
+            # Use uploaded voice sample
+            voice_ext = Path(voice_sample.filename).suffix or ".wav"
+            temp_voice = output_dir / f"temp_voice_sample{voice_ext}"
+            content = await voice_sample.read()
+            with open(temp_voice, "wb") as f:
+                f.write(content)
+            print(f"[VoiceSwap] Using uploaded voice sample: {voice_sample.filename}")
+        elif clip_filenames:
+            # Extract audio from each reference clip
+            print(f"[VoiceSwap] Extracting voice from {len(clip_filenames)} clips")
+            
+            for i, clip_name in enumerate(clip_filenames):
+                clip_path = output_dir / clip_name
+                if not clip_path.exists():
+                    print(f"[VoiceSwap] Warning: Clip not found: {clip_name}")
+                    continue
+                
+                temp_audio = output_dir / f"temp_clip_voice_{i}.wav"
+                extract_audio(clip_path, temp_audio)
+                temp_audio_files.append(temp_audio)
+                print(f"[VoiceSwap] Extracted audio from: {clip_name}")
+            
+            if not temp_audio_files:
+                raise HTTPException(status_code=404, detail="No valid reference clips found")
+            
+            # Concatenate all audio files if multiple
+            if len(temp_audio_files) == 1:
+                temp_voice = temp_audio_files[0]
+            else:
+                temp_voice = output_dir / "temp_combined_voice.wav"
+                concatenate_audio_files(temp_audio_files, temp_voice)
+                print(f"[VoiceSwap] Combined {len(temp_audio_files)} audio clips into reference")
+        
+        if not temp_voice or not temp_voice.exists():
+            raise HTTPException(status_code=400, detail="Failed to prepare voice reference")
         
         # Create output path
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -2026,8 +2080,11 @@ async def voice_swap_video_endpoint(
             speed=speed
         )
         
-        # Cleanup
-        if temp_voice.exists():
+        # Cleanup temp files
+        for f in temp_audio_files:
+            if f and f.exists():
+                f.unlink()
+        if temp_voice and temp_voice.exists() and temp_voice not in temp_audio_files:
             temp_voice.unlink()
         
         if not result.get("success"):
@@ -2048,8 +2105,18 @@ async def voice_swap_video_endpoint(
     except HTTPException:
         raise
     except Exception as e:
-        if temp_voice.exists():
-            temp_voice.unlink()
+        # Clean up temp files
+        for f in temp_audio_files:
+            if f and f.exists():
+                try:
+                    f.unlink()
+                except:
+                    pass
+        if temp_voice and temp_voice.exists():
+            try:
+                temp_voice.unlink()
+            except:
+                pass
         import traceback
         print(f"[VoiceSwap] ERROR: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Voice swap failed: {str(e)}")
