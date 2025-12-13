@@ -1955,30 +1955,25 @@ async def list_job_outputs(job_id: str, db: Session = Depends(get_db_session)):
 
 class VoiceSwapRequest(BaseModel):
     video_filename: str
-    language: str = "EN"  # EN, ES, FR, ZH, JP, KR
-    speed: float = Field(default=1.0, ge=0.5, le=2.0)
 
 
 @app.post("/api/jobs/{job_id}/voice-swap")
 async def voice_swap_video_endpoint(
     job_id: str,
     video_filename: str = Form(...),
-    language: str = Form("EN"),
-    speed: float = Form(1.0),
     voice_sample: UploadFile = File(None),
     reference_clips: str = Form(None),  # JSON array of clip filenames
     db: Session = Depends(get_db_session)
 ):
     """
-    Swap voice in video using AI voice cloning (Replicate/OpenVoice).
+    Swap voice in video using AI voice cloning (HierSpeech++ via Replicate).
     
-    Cost: ~$0.05 per swap (billed to your Replicate account)
+    Uses HierSpeech++ for direct voice-to-voice conversion (~$0.06/run).
+    Preserves exact timing/prosody from source audio.
     
     Args:
         job_id: Job ID
         video_filename: Video file to process
-        language: Target language (EN, ES, FR, ZH, JP, KR)
-        speed: Playback speed (0.5-2.0)
         voice_sample: Reference voice audio file (10+ seconds recommended)
         reference_clips: OR use clips' audio as reference (JSON array of filenames, 1-4 clips)
     
@@ -2071,13 +2066,11 @@ async def voice_swap_video_endpoint(
         output_path = output_dir / output_filename
         
         # Run voice swap
-        print(f"[VoiceSwap] Starting voice clone for {video_filename}")
+        print(f"[VoiceSwap] Starting voice clone for {video_filename} using HierSpeech++")
         result = voice_swap_video_sync(
             video_path=video_path,
             reference_voice_path=temp_voice,
-            output_path=output_path,
-            language=language,
-            speed=speed
+            output_path=output_path
         )
         
         # Cleanup temp files
@@ -2099,7 +2092,8 @@ async def voice_swap_video_endpoint(
             "success": True,
             "filename": output_filename,
             "download_url": f"/api/jobs/{job_id}/outputs/{output_filename}",
-            "cost_estimate": result.get("cost_estimate", "$0.05")
+            "cost_estimate": result.get("cost_estimate", "$0.06"),
+            "model_used": result.get("model", "HierSpeech++")
         }
         
     except HTTPException:
