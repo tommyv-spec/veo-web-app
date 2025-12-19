@@ -2152,29 +2152,6 @@ async def export_final_video(
                 
                 if skip_start_trim:
                     print(f"[Export] Clip {clip.clip_index}: SKIP start frame trim")
-        
-        print(f"[Export] Filesystem fallback: found {len(mp4_files)} video files")
-        
-        for i, mp4_file in enumerate(mp4_files):
-            # Try to extract clip index from filename
-            clip_idx = i
-            try:
-                parts = mp4_file.stem.split("_")
-                if parts[0].isdigit():
-                    clip_idx = int(parts[0])
-            except:
-                pass
-            
-            skip_start_trim = (i == 0) if settings.smart_trim else False
-            
-            clip_info.append({
-                "path": mp4_file,
-                "clip_index": clip_idx,
-                "skip_start_trim": skip_start_trim
-            })
-        
-        # Sort by clip index
-        clip_info.sort(key=lambda x: x["clip_index"])
     
     # Check VAD availability if requested
     if settings.remove_silence and not check_vad_available():
