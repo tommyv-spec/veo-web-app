@@ -1297,10 +1297,12 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 return;
             }
             
-            // Show loading state
+            // Show loading state with text
+            const originalBtnText = addBtn?.innerHTML || 'Add';
             if (addBtn) {
-                addBtn.innerHTML = '⏳';
+                addBtn.innerHTML = '⏳ Validating...';
                 addBtn.disabled = true;
+                addBtn.style.minWidth = '100px';
             }
             
             try {

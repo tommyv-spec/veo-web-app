@@ -377,9 +377,35 @@ def init_db(database_url: str = None):
     # Create tables
     Base.metadata.create_all(bind=engine)
     
-    # Run migrations for new columns (SQLite only, PostgreSQL handles this differently)
+    # Run migrations for new columns
     if is_sqlite:
         _run_migrations_sqlite(engine)
+    else:
+        _run_migrations_postgresql(engine)
+    
+    return engine
+
+
+def _run_migrations_postgresql(engine):
+    """Add new columns to existing tables if they don't exist (PostgreSQL)"""
+    from sqlalchemy import text
+    
+    migrations = [
+        # (table, column, sql)
+        ("clips", "selected_variant", "ALTER TABLE clips ADD COLUMN IF NOT EXISTS selected_variant INTEGER DEFAULT 1"),
+        ("jobs", "user_id", "ALTER TABLE jobs ADD COLUMN IF NOT EXISTS user_id TEXT"),
+        ("user_api_keys", "key_status", "ALTER TABLE user_api_keys ADD COLUMN IF NOT EXISTS key_status TEXT DEFAULT 'unknown'"),
+        ("user_api_keys", "last_checked", "ALTER TABLE user_api_keys ADD COLUMN IF NOT EXISTS last_checked TIMESTAMP"),
+    ]
+    
+    with engine.connect() as conn:
+        for table, column, sql in migrations:
+            try:
+                conn.execute(text(sql))
+                conn.commit()
+                print(f"[Migration] PostgreSQL: ensured column {column} exists in {table}", flush=True)
+            except Exception as e:
+                print(f"[Migration] PostgreSQL skipped {column}: {e}", flush=True)
     
     return engine
 
@@ -393,6 +419,10 @@ def _run_migrations_sqlite(engine):
         ("clips", "selected_variant", "ALTER TABLE clips ADD COLUMN selected_variant INTEGER DEFAULT 1"),
         # Add user_id column to jobs table
         ("jobs", "user_id", "ALTER TABLE jobs ADD COLUMN user_id TEXT"),
+        # Add key_status column to user_api_keys table
+        ("user_api_keys", "key_status", "ALTER TABLE user_api_keys ADD COLUMN key_status TEXT DEFAULT 'unknown'"),
+        # Add last_checked column to user_api_keys table
+        ("user_api_keys", "last_checked", "ALTER TABLE user_api_keys ADD COLUMN last_checked DATETIME"),
     ]
     
     with engine.connect() as conn:

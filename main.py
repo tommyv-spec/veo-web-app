@@ -731,28 +731,38 @@ async def add_user_api_key(
     if existing:
         raise HTTPException(status_code=400, detail="This API key is already added")
     
-    # Validate the key with Veo API
+    # Validate the key with Veo API (with error handling)
     print(f"[API Keys] Validating new key ...{key_value[-6:]}", flush=True)
-    validation = validate_single_api_key(key_value)
+    try:
+        validation = validate_single_api_key(key_value)
+    except Exception as e:
+        print(f"[API Keys] Validation error: {e}", flush=True)
+        # If validation fails, still add the key with unknown status
+        validation = {"status": "unknown", "message": f"Validation failed: {str(e)[:50]}"}
     
     # Create new key with validation status
-    new_key = UserAPIKey(
-        user_id=current_user.id,
-        key_value=key_value,
-        key_name=request.name,
-        key_suffix=key_value[-6:],
-        is_valid=(validation["status"] != "invalid"),
-        is_active=True,
-        key_status=validation["status"],
-        last_error=validation["message"] if validation["status"] != "working" else None,
-        last_checked=datetime.utcnow(),
-    )
+    try:
+        new_key = UserAPIKey(
+            user_id=current_user.id,
+            key_value=key_value,
+            key_name=request.name,
+            key_suffix=key_value[-6:],
+            is_valid=(validation["status"] != "invalid"),
+            is_active=True,
+            key_status=validation["status"],
+            last_error=validation["message"] if validation["status"] != "working" else None,
+            last_checked=datetime.utcnow(),
+        )
+        
+        db.add(new_key)
+        db.commit()
+        db.refresh(new_key)
+    except Exception as e:
+        print(f"[API Keys] Database error: {e}", flush=True)
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)[:100]}")
     
-    db.add(new_key)
-    db.commit()
-    db.refresh(new_key)
-    
-    status_emoji = {"working": "✅", "rate_limited": "⚠️", "invalid": "❌"}.get(validation["status"], "❓")
+    status_emoji = {"working": "✅", "rate_limited": "⚠️", "invalid": "❌", "unknown": "❓"}.get(validation["status"], "❓")
     
     return {
         "success": True,
