@@ -753,11 +753,29 @@ class JobWorker:
                 del self.running_jobs[job_id]
             
             # Check for waiting jobs and resume them now that keys are free
-            self._resume_waiting_jobs()
+            # BUT only if this job completed successfully (not paused due to rate limit)
+            with get_db() as db:
+                job = db.query(Job).filter(Job.id == job_id).first()
+                if job and job.status != JobStatus.PAUSED.value:
+                    # Job completed or failed (not paused) - keys are truly free
+                    self._resume_waiting_jobs()
     
     def _resume_waiting_jobs(self):
-        """Check for paused jobs waiting for keys and resume them."""
+        """Check for paused jobs waiting for keys and resume them.
+        
+        IMPORTANT: Only call this when a job COMPLETES (not when it pauses).
+        This prevents infinite loops when all keys are rate-limited.
+        """
         try:
+            from config import key_pool, api_keys_config
+            
+            # First check if any keys are actually working (not rate-limited)
+            if api_keys_config:
+                working_count = api_keys_config.get_available_key_count()
+                if working_count == 0:
+                    print(f"[Worker] No working keys available - skipping auto-resume", flush=True)
+                    return
+            
             with get_db() as db:
                 # Find paused jobs (waiting for keys)
                 paused_jobs = db.query(Job).filter(
@@ -767,34 +785,12 @@ class JobWorker:
                 if not paused_jobs:
                     return
                 
-                print(f"[Worker] Found {len(paused_jobs)} paused job(s), checking if keys available...", flush=True)
+                print(f"[Worker] Found {len(paused_jobs)} paused job(s), {working_count} working keys available", flush=True)
                 
                 for job in paused_jobs:
-                    # Check if this job has keys reserved already
-                    from config import key_pool
-                    existing_keys = key_pool.get_reserved_keys_for_job(job.id)
-                    
-                    if existing_keys:
-                        # Job already has keys, can resume
-                        job.status = JobStatus.PENDING.value
-                        db.commit()
-                        self.job_queue.put(job.id)
-                        add_job_log(
-                            db, job.id,
-                            f"▶️ Job auto-resumed: Keys are now available.",
-                            "INFO", "system"
-                        )
-                        print(f"[Worker] Auto-resumed paused job {job.id[:8]} (had reserved keys)", flush=True)
-                        continue
-                    
-                    # Try to reserve keys for this job
-                    from config import api_keys_config
-                    if not api_keys_config or not api_keys_config.gemini_api_keys:
-                        continue
-                    
-                    # Check if any keys are free (not reserved)
-                    total_keys = len(api_keys_config.gemini_api_keys)
-                    reserved_count = len(key_pool._key_reserved_by)
+                    # Check if any keys are free (not reserved by other jobs)
+                    total_keys = len(api_keys_config.gemini_api_keys) if api_keys_config else 0
+                    reserved_count = len(key_pool._key_reserved_by) if key_pool else 0
                     free_keys = total_keys - reserved_count
                     
                     if free_keys > 0:
@@ -808,11 +804,11 @@ class JobWorker:
                             "INFO", "system"
                         )
                         print(f"[Worker] Auto-resumed paused job {job.id[:8]} ({free_keys} keys free)", flush=True)
-                        # Only resume one job at a time to avoid overwhelming
+                        # Only resume one job at a time
                         break
                     else:
-                        print(f"[Worker] Job {job.id[:8]} still waiting - no free keys yet", flush=True)
-                        break  # Don't check more jobs if no keys free
+                        print(f"[Worker] Job {job.id[:8]} still waiting - all keys reserved", flush=True)
+                        break
                         
         except Exception as e:
             print(f"[Worker] Error checking waiting jobs: {e}", flush=True)
