@@ -1785,6 +1785,7 @@ class VeoGenerator:
                     break
             
             if operation is None:
+                vlog(f"[Clip {clip_index}] No operation after submit attempts - continuing to next attempt")
                 continue
             
             # Poll for completion with progress logging
@@ -1811,8 +1812,17 @@ class VeoGenerator:
                             vlog(f"[VeoGenerator] Still waiting for clip {clip_index}... ({elapsed:.0f}s elapsed)")
                     
             except Exception as e:
+                vlog(f"[Clip {clip_index}] Poll/wait error: {type(e).__name__}: {e}")
+                self._emit_progress(
+                    clip_index, "poll_error",
+                    f"Poll error: {type(e).__name__}",
+                    {"error": str(e)[:200]}
+                )
                 failed_end_frames.append(actual_end_frame)
                 continue
+            
+            poll_duration = time.time() - poll_start
+            vlog(f"[Clip {clip_index}] Poll complete after {poll_duration:.1f}s, checking result...")
             
             # Check for errors
             veo_error = error_handler.classify_veo_operation(
@@ -1996,6 +2006,14 @@ class VeoGenerator:
                     else:
                         # Single image mode - can't swap, just fail
                         vlog(f"[Clip {clip_index}] Celebrity filter in single image mode - cannot swap")
+                else:
+                    # Non-celebrity error - log it
+                    vlog(f"[Clip {clip_index}] Veo API error: {veo_error.code} - {veo_error.message}")
+                    self._emit_progress(
+                        clip_index, "api_error",
+                        f"API error: {veo_error.message}",
+                        {"error_code": str(veo_error.code), "error_message": veo_error.message}
+                    )
                 
                 failed_end_frames.append(actual_end_frame)
                 continue
@@ -2012,6 +2030,12 @@ class VeoGenerator:
                 vids = getattr(resp, "generated_videos", None) if resp else None
                 
                 if not vids:
+                    vlog(f"[Clip {clip_index}] No videos returned from API. resp={resp}")
+                    self._emit_progress(
+                        clip_index, "api_error",
+                        f"No video returned from API",
+                        {"error": "empty_response"}
+                    )
                     failed_end_frames.append(actual_end_frame)
                     continue
                 
@@ -2033,6 +2057,12 @@ class VeoGenerator:
                 return result
                 
             except Exception as e:
+                vlog(f"[Clip {clip_index}] Download/save error: {type(e).__name__}: {e}")
+                self._emit_progress(
+                    clip_index, "download_error",
+                    f"Download error: {type(e).__name__}",
+                    {"error": str(e)[:200]}
+                )
                 failed_end_frames.append(actual_end_frame)
                 continue
         

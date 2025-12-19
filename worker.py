@@ -684,12 +684,16 @@ class JobWorker:
                     # No keys available - pause job to wait
                     job.status = JobStatus.PAUSED.value
                     db.commit()
+                    
+                    # Get more info about why no keys were reserved
+                    from config import key_pool
+                    reserved_count = len(key_pool._key_reserved_by) if key_pool else 0
                     add_job_log(
                         db, job_id,
-                        f"⏸️ Job queued: All API keys are in use by other jobs. Will auto-resume when keys become available.",
+                        f"⏸️ Job queued: All {reserved_count} API key(s) are reserved by other running jobs. Will auto-resume when a key becomes free.",
                         "INFO", "system"
                     )
-                    print(f"[Worker] Job {job_id[:8]} paused - waiting for keys to become available", flush=True)
+                    print(f"[Worker] Job {job_id[:8]} paused - all {reserved_count} keys reserved by other jobs", flush=True)
                     raise JobPausedException("No API keys available - waiting for other jobs to complete")
                 
                 # Set up callbacks
@@ -966,9 +970,13 @@ class JobWorker:
                             if next_transition != "cut":
                                 use_end_frame = True
                                 actual_end_idx = next_info["image_idx"]
-                                end_frame_reason = f"scene transition to scene {next_scene} (next scene priority)"
+                                end_frame_reason = f"scene transition to scene {next_scene} (blend to next scene)"
                                 scene_transition_handled = True
-                            # If transition is "cut", fall through to clip_mode logic below
+                            else:
+                                # CUT transition: No end frame interpolation
+                                use_end_frame = False
+                                end_frame_reason = f"scene transition to scene {next_scene} (CUT - no interpolation)"
+                                scene_transition_handled = True
                     
                     # Apply clip_mode logic if:
                     # - Scene transition didn't handle it (same scene, or different scene with "cut")
@@ -2418,8 +2426,24 @@ class JobWorker:
                                 db.commit()
                                 print(f"[Worker] Clip {clip_idx}: Previous approved, moved to PENDING", flush=True)
                     elif prev_idx in completed_clip_videos and completed_clip_videos[prev_idx] is None:
-                        # Previous clip completed but with no video (failed/skipped)
-                        clips_to_skip.append(clip_idx)
+                        # Previous clip completed but with no video - check actual DB status
+                        # It might be in redo or still generating
+                        with get_db() as db:
+                            prev_clip = db.query(Clip).filter(
+                                Clip.job_id == job_id,
+                                Clip.clip_index == prev_idx
+                            ).first()
+                            if prev_clip:
+                                # If previous clip is still being processed (redo, generating, pending), keep waiting
+                                if prev_clip.status in [ClipStatus.GENERATING.value, ClipStatus.PENDING.value, 
+                                                        ClipStatus.REDO_QUEUED.value, ClipStatus.COMPLETED.value]:
+                                    still_waiting.append(clip_idx)
+                                    print(f"[Worker] Clip {clip_idx}: Previous clip {prev_idx} status={prev_clip.status}, still waiting", flush=True)
+                                else:
+                                    # Truly failed or skipped
+                                    clips_to_skip.append(clip_idx)
+                            else:
+                                clips_to_skip.append(clip_idx)
                     else:
                         still_waiting.append(clip_idx)
                 
@@ -2433,6 +2457,14 @@ class JobWorker:
                                 Clip.clip_index == prev_idx
                             ).first()
                             
+                            # Safety check: if prev_clip is now processing, skip this
+                            if prev_clip and prev_clip.status in [
+                                ClipStatus.GENERATING.value, ClipStatus.PENDING.value,
+                                ClipStatus.REDO_QUEUED.value, ClipStatus.COMPLETED.value
+                            ]:
+                                print(f"[Worker] Clip {clip_idx}: Previous clip {prev_idx} now status={prev_clip.status}, skipping failure mark", flush=True)
+                                continue
+                            
                             clip = db.query(Clip).filter(
                                 Clip.job_id == job_id,
                                 Clip.clip_index == clip_idx
@@ -2445,7 +2477,7 @@ class JobWorker:
                                     clip.error_message = f"Skipped: previous clip {prev_idx} was skipped"
                                     skipped += 1
                                     print(f"[Worker] Clip {clip_idx}: Previous clip {prev_idx} SKIPPED, marking as skipped", flush=True)
-                                else:
+                                elif prev_clip and prev_clip.status == ClipStatus.FAILED.value:
                                     clip.status = ClipStatus.FAILED.value
                                     clip.error_code = "PREVIOUS_CLIP_FAILED"
                                     clip.error_message = f"Cannot process: previous clip {prev_idx} failed"
@@ -2489,6 +2521,11 @@ class JobWorker:
                                 ).first()
                                 
                                 if prev_clip:
+                                    # Skip check if previous clip is still being processed
+                                    if prev_clip.status in [ClipStatus.GENERATING.value, ClipStatus.PENDING.value,
+                                                            ClipStatus.REDO_QUEUED.value]:
+                                        # Previous clip still processing, keep waiting
+                                        continue
                                     if prev_clip.approval_status == "approved":
                                         # Found an approval! Add to approved_clip_videos
                                         if prev_idx not in approved_clip_videos:
@@ -2631,8 +2668,20 @@ class JobWorker:
                                             db.commit()
                                             print(f"[Worker] Clip {clip_idx}: Previous approved, moved to PENDING (during batch)", flush=True)
                                 elif prev_idx in completed_clip_videos and completed_clip_videos[prev_idx] is None:
-                                    # Previous clip completed but with no video (failed/skipped)
-                                    clips_to_skip_in_batch.append(clip_idx)
+                                    # Previous clip completed but with no video - check actual DB status
+                                    with get_db() as db:
+                                        prev_clip_check = db.query(Clip).filter(
+                                            Clip.job_id == job_id,
+                                            Clip.clip_index == prev_idx
+                                        ).first()
+                                        if prev_clip_check and prev_clip_check.status in [
+                                            ClipStatus.GENERATING.value, ClipStatus.PENDING.value,
+                                            ClipStatus.REDO_QUEUED.value, ClipStatus.COMPLETED.value
+                                        ]:
+                                            still_waiting_in_batch.append(clip_idx)
+                                            print(f"[Worker] Clip {clip_idx}: Previous clip {prev_idx} status={prev_clip_check.status}, still waiting", flush=True)
+                                        else:
+                                            clips_to_skip_in_batch.append(clip_idx)
                                 else:
                                     # Also check database for approvals
                                     with get_db() as db:
@@ -2663,6 +2712,14 @@ class JobWorker:
                                             Clip.clip_index == prev_idx
                                         ).first()
                                         
+                                        # Safety check: if prev_clip is now processing, skip this
+                                        if prev_clip and prev_clip.status in [
+                                            ClipStatus.GENERATING.value, ClipStatus.PENDING.value,
+                                            ClipStatus.REDO_QUEUED.value, ClipStatus.COMPLETED.value
+                                        ]:
+                                            print(f"[Worker] Clip {clip_idx}: Previous clip {prev_idx} now status={prev_clip.status}, skipping failure mark", flush=True)
+                                            continue
+                                        
                                         clip = db.query(Clip).filter(
                                             Clip.job_id == job_id,
                                             Clip.clip_index == clip_idx
@@ -2675,7 +2732,7 @@ class JobWorker:
                                                 clip.error_message = f"Skipped: previous clip {prev_idx} was skipped"
                                                 skipped += 1
                                                 print(f"[Worker] Clip {clip_idx}: Previous clip {prev_idx} SKIPPED (during batch)", flush=True)
-                                            else:
+                                            elif prev_clip and prev_clip.status == ClipStatus.FAILED.value:
                                                 clip.status = ClipStatus.FAILED.value
                                                 clip.error_code = "PREVIOUS_CLIP_FAILED"
                                                 clip.error_message = f"Cannot process: previous clip {prev_idx} failed"
@@ -2796,12 +2853,21 @@ class JobWorker:
                             for clip_idx in waiting_clips:
                                 prev_idx = clip_idx - 1
                                 if prev_idx in completed_clip_videos and completed_clip_videos[prev_idx] is None:
-                                    # Previous clip completed but with no video (failed/skipped)
+                                    # Previous clip completed but with no video - check actual DB status
                                     with get_db() as db:
                                         prev_clip = db.query(Clip).filter(
                                             Clip.job_id == job_id,
                                             Clip.clip_index == prev_idx
                                         ).first()
+                                        
+                                        # If previous clip is still being processed, keep waiting
+                                        if prev_clip and prev_clip.status in [
+                                            ClipStatus.GENERATING.value, ClipStatus.PENDING.value,
+                                            ClipStatus.REDO_QUEUED.value, ClipStatus.COMPLETED.value
+                                        ]:
+                                            still_waiting_after.append(clip_idx)
+                                            print(f"[Worker] Clip {clip_idx}: Previous clip {prev_idx} status={prev_clip.status}, still waiting (after future)", flush=True)
+                                            continue
                                         
                                         clip = db.query(Clip).filter(
                                             Clip.job_id == job_id,
@@ -2815,7 +2881,7 @@ class JobWorker:
                                                 clip.error_message = f"Skipped: previous clip {prev_idx} was skipped"
                                                 skipped += 1
                                                 print(f"[Worker] Clip {clip_idx}: Previous clip {prev_idx} SKIPPED (after future processing)", flush=True)
-                                            else:
+                                            elif prev_clip and prev_clip.status == ClipStatus.FAILED.value:
                                                 clip.status = ClipStatus.FAILED.value
                                                 clip.error_code = "PREVIOUS_CLIP_FAILED"
                                                 clip.error_message = f"Cannot process: previous clip {prev_idx} failed"
@@ -2988,6 +3054,11 @@ class JobWorker:
                                 prev_idx = clip.clip_index - 1
                                 prev_clip = next((c for c in clips if c.clip_index == prev_idx), None)
                                 if prev_clip:
+                                    # Don't mark as failed if previous clip is still being processed
+                                    if prev_clip.status in [ClipStatus.GENERATING.value, ClipStatus.PENDING.value,
+                                                            ClipStatus.REDO_QUEUED.value, ClipStatus.COMPLETED.value]:
+                                        # Still waiting for previous clip
+                                        continue
                                     if prev_clip.status == ClipStatus.SKIPPED.value:
                                         clip.status = ClipStatus.SKIPPED.value
                                         clip.error_code = "PREVIOUS_CLIP_SKIPPED"
