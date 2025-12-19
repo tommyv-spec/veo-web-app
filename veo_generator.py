@@ -1215,6 +1215,7 @@ class VeoGenerator:
             # Reuse existing keys (we're a redo or secondary generator)
             self.reserved_keys = existing_keys
             self._is_key_owner = False
+            self._no_keys_at_start = False
         else:
             # Reserve ALL available keys (up to 12) - not just parallel_clips
             # This gives us backup keys when some hit rate limits
@@ -1227,6 +1228,10 @@ class VeoGenerator:
                     num_keys_needed, 
                     api_keys
                 )
+                self._is_key_owner = True
+                self._no_keys_at_start = len(self.reserved_keys) == 0
+            else:
+                self._no_keys_at_start = True
                 self._is_key_owner = True
         
         self.blacklist: Set[Path] = set()  # Shared blacklist (used directly in sequential, as hint in parallel)

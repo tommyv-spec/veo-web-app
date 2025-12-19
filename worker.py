@@ -679,6 +679,19 @@ class JobWorker:
                     job_id=job_id,
                 )
                 
+                # Check if no keys were available (all reserved by other jobs)
+                if getattr(generator, '_no_keys_at_start', False) or len(generator.reserved_keys) == 0:
+                    # No keys available - pause job to wait
+                    job.status = JobStatus.PAUSED.value
+                    db.commit()
+                    add_job_log(
+                        db, job_id,
+                        f"⏸️ Job queued: All API keys are in use by other jobs. Will auto-resume when keys become available.",
+                        "INFO", "system"
+                    )
+                    print(f"[Worker] Job {job_id[:8]} paused - waiting for keys to become available", flush=True)
+                    raise JobPausedException("No API keys available - waiting for other jobs to complete")
+                
                 # Set up callbacks
                 def on_progress(clip_index, status, message, details):
                     self._handle_progress(job_id, clip_index, status, message, details)
@@ -738,6 +751,71 @@ class JobWorker:
                 if generator:
                     generator.cleanup()
                 del self.running_jobs[job_id]
+            
+            # Check for waiting jobs and resume them now that keys are free
+            self._resume_waiting_jobs()
+    
+    def _resume_waiting_jobs(self):
+        """Check for paused jobs waiting for keys and resume them."""
+        try:
+            with get_db() as db:
+                # Find paused jobs (waiting for keys)
+                paused_jobs = db.query(Job).filter(
+                    Job.status == JobStatus.PAUSED.value
+                ).order_by(Job.created_at.asc()).all()  # FIFO order
+                
+                if not paused_jobs:
+                    return
+                
+                print(f"[Worker] Found {len(paused_jobs)} paused job(s), checking if keys available...", flush=True)
+                
+                for job in paused_jobs:
+                    # Check if this job has keys reserved already
+                    from config import key_pool
+                    existing_keys = key_pool.get_reserved_keys_for_job(job.id)
+                    
+                    if existing_keys:
+                        # Job already has keys, can resume
+                        job.status = JobStatus.PENDING.value
+                        db.commit()
+                        self.job_queue.put(job.id)
+                        add_job_log(
+                            db, job.id,
+                            f"▶️ Job auto-resumed: Keys are now available.",
+                            "INFO", "system"
+                        )
+                        print(f"[Worker] Auto-resumed paused job {job.id[:8]} (had reserved keys)", flush=True)
+                        continue
+                    
+                    # Try to reserve keys for this job
+                    from config import api_keys_config
+                    if not api_keys_config or not api_keys_config.gemini_api_keys:
+                        continue
+                    
+                    # Check if any keys are free (not reserved)
+                    total_keys = len(api_keys_config.gemini_api_keys)
+                    reserved_count = len(key_pool._key_reserved_by)
+                    free_keys = total_keys - reserved_count
+                    
+                    if free_keys > 0:
+                        # Keys available, resume this job
+                        job.status = JobStatus.PENDING.value
+                        db.commit()
+                        self.job_queue.put(job.id)
+                        add_job_log(
+                            db, job.id,
+                            f"▶️ Job auto-resumed: {free_keys} API key(s) now available.",
+                            "INFO", "system"
+                        )
+                        print(f"[Worker] Auto-resumed paused job {job.id[:8]} ({free_keys} keys free)", flush=True)
+                        # Only resume one job at a time to avoid overwhelming
+                        break
+                    else:
+                        print(f"[Worker] Job {job.id[:8]} still waiting - no free keys yet", flush=True)
+                        break  # Don't check more jobs if no keys free
+                        
+        except Exception as e:
+            print(f"[Worker] Error checking waiting jobs: {e}", flush=True)
     
     def _process_clips(
         self,
@@ -1159,12 +1237,8 @@ class JobWorker:
                     # DON'T change status here - let the independent _check_redo_queue() handle it
                     # This allows redos to start immediately instead of waiting for the main loop
                 
-                if redo_clips:
-                    add_job_log(
-                        db, job_id,
-                        f"🔄 {len(redo_clips)} clip(s) queued for redo (processing independently)",
-                        "INFO", "redo"
-                    )
+                # Don't log here - it spams when called repeatedly
+                # The actual redo start is logged in _check_redo_queue()
             
             return redo_indices
         
@@ -1786,25 +1860,24 @@ class JobWorker:
                 
                 # Check if keys are available
                 if not check_keys_available():
-                    print(f"[Worker] ⚠️ NO KEYS AVAILABLE (sequential mode, retry {no_keys_retries + 1}/{max_no_keys_retries})", flush=True)
+                    if no_keys_retries == 0:
+                        print(f"[Worker] ⚠️ NO KEYS AVAILABLE (sequential mode) - will pause", flush=True)
                     no_keys_retries += 1
                     
                     if no_keys_retries > max_no_keys_retries:
-                        error_msg = "All API keys exhausted. Please wait and try again later."
+                        # Pause job instead of failing
                         with get_db() as db:
-                            for clip_idx in all_clip_indices:
-                                clip = db.query(Clip).filter(
-                                    Clip.job_id == job_id,
-                                    Clip.clip_index == clip_idx
-                                ).first()
-                                if clip and clip.status != ClipStatus.COMPLETED.value:
-                                    clip.status = ClipStatus.FAILED.value
-                                    clip.error_code = "API_KEYS_EXHAUSTED"
-                                    clip.error_message = error_msg
-                            db.commit()
-                            add_job_log(db, job_id, f"❌ Job failed: {error_msg}", "ERROR", "system")
-                        failed += len(all_clip_indices)
-                        break
+                            job = db.query(Job).filter(Job.id == job_id).first()
+                            if job:
+                                job.status = JobStatus.PAUSED.value
+                                db.commit()
+                            add_job_log(
+                                db, job_id, 
+                                f"⏸️ Job paused: API keys exhausted. Will auto-resume when keys available.",
+                                "WARNING", "system"
+                            )
+                        generator.paused = True
+                        raise JobPausedException("API keys exhausted - job paused")
                     
                     # Wait for keys
                     send_no_keys_alert(job_id, no_keys_retries)
@@ -2272,42 +2345,34 @@ class JobWorker:
                 
                 # Check if keys are available before starting batch
                 if not check_keys_available():
-                    print(f"[Worker] ⚠️ NO KEYS AVAILABLE (retry {no_keys_retries + 1}/{max_no_keys_retries})", flush=True)
+                    # Only log once per retry cycle
+                    if no_keys_retries == 0:
+                        print(f"[Worker] ⚠️ NO KEYS AVAILABLE - will pause job", flush=True)
                     no_keys_retries += 1
                     
                     if no_keys_retries > max_no_keys_retries:
-                        # Max retries reached - fail job with contact support message
-                        error_msg = "All API keys exhausted. Please contact support for assistance."
-                        
+                        # Max retries reached - PAUSE job instead of failing
                         with get_db() as db:
-                            # Mark remaining clips as failed
-                            for clip_idx in pending_clips:
-                                clip = db.query(Clip).filter(
-                                    Clip.job_id == job_id,
-                                    Clip.clip_index == clip_idx
-                                ).first()
-                                if clip:
-                                    clip.status = ClipStatus.FAILED.value
-                                    clip.error_code = "API_KEYS_EXHAUSTED"
-                                    clip.error_message = error_msg
-                            db.commit()
+                            job = db.query(Job).filter(Job.id == job_id).first()
+                            if job:
+                                job.status = JobStatus.PAUSED.value
+                                db.commit()
                             
                             add_job_log(
                                 db, job_id,
-                                f"❌ Job failed: {error_msg}",
-                                "ERROR", "system"
+                                f"⏸️ Job paused: API keys exhausted after {max_no_keys_retries} retries. Will auto-resume when keys available.",
+                                "WARNING", "system"
                             )
                         
                         self._broadcast_event(job_id, {
-                            "type": "job_failed_no_keys",
-                            "message": error_msg,
-                            "contact": "Please contact support to resolve this issue."
+                            "type": "job_paused_no_keys",
+                            "message": "Job paused - waiting for API keys",
                         })
                         
-                        failed += len(pending_clips)
-                        break
+                        generator.paused = True
+                        raise JobPausedException("API keys exhausted - job paused")
                     
-                    # Alert and wait
+                    # Alert and wait (only once per retry)
                     send_no_keys_alert(job_id, no_keys_retries)
                     
                     # Wait with periodic checks (allow cancellation)
