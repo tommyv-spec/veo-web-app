@@ -335,34 +335,53 @@ SessionLocal = None
 def init_db(database_url: str = None):
     """Initialize database connection"""
     global engine, SessionLocal
+    import os
     
+    # Check for DATABASE_URL environment variable (for PostgreSQL on Render/Heroku)
+    if database_url is None:
+        database_url = os.environ.get("DATABASE_URL")
+        
+        # Render/Heroku uses postgres:// but SQLAlchemy needs postgresql://
+        if database_url and database_url.startswith("postgres://"):
+            database_url = database_url.replace("postgres://", "postgresql://", 1)
+    
+    # Default to SQLite if no DATABASE_URL
     if database_url is None:
         database_url = f"sqlite:///{app_config.data_dir / 'jobs.db'}"
     
     # For SQLite with multiple workers/processes, use NullPool
-    # This avoids connection pool exhaustion issues
     is_sqlite = "sqlite" in database_url
+    is_postgres = "postgresql" in database_url
     
-    engine = create_engine(
-        database_url, 
-        connect_args={"check_same_thread": False} if is_sqlite else {},
-        poolclass=NullPool if is_sqlite else None,  # No pooling for SQLite
-        # For PostgreSQL, you could use:
-        # pool_size=20, max_overflow=30, pool_pre_ping=True
-    )
+    print(f"[Database] Using: {'PostgreSQL' if is_postgres else 'SQLite' if is_sqlite else 'Other'}", flush=True)
+    
+    engine_kwargs = {
+        "connect_args": {"check_same_thread": False} if is_sqlite else {},
+    }
+    
+    if is_sqlite:
+        engine_kwargs["poolclass"] = NullPool
+    elif is_postgres:
+        # PostgreSQL connection pooling
+        engine_kwargs["pool_size"] = 5
+        engine_kwargs["max_overflow"] = 10
+        engine_kwargs["pool_pre_ping"] = True
+    
+    engine = create_engine(database_url, **engine_kwargs)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     
     # Create tables
     Base.metadata.create_all(bind=engine)
     
-    # Run migrations for new columns
-    _run_migrations(engine)
+    # Run migrations for new columns (SQLite only, PostgreSQL handles this differently)
+    if is_sqlite:
+        _run_migrations_sqlite(engine)
     
     return engine
 
 
-def _run_migrations(engine):
-    """Add new columns to existing tables if they don't exist"""
+def _run_migrations_sqlite(engine):
+    """Add new columns to existing tables if they don't exist (SQLite only)"""
     from sqlalchemy import text
     
     migrations = [
@@ -375,7 +394,7 @@ def _run_migrations(engine):
     with engine.connect() as conn:
         for table, column, sql in migrations:
             try:
-                # Check if column exists
+                # Check if column exists (SQLite PRAGMA)
                 result = conn.execute(text(f"PRAGMA table_info({table})"))
                 columns = [row[1] for row in result]
                 

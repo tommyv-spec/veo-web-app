@@ -590,9 +590,6 @@ class JobWorker:
                 # Parse API keys (with env fallback)
                 api_keys = get_api_keys_with_fallback(job.api_keys_json)
                 
-                # Import key_pool to check status
-                from config import key_pool
-                
                 # Validate API keys before starting generation
                 # This actually tests Veo submission for each key
                 def validation_log(msg):
@@ -603,23 +600,13 @@ class JobWorker:
                 if valid_key_count == 0:
                     raise ValueError("No valid API keys available. All keys are suspended or invalid.")
                 
-                # Check how many keys are actually available right now
-                pool_status = key_pool.get_status()
-                rate_limited_now = pool_status.get("rate_limited_count", 0)
-                working_now = valid_key_count - rate_limited_now
+                # Use valid_key_count directly - it reflects actual working keys for THIS job
+                # (The global key_pool tracks server keys, which may be different from user's keys)
+                working_now = valid_key_count
                 
-                if working_now == 0:
-                    # ALL keys are rate-limited - fail the job immediately
-                    add_job_log(
-                        db, job_id,
-                        f"❌ All {rate_limited_now} API keys are rate-limited (429). Please wait a few minutes and try again.",
-                        "ERROR", "system"
-                    )
-                    raise ValueError(f"All {rate_limited_now} API keys are rate-limited. Please wait 2-3 minutes for quota to reset and try again.")
-                
-                # Adjust parallel_clips based on working keys (max 6)
+                # Adjust parallel_clips based on working keys (max 6, min 1)
                 original_parallel = config.parallel_clips
-                config.parallel_clips = min(working_now, 6)
+                config.parallel_clips = max(1, min(working_now, 6))
                 
                 add_job_log(
                     db, job_id, 
