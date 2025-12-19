@@ -698,7 +698,8 @@ class APIKeysConfig:
             else:
                 log(f"[APIKeys] ❌ No valid API keys available!")
         
-        return valid_count
+        # Return tuple: (working_now, rate_limited, invalid)
+        return working_count, rate_limited_count, invalid_count
 
 
 # Global API keys instance (loaded from environment)

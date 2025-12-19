@@ -36,6 +36,12 @@ from models import (
 from veo_generator import VeoGenerator, list_images, GENAI_AVAILABLE, describe_subject_for_continuity
 from error_handler import VeoError, error_handler
 
+
+class JobPausedException(Exception):
+    """Exception raised when job is paused (not an error)"""
+    pass
+
+
 # Email notification settings
 EMAIL_ALERTS_ENABLED = True
 ALERT_EMAIL_TO = "kaveno.biz@gmail.com"
@@ -595,14 +601,24 @@ class JobWorker:
                 def validation_log(msg):
                     add_job_log(db, job_id, msg, "INFO", "system")
                 
-                valid_key_count = api_keys.validate_keys_with_api(log_callback=validation_log)
+                working_now, rate_limited_count, invalid_count = api_keys.validate_keys_with_api(log_callback=validation_log)
                 
-                if valid_key_count == 0:
-                    raise ValueError("No valid API keys available. All keys are suspended or invalid.")
-                
-                # Use valid_key_count directly - it reflects actual working keys for THIS job
-                # (The global key_pool tracks server keys, which may be different from user's keys)
-                working_now = valid_key_count
+                # Check if we have any working keys
+                if working_now == 0:
+                    if rate_limited_count > 0:
+                        # All keys rate-limited - pause job and tell user to wait
+                        job.status = JobStatus.PAUSED.value
+                        db.commit()
+                        add_job_log(
+                            db, job_id,
+                            f"⏸️ Job paused: All {rate_limited_count} API keys are rate-limited (429). Wait 2-3 minutes or add new keys, then Resume.",
+                            "WARNING", "system"
+                        )
+                        # Raise special exception that won't mark job as failed
+                        raise JobPausedException(f"All API keys are rate-limited. Job paused.")
+                    else:
+                        # No valid keys at all
+                        raise ValueError("No valid API keys available. All keys are suspended or invalid. Please add working API keys.")
                 
                 # Adjust parallel_clips based on working keys (max 6, min 1)
                 original_parallel = config.parallel_clips
@@ -681,7 +697,12 @@ class JobWorker:
             
             # Process clips (pass scenes_data for storyboard mode)
             self._process_clips(job_id, generator, dialogue_data, images, output_dir, scenes_data, last_frame_index)
-            
+        
+        except JobPausedException as e:
+            # Job was paused intentionally - don't mark as failed
+            print(f"[Worker] Job {job_id[:8]} paused: {e}", flush=True)
+            # Status already set to PAUSED, just return
+        
         except Exception as e:
             error = error_handler.classify_exception(e, {"job_id": job_id})
             self._handle_error(job_id, error)
@@ -689,7 +710,7 @@ class JobWorker:
             # Only mark as failed if no clips succeeded
             with get_db() as db:
                 job = db.query(Job).filter(Job.id == job_id).first()
-                if job:
+                if job and job.status != JobStatus.PAUSED.value:  # Don't override if paused
                     clips = db.query(Clip).filter(Clip.job_id == job_id).all()
                     successful = sum(1 for c in clips if c.status == ClipStatus.COMPLETED.value)
                     
