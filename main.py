@@ -522,24 +522,29 @@ async def auth_callback(request: Request, db: DBSession = Depends(get_db_session
     try:
         user, session_token = await handle_google_callback(request, db)
         
-        # Create response with redirect
-        response = RedirectResponse(url="/", status_code=302)
-        
-        # Set session cookie - use samesite="none" for OAuth cross-site redirects
-        is_secure = os.environ.get("SECURE_COOKIES", "true").lower() == "true"
-        response.set_cookie(
-            key="session",
-            value=session_token,
-            httponly=True,
-            secure=is_secure,
-            samesite="none" if is_secure else "lax",  # "none" required for OAuth
-            max_age=7 * 24 * 3600,  # 7 days
-            path="/",
-        )
-        
         print(f"[Auth] Cookie set for user {user.email}, token: {session_token[:8]}...", flush=True)
         
-        return response
+        # Return HTML page that sets cookie via JavaScript (more reliable than Set-Cookie on redirects)
+        return HTMLResponse(f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Logging in...</title>
+    <script>
+        // Set cookie via JavaScript
+        document.cookie = "session={session_token}; path=/; max-age={7 * 24 * 3600}; secure; samesite=lax";
+        // Redirect to home
+        window.location.href = "/";
+    </script>
+</head>
+<body style="background: #1a1a2e; color: white; font-family: sans-serif; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0;">
+    <div style="text-align: center;">
+        <div style="font-size: 24px; margin-bottom: 10px;">🔐</div>
+        <div>Logging in...</div>
+    </div>
+</body>
+</html>
+""")
         
     except HTTPException as e:
         # Redirect to login with error
