@@ -1290,17 +1290,45 @@ async def resume_job(
     db: DBSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user),
 ):
-    """Resume a paused job"""
+    """Resume a paused job - reloads user's current API keys"""
     job = get_user_job(db, job_id, current_user)
     
     if job.status != JobStatus.PAUSED.value:
         raise HTTPException(status_code=400, detail="Job is not paused")
     
+    # Reload user's current API keys (they may have added new ones)
+    user_keys = db.query(UserAPIKey).filter(
+        UserAPIKey.user_id == current_user.id,
+        UserAPIKey.is_active == True,
+        UserAPIKey.is_valid == True
+    ).all()
+    
+    user_gemini_keys = [k.key_value for k in user_keys] if user_keys else []
+    
+    # Update job with new keys (user's or fallback to server)
+    if user_gemini_keys:
+        print(f"[Resume] Reloading {len(user_gemini_keys)} user API keys for job {job_id[:8]}", flush=True)
+        api_keys_data = {
+            "gemini_keys": user_gemini_keys,
+            "openai_key": api_keys_config.openai_api_key
+        }
+    else:
+        print(f"[Resume] Using server API keys for job {job_id[:8]}", flush=True)
+        api_keys_data = {
+            "gemini_keys": api_keys_config.gemini_api_keys,
+            "openai_key": api_keys_config.openai_api_key
+        }
+    
+    # Update job with fresh keys
+    job.api_keys_json = json.dumps(api_keys_data)
+    db.commit()
+    
+    add_job_log(db, job_id, f"Job resumed with {len(api_keys_data['gemini_keys'])} API keys", "INFO", "system")
+    
     success = worker.resume_job(job_id)
     
     if success:
-        add_job_log(db, job_id, "Job resumed by user", "INFO", "system")
-        return {"status": "resumed", "job_id": job_id}
+        return {"status": "resumed", "job_id": job_id, "keys_loaded": len(api_keys_data['gemini_keys'])}
     else:
         raise HTTPException(status_code=500, detail="Failed to resume job")
 

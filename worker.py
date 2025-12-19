@@ -1580,12 +1580,15 @@ class JobWorker:
                             "INFO", "prompt"
                         )
                 
-                # Check if failed due to no keys
+                # Check if failed due to no keys or rate limit exhaustion
                 if not result["success"]:
                     error = result.get("error")
                     if error and hasattr(error, 'code'):
                         if error.code.value in ["API_KEY_INVALID", "API_QUOTA_EXCEEDED", "RATE_LIMIT_429"]:
                             return {"clip_index": clip_index, "success": False, "no_keys": True, "result": result}
+                        # Check for should_pause flag (keys exhausted after retries)
+                        if hasattr(error, 'details') and error.details.get("should_pause"):
+                            return {"clip_index": clip_index, "success": False, "no_keys": True, "should_pause": True, "result": result}
                 
             except Exception as gen_error:
                 print(f"[Worker] Clip {clip_index} CRASHED: {type(gen_error).__name__}: {str(gen_error)[:200]}", flush=True)
@@ -2637,9 +2640,28 @@ class JobWorker:
                                 result = future.result()
                                 
                                 if result.get("no_keys"):
-                                    # Re-queue this clip for later
-                                    requeue_clips.append(clip_index)
-                                    print(f"[Worker] Clip {clip_index} failed due to no keys, re-queuing", flush=True)
+                                    # Check if we should auto-pause the job
+                                    if result.get("should_pause"):
+                                        print(f"[Worker] Clip {clip_index} triggered auto-pause (keys exhausted after retries)", flush=True)
+                                        # Set job to paused state and log it
+                                        with get_db() as pause_db:
+                                            pause_job = pause_db.query(Job).filter(Job.id == job_id).first()
+                                            if pause_job:
+                                                pause_job.status = JobStatus.PAUSED.value
+                                                pause_db.commit()
+                                            add_job_log(
+                                                pause_db, job_id,
+                                                f"⏸️ Job paused: API keys exhausted. Resume when quota resets (~2-3 min).",
+                                                "WARNING", "system"
+                                            )
+                                        # Re-queue this clip and signal pause
+                                        requeue_clips.append(clip_index)
+                                        # Set generator pause flag
+                                        generator.paused = True
+                                    else:
+                                        # Re-queue this clip for later
+                                        requeue_clips.append(clip_index)
+                                        print(f"[Worker] Clip {clip_index} failed due to no keys, re-queuing", flush=True)
                                 elif result.get("success"):
                                     completed += 1
                                     # Track completed video for "continue" mode

@@ -1528,7 +1528,7 @@ class VeoGenerator:
         failed_end_frames = []
         attempts = 0
         rate_limit_retries = 0  # Separate counter for rate limit retries (don't count toward real attempts)
-        max_rate_limit_retries = 20  # Max times to retry due to rate limits before giving up
+        max_rate_limit_retries = 3  # Max times to retry due to rate limits before pausing job
         current_attempt_end_index = current_end_index
         is_celebrity_retry = False  # Track if we're retrying due to celebrity filter
         is_rate_limit_retry = False  # Track if we're retrying due to rate limit exhaustion
@@ -1543,14 +1543,14 @@ class VeoGenerator:
         while attempts < self.config.max_retries_per_clip:
             # Safety limit for rate limit retries
             if rate_limit_retries >= max_rate_limit_retries:
-                vlog(f"[Clip {clip_index}] Exceeded max rate limit retries ({max_rate_limit_retries})")
+                vlog(f"[Clip {clip_index}] Exceeded max rate limit retries ({max_rate_limit_retries}) - job should pause")
                 result["error"] = VeoError(
                     code=ErrorCode.RATE_LIMIT,
-                    message=f"Rate limited {max_rate_limit_retries} times",
-                    user_message="Too many rate limits. All API keys may be exhausted.",
-                    details={"rate_limit_retries": rate_limit_retries},
+                    message=f"Rate limited {max_rate_limit_retries} times - keys exhausted",
+                    user_message="API keys exhausted. Job will pause - resume later when quota resets.",
+                    details={"rate_limit_retries": rate_limit_retries, "should_pause": True},
                     recoverable=True,
-                    suggestion="Wait a few minutes and try again"
+                    suggestion="Wait 2-3 minutes for quota to reset, then resume the job"
                 )
                 return result
             
@@ -1741,7 +1741,7 @@ class VeoGenerator:
                                 code=ErrorCode.RATE_LIMIT, 
                                 message="All reserved keys rate-limited", 
                                 user_message="All API keys are temporarily blocked",
-                                details={"rate_limited": rate_limited, "total": total},
+                                details={"rate_limited": rate_limited, "total": total, "should_pause": True},
                                 recoverable=True,
                                 suggestion="Wait for keys to recover (~2 minutes)"
                             )
@@ -1749,9 +1749,9 @@ class VeoGenerator:
                             # Don't count this as a real attempt - it's just rate limiting
                             is_rate_limit_retry = True
                             rate_limit_retries += 1
-                            vlog(f"[VeoGenerator] All {total} reserved keys rate-limited, waiting 120s (rate limit retry {rate_limit_retries}/{max_rate_limit_retries})")
-                            # Wait for keys to potentially unblock
-                            time.sleep(120)
+                            vlog(f"[VeoGenerator] All {total} reserved keys rate-limited, waiting 30s (rate limit retry {rate_limit_retries}/{max_rate_limit_retries})")
+                            # Wait for keys to potentially unblock (reduced from 120s)
+                            time.sleep(30)
                             break
                         
                         self._emit_progress(
