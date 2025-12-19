@@ -1087,8 +1087,11 @@ async def list_jobs(
     db: DBSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user),
 ):
-    """List all jobs for the current user"""
-    query = db.query(Job).filter(Job.user_id == current_user.id)
+    """List all jobs for the current user (includes legacy jobs with no user)"""
+    from sqlalchemy import or_
+    query = db.query(Job).filter(
+        or_(Job.user_id == current_user.id, Job.user_id == None)
+    )
     
     if status:
         query = query.filter(Job.status == status)
