@@ -316,6 +316,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
         
         # Check session cookie
         session_token = request.cookies.get("session")
+        
+        # Debug: log cookie check
+        all_cookies = dict(request.cookies)
+        if path == "/":
+            print(f"[AuthMiddleware] Path: {path}, Cookies: {list(all_cookies.keys())}, Session token present: {bool(session_token)}", flush=True)
+        
         if session_token:
             # Need to validate against database
             from models import get_db, User, UserSession
@@ -324,6 +330,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 user = db_validate_session(db, session_token)
                 if user and user.is_active:
                     return await call_next(request)
+                else:
+                    print(f"[AuthMiddleware] Session invalid or user inactive for token: {session_token[:8]}...", flush=True)
         
         # Not authenticated - redirect to login or return 401
         if path.startswith("/api/"):
@@ -517,15 +525,19 @@ async def auth_callback(request: Request, db: DBSession = Depends(get_db_session
         # Create response with redirect
         response = RedirectResponse(url="/", status_code=302)
         
-        # Set session cookie
+        # Set session cookie - use samesite="none" for OAuth cross-site redirects
+        is_secure = os.environ.get("SECURE_COOKIES", "true").lower() == "true"
         response.set_cookie(
             key="session",
             value=session_token,
             httponly=True,
-            secure=os.environ.get("SECURE_COOKIES", "true").lower() == "true",
-            samesite="lax",
-            max_age=7 * 24 * 3600  # 7 days
+            secure=is_secure,
+            samesite="none" if is_secure else "lax",  # "none" required for OAuth
+            max_age=7 * 24 * 3600,  # 7 days
+            path="/",
         )
+        
+        print(f"[Auth] Cookie set for user {user.email}, token: {session_token[:8]}...", flush=True)
         
         return response
         
@@ -535,6 +547,8 @@ async def auth_callback(request: Request, db: DBSession = Depends(get_db_session
         return RedirectResponse(url=f"/login?error={error_msg}", status_code=302)
     except Exception as e:
         print(f"[Auth] Callback error: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
         return RedirectResponse(url="/login?error=Authentication failed", status_code=302)
 
 
