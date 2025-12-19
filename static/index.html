@@ -90,46 +90,51 @@
         .user-dropdown-item.logout:hover { background: rgba(239, 68, 68, 0.1); }
         
         /* API Keys Modal */
-        .modal-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: none; align-items: center; justify-content: center; z-index: 10000; }
+        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.8); backdrop-filter: blur(4px); display: none; align-items: center; justify-content: center; z-index: 10000; padding: 20px; box-sizing: border-box; }
         .modal-overlay.show { display: flex; }
-        .modal { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: var(--radius-lg); width: 90%; max-width: 600px; max-height: 80vh; overflow: hidden; display: flex; flex-direction: column; }
-        .modal-header { padding: 20px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; }
-        .modal-header h2 { font-size: 18px; font-weight: 600; display: flex; align-items: center; gap: 10px; }
-        .modal-close { background: none; border: none; color: var(--text-muted); font-size: 24px; cursor: pointer; padding: 0; line-height: 1; }
-        .modal-close:hover { color: var(--text-primary); }
-        .modal-body { padding: 20px; overflow-y: auto; flex: 1; }
-        .modal-footer { padding: 16px 20px; border-top: 1px solid var(--border-color); display: flex; justify-content: flex-end; gap: 12px; }
+        .modal { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 16px; width: 100%; max-width: 480px; max-height: calc(100vh - 40px); overflow: hidden; display: flex; flex-direction: column; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5); margin: auto; }
+        .modal-header { padding: 20px 24px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; background: var(--bg-elevated); }
+        .modal-header h2 { font-size: 18px; font-weight: 600; display: flex; align-items: center; gap: 10px; margin: 0; }
+        .modal-close { background: var(--bg-input); border: none; color: var(--text-muted); width: 32px; height: 32px; border-radius: 8px; cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; transition: all 0.2s; }
+        .modal-close:hover { background: var(--error); color: white; }
+        .modal-body { padding: 24px; overflow-y: auto; flex: 1; }
+        .modal-footer { padding: 16px 24px; border-top: 1px solid var(--border-color); display: flex; justify-content: flex-end; gap: 12px; background: var(--bg-elevated); }
         
         /* API Keys List */
-        .api-keys-info { background: var(--bg-elevated); padding: 12px 16px; border-radius: var(--radius-md); margin-bottom: 16px; font-size: 13px; color: var(--text-secondary); }
-        .api-keys-info a { color: var(--accent); text-decoration: none; }
-        .api-keys-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 20px; }
-        .api-key-item { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: var(--bg-elevated); border-radius: var(--radius-md); border: 1px solid var(--border-color); }
-        .api-key-item.invalid { border-color: var(--error); opacity: 0.7; }
+        .api-keys-info { background: linear-gradient(135deg, rgba(99, 102, 241, 0.1), rgba(168, 85, 247, 0.1)); padding: 14px 18px; border-radius: 12px; margin-bottom: 20px; font-size: 13px; color: var(--text-secondary); border: 1px solid rgba(99, 102, 241, 0.2); }
+        .api-keys-info strong { color: var(--text-primary); display: block; margin-bottom: 6px; }
+        .api-keys-info a { color: var(--accent); text-decoration: none; font-weight: 500; }
+        .api-keys-info a:hover { text-decoration: underline; }
+        .api-keys-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 24px; min-height: 60px; }
+        .api-key-item { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; background: var(--bg-elevated); border-radius: 12px; border: 1px solid var(--border-color); transition: all 0.2s; }
+        .api-key-item:hover { border-color: var(--accent); }
+        .api-key-item.invalid { border-color: var(--error); background: rgba(239, 68, 68, 0.05); }
         .api-key-item.inactive { opacity: 0.5; }
-        .api-key-info { display: flex; flex-direction: column; gap: 2px; }
-        .api-key-name { font-weight: 500; font-size: 14px; }
+        .api-key-info { display: flex; flex-direction: column; gap: 4px; }
+        .api-key-name { font-weight: 600; font-size: 14px; color: var(--text-primary); }
         .api-key-suffix { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--text-muted); }
-        .api-key-status { font-size: 11px; }
+        .api-key-status { font-size: 11px; font-weight: 500; }
         .api-key-status.valid { color: var(--success); }
         .api-key-status.invalid { color: var(--error); }
-        .api-key-actions { display: flex; gap: 8px; }
-        .api-key-actions button { background: none; border: none; color: var(--text-muted); cursor: pointer; padding: 4px 8px; border-radius: 4px; font-size: 14px; }
-        .api-key-actions button:hover { background: var(--bg-input); color: var(--text-primary); }
-        .api-key-actions button.delete:hover { color: var(--error); }
+        .api-key-actions { display: flex; gap: 6px; }
+        .api-key-actions button { background: var(--bg-input); border: none; color: var(--text-muted); cursor: pointer; padding: 6px 10px; border-radius: 8px; font-size: 14px; transition: all 0.2s; }
+        .api-key-actions button:hover { background: var(--accent); color: white; }
+        .api-key-actions button.delete:hover { background: var(--error); color: white; }
         
         /* Add Keys Form */
-        .add-key-section { border-top: 1px solid var(--border-color); padding-top: 16px; }
-        .add-key-section h4 { font-size: 14px; font-weight: 500; margin-bottom: 12px; }
-        .add-key-input { display: flex; gap: 8px; margin-bottom: 12px; }
-        .add-key-input input { flex: 1; padding: 10px 14px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: var(--radius-md); color: var(--text-primary); font-family: 'JetBrains Mono', monospace; font-size: 13px; }
+        .add-key-section { border-top: 1px solid var(--border-color); padding-top: 20px; margin-top: 4px; }
+        .add-key-section h4 { font-size: 13px; font-weight: 600; margin-bottom: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
+        .add-key-input { display: flex; gap: 10px; margin-bottom: 16px; }
+        .add-key-input input { flex: 1; padding: 12px 16px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: 10px; color: var(--text-primary); font-family: 'JetBrains Mono', monospace; font-size: 13px; transition: border-color 0.2s; }
+        .add-key-input input:focus { outline: none; border-color: var(--accent); }
         .add-key-input input::placeholder { color: var(--text-muted); }
-        .bulk-add-section { margin-top: 16px; }
-        .bulk-add-section textarea { width: 100%; height: 100px; padding: 10px 14px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: var(--radius-md); color: var(--text-primary); font-family: 'JetBrains Mono', monospace; font-size: 12px; resize: vertical; }
+        .bulk-add-section { margin-top: 20px; }
+        .bulk-add-section textarea { width: 100%; height: 100px; padding: 12px 16px; background: var(--bg-input); border: 1px solid var(--border-color); border-radius: 10px; color: var(--text-primary); font-family: 'JetBrains Mono', monospace; font-size: 12px; resize: vertical; transition: border-color 0.2s; }
+        .bulk-add-section textarea:focus { outline: none; border-color: var(--accent); }
         .bulk-add-section textarea::placeholder { color: var(--text-muted); }
-        .bulk-add-hint { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
-        .empty-keys { text-align: center; padding: 30px; color: var(--text-muted); }
-        .empty-keys .icon { font-size: 40px; margin-bottom: 10px; }
+        .bulk-add-hint { font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+        .empty-keys { text-align: center; padding: 40px 20px; color: var(--text-muted); background: var(--bg-elevated); border-radius: 12px; border: 2px dashed var(--border-color); }
+        .empty-keys .icon { font-size: 48px; margin-bottom: 12px; opacity: 0.5; }
         
         .card { background: var(--bg-surface); border: 1px solid var(--border-color); border-radius: var(--radius-lg); padding: 20px; margin-bottom: 0; }
         .card-title { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.8px; color: var(--text-muted); margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
@@ -658,8 +663,8 @@
         </header>
         
         <!-- API Keys Modal -->
-        <div class="modal-overlay" id="apiKeysModal">
-            <div class="modal">
+        <div class="modal-overlay" id="apiKeysModal" style="position:fixed;top:0;left:0;width:100vw;height:100vh;">
+            <div class="modal" style="margin:auto;">
                 <div class="modal-header">
                     <h2>🔑 API Keys</h2>
                     <button class="modal-close" onclick="closeApiKeysModal()">×</button>

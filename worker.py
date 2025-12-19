@@ -3330,6 +3330,7 @@ class JobWorker:
     
     def resume_job(self, job_id: str) -> bool:
         """Resume a paused job"""
+        # Case 1: Job has active generator - just unpause it
         if job_id in self.running_jobs:
             self.running_jobs[job_id].resume()
             
@@ -3340,6 +3341,20 @@ class JobWorker:
                     db.commit()
             
             return True
+        
+        # Case 2: Job was paused before generator started - re-queue it
+        with get_db() as db:
+            job = db.query(Job).filter(Job.id == job_id).first()
+            if job and job.status == JobStatus.PAUSED.value:
+                # Set to pending so worker picks it up
+                job.status = JobStatus.PENDING.value
+                db.commit()
+                
+                # Add to queue
+                self.job_queue.put(job_id)
+                print(f"[Worker] Re-queued paused job {job_id[:8]} for processing", flush=True)
+                return True
+        
         return False
     
     def get_job_status(self, job_id: str) -> Optional[Dict]:
