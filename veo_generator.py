@@ -1694,10 +1694,11 @@ class VeoGenerator:
             
             # Submit to Veo API
             operation = None
+            submit_client = None  # Track the client used for submission - MUST use same for poll/download
             for submit_attempt in range(1, self.config.max_retries_submit + 1):
                 try:
                     # Get client (KeyPoolManager will log which key is being used)
-                    client = self._get_client()
+                    submit_client = self._get_client()
                     
                     aspect = self.config.aspect_ratio.value if hasattr(self.config.aspect_ratio, 'value') else self.config.aspect_ratio
                     res = self.config.resolution.value if hasattr(self.config.resolution, 'value') else self.config.resolution
@@ -1723,7 +1724,7 @@ class VeoGenerator:
                         pass
                     
                     vlog(f"[VeoGenerator] Submitting to Veo (attempt {submit_attempt})...")
-                    operation = client.models.generate_videos(
+                    operation = submit_client.models.generate_videos(
                         model=VEO_MODEL,
                         prompt=prompt_text,
                         image=start_image,
@@ -1788,9 +1789,13 @@ class VeoGenerator:
                 vlog(f"[Clip {clip_index}] No operation after submit attempts - continuing to next attempt")
                 continue
             
+            if submit_client is None:
+                vlog(f"[Clip {clip_index}] No submit client available - continuing to next attempt")
+                continue
+            
             # Poll for completion with progress logging
+            # CRITICAL: Must use same client that submitted - file ownership is tied to API key!
             try:
-                client = self._get_client()
                 poll_start = time.time()
                 last_log_time = poll_start
                 
@@ -1799,7 +1804,7 @@ class VeoGenerator:
                         return result
                     
                     time.sleep(self.config.poll_interval_sec)
-                    operation = client.operations.get(operation)
+                    operation = submit_client.operations.get(operation)
                     
                     # Log progress every 60 seconds
                     elapsed = time.time() - poll_start
@@ -1812,14 +1817,36 @@ class VeoGenerator:
                             vlog(f"[VeoGenerator] Still waiting for clip {clip_index}... ({elapsed:.0f}s elapsed)")
                     
             except Exception as e:
-                vlog(f"[Clip {clip_index}] Poll/wait error: {type(e).__name__}: {e}")
-                self._emit_progress(
-                    clip_index, "poll_error",
-                    f"Poll error: {type(e).__name__}",
-                    {"error": str(e)[:200]}
-                )
-                failed_end_frames.append(actual_end_frame)
-                continue
+                error_str = str(e)
+                # Check if it's a rate limit error during polling - wait and retry with same key
+                if is_rate_limit_error(e):
+                    vlog(f"[Clip {clip_index}] Rate limit during poll - waiting 30s before retry...")
+                    self._emit_progress(
+                        clip_index, "poll_rate_limit",
+                        f"Rate limited during poll, waiting...",
+                        {"error": error_str[:100]}
+                    )
+                    time.sleep(30)
+                    # Try polling again with same key (we can't switch keys - operation is tied to this key)
+                    try:
+                        while not operation.done:
+                            if self.cancelled:
+                                return result
+                            time.sleep(self.config.poll_interval_sec)
+                            operation = submit_client.operations.get(operation)
+                    except Exception as retry_e:
+                        vlog(f"[Clip {clip_index}] Poll retry also failed: {type(retry_e).__name__}: {retry_e}")
+                        failed_end_frames.append(actual_end_frame)
+                        continue
+                else:
+                    vlog(f"[Clip {clip_index}] Poll/wait error: {type(e).__name__}: {e}")
+                    self._emit_progress(
+                        clip_index, "poll_error",
+                        f"Poll error: {type(e).__name__}",
+                        {"error": str(e)[:200]}
+                    )
+                    failed_end_frames.append(actual_end_frame)
+                    continue
             
             poll_duration = time.time() - poll_start
             vlog(f"[Clip {clip_index}] Poll complete after {poll_duration:.1f}s, checking result...")
@@ -2025,6 +2052,9 @@ class VeoGenerator:
                 on_frames_locked(clip_index, start_frame, actual_end_frame)
             
             # Download video
+            video = None  # Initialize for safe retry check in except block
+            output_path = None
+            output_filename = None
             try:
                 resp = getattr(operation, "response", None)
                 vids = getattr(resp, "generated_videos", None) if resp else None
@@ -2044,8 +2074,8 @@ class VeoGenerator:
                 output_filename = generate_output_filename(dialogue_id, start_frame, actual_end_frame, timestamp)
                 output_path = output_dir / output_filename
                 
-                client = self._get_client()
-                client.files.download(file=video.video)
+                # CRITICAL: Must use same client that submitted - file ownership is tied to API key!
+                submit_client.files.download(file=video.video)
                 video.video.save(str(output_path))
                 
                 result["success"] = True
@@ -2057,14 +2087,42 @@ class VeoGenerator:
                 return result
                 
             except Exception as e:
-                vlog(f"[Clip {clip_index}] Download/save error: {type(e).__name__}: {e}")
-                self._emit_progress(
-                    clip_index, "download_error",
-                    f"Download error: {type(e).__name__}",
-                    {"error": str(e)[:200]}
-                )
-                failed_end_frames.append(actual_end_frame)
-                continue
+                error_str = str(e)
+                # Check if it's a rate limit error during download - wait and retry with same key
+                # But only if we got far enough to have video and output_path defined
+                if is_rate_limit_error(e) and video is not None and output_path is not None and output_filename is not None:
+                    vlog(f"[Clip {clip_index}] Rate limit during download - waiting 30s before retry...")
+                    self._emit_progress(
+                        clip_index, "download_rate_limit",
+                        f"Rate limited during download, waiting...",
+                        {"error": error_str[:100]}
+                    )
+                    time.sleep(30)
+                    # Try download again with same key
+                    try:
+                        submit_client.files.download(file=video.video)
+                        video.video.save(str(output_path))
+                        
+                        result["success"] = True
+                        result["output_path"] = output_path
+                        result["end_frame_used"] = actual_end_frame
+                        result["end_index"] = actual_end_index
+                        
+                        self._emit_progress(clip_index, "completed", f"Saved: {output_filename}", {"output": output_filename})
+                        return result
+                    except Exception as retry_e:
+                        vlog(f"[Clip {clip_index}] Download retry also failed: {type(retry_e).__name__}: {retry_e}")
+                        failed_end_frames.append(actual_end_frame)
+                        continue
+                else:
+                    vlog(f"[Clip {clip_index}] Download/save error: {type(e).__name__}: {e}")
+                    self._emit_progress(
+                        clip_index, "download_error",
+                        f"Download error: {type(e).__name__}",
+                        {"error": str(e)[:200]}
+                    )
+                    failed_end_frames.append(actual_end_frame)
+                    continue
         
         # Exhausted retries
         if len(failed_end_frames) >= 2:
