@@ -121,6 +121,26 @@
         .api-key-actions button:hover { background: var(--accent); color: white; }
         .api-key-actions button.delete:hover { background: var(--error); color: white; }
         
+        /* Key Status Indicators */
+        .api-key-item.status-working { border-left: 3px solid var(--success); }
+        .api-key-item.status-rate_limited { border-left: 3px solid #f59e0b; }
+        .api-key-item.status-invalid { border-left: 3px solid var(--error); background: rgba(239, 68, 68, 0.05); }
+        .api-key-item.status-unknown { border-left: 3px solid var(--text-muted); }
+        .api-key-status.status-working { color: var(--success); }
+        .api-key-status.status-rate_limited { color: #f59e0b; }
+        .api-key-status.status-invalid { color: var(--error); }
+        .api-key-status.status-unknown { color: var(--text-muted); }
+        
+        /* Keys Summary */
+        .keys-summary { display: flex; gap: 12px; margin-bottom: 8px; }
+        .keys-summary-item { flex: 1; padding: 12px 16px; border-radius: 10px; text-align: center; }
+        .keys-summary-item .count { font-size: 24px; font-weight: 700; display: block; }
+        .keys-summary-item .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; opacity: 0.8; }
+        .keys-summary-item.working { background: rgba(16, 185, 129, 0.15); color: var(--success); }
+        .keys-summary-item.rate-limited { background: rgba(245, 158, 11, 0.15); color: #f59e0b; }
+        .keys-summary-item.invalid { background: rgba(239, 68, 68, 0.15); color: var(--error); }
+        #apiKeysSummary { margin-bottom: 20px; }
+        
         /* Add Keys Form */
         .add-key-section { border-top: 1px solid var(--border-color); padding-top: 20px; margin-top: 4px; }
         .add-key-section h4 { font-size: 13px; font-weight: 600; margin-bottom: 12px; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; }
@@ -676,6 +696,9 @@
                         <a href="https://aistudio.google.com/apikey" target="_blank">Get API keys from Google AI Studio →</a>
                     </div>
                     
+                    <!-- Summary of key statuses -->
+                    <div id="apiKeysSummary" style="display:none;"></div>
+                    
                     <div class="api-keys-list" id="apiKeysList">
                         <div class="empty-keys" id="emptyKeysMessage">
                             <div class="icon">🔐</div>
@@ -1140,15 +1163,37 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 if (!res.ok) throw new Error('Failed to load keys');
                 const data = await res.json();
                 userApiKeys = data.keys;
+                userApiKeysSummary = data.summary || {};
                 renderApiKeysList();
             } catch (e) {
                 console.error('Failed to load API keys:', e);
             }
         }
         
+        let userApiKeysSummary = {};
+        
         function renderApiKeysList() {
             const list = document.getElementById('apiKeysList');
             const empty = document.getElementById('emptyKeysMessage');
+            const summaryEl = document.getElementById('apiKeysSummary');
+            
+            // Update summary
+            if (summaryEl && userApiKeysSummary) {
+                const s = userApiKeysSummary;
+                if (s.total > 0) {
+                    summaryEl.innerHTML = `
+                        <div class="keys-summary">
+                            <div class="keys-summary-item working"><span class="count">${s.working || 0}</span><span class="label">Working</span></div>
+                            <div class="keys-summary-item rate-limited"><span class="count">${s.rate_limited || 0}</span><span class="label">Rate Limited</span></div>
+                            <div class="keys-summary-item invalid"><span class="count">${s.invalid || 0}</span><span class="label">Invalid</span></div>
+                        </div>
+                        <button class="btn btn-secondary btn-sm" onclick="revalidateAllKeys()" style="margin-top:12px;width:100%;">🔄 Re-check All Keys</button>
+                    `;
+                    summaryEl.style.display = 'block';
+                } else {
+                    summaryEl.style.display = 'none';
+                }
+            }
             
             if (userApiKeys.length === 0) {
                 list.innerHTML = '';
@@ -1156,25 +1201,43 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 return;
             }
             
-            list.innerHTML = userApiKeys.map(key => `
-                <div class="api-key-item ${key.is_valid ? '' : 'invalid'} ${key.is_active ? '' : 'inactive'}">
+            const statusIcons = {
+                'working': '✅',
+                'rate_limited': '⚠️',
+                'invalid': '❌',
+                'unknown': '❓'
+            };
+            
+            const statusLabels = {
+                'working': 'Working',
+                'rate_limited': 'Rate Limited',
+                'invalid': 'Invalid',
+                'unknown': 'Unknown'
+            };
+            
+            list.innerHTML = userApiKeys.map(key => {
+                const status = key.key_status || (key.is_valid ? 'working' : 'invalid');
+                const icon = statusIcons[status] || '❓';
+                const label = statusLabels[status] || status;
+                
+                return `
+                <div class="api-key-item status-${status} ${key.is_active ? '' : 'inactive'}">
                     <div class="api-key-info">
-                        <div class="api-key-name">${escapeHtml(key.key_name || 'API Key')}</div>
-                        <div class="api-key-suffix">...${key.key_suffix}</div>
-                        <div class="api-key-status ${key.is_valid ? 'valid' : 'invalid'}">
-                            ${key.is_valid ? '✓ Valid' : '✗ Invalid'}
+                        <div class="api-key-name">Key ...${key.key_suffix}</div>
+                        <div class="api-key-status status-${status}">
+                            ${icon} ${label}
                             ${key.is_active ? '' : ' • Disabled'}
-                            ${key.last_error ? ` • ${escapeHtml(key.last_error)}` : ''}
                         </div>
                     </div>
                     <div class="api-key-actions">
+                        <button onclick="revalidateKey(${key.id})" title="Re-check">🔄</button>
                         <button onclick="toggleApiKey(${key.id})" title="${key.is_active ? 'Disable' : 'Enable'}">
                             ${key.is_active ? '⏸️' : '▶️'}
                         </button>
                         <button class="delete" onclick="deleteApiKey(${key.id})" title="Delete">🗑️</button>
                     </div>
                 </div>
-            `).join('');
+            `}).join('');
         }
         
         function escapeHtml(text) {
@@ -1183,13 +1246,61 @@ Example: A realistic vertical video of a professional presenter speaking directl
             return div.innerHTML;
         }
         
+        async function revalidateKey(keyId) {
+            try {
+                const res = await fetch(`/api/user/keys/${keyId}/revalidate`, { method: 'POST' });
+                const data = await res.json();
+                
+                if (!res.ok) {
+                    alert(data.detail || 'Failed to revalidate key');
+                    return;
+                }
+                
+                await loadApiKeys();
+            } catch (e) {
+                alert('Failed to revalidate key');
+            }
+        }
+        
+        async function revalidateAllKeys() {
+            const btn = event.target;
+            const originalText = btn.innerHTML;
+            btn.innerHTML = '⏳ Checking...';
+            btn.disabled = true;
+            
+            try {
+                const res = await fetch('/api/user/keys/revalidate-all', { method: 'POST' });
+                const data = await res.json();
+                
+                if (!res.ok) {
+                    alert(data.detail || 'Failed to revalidate keys');
+                    return;
+                }
+                
+                await loadApiKeys();
+                alert(data.message);
+            } catch (e) {
+                alert('Failed to revalidate keys');
+            } finally {
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        }
+        
         async function addSingleApiKey() {
             const input = document.getElementById('newApiKeyInput');
+            const addBtn = document.querySelector('.add-key-input .btn-primary');
             const key = input.value.trim();
             
             if (!key) {
                 alert('Please enter an API key');
                 return;
+            }
+            
+            // Show loading state
+            if (addBtn) {
+                addBtn.innerHTML = '⏳';
+                addBtn.disabled = true;
             }
             
             try {
@@ -1208,8 +1319,18 @@ Example: A realistic vertical video of a professional presenter speaking directl
                 
                 input.value = '';
                 await loadApiKeys();
+                
+                // Show validation result
+                if (data.message) {
+                    // Could show a toast here instead
+                }
             } catch (e) {
                 alert('Failed to add API key');
+            } finally {
+                if (addBtn) {
+                    addBtn.innerHTML = 'Add';
+                    addBtn.disabled = false;
+                }
             }
         }
         

@@ -82,8 +82,10 @@ class UserAPIKey(Base):
     # Status
     is_valid = Column(Boolean, default=True)         # Whether key is valid
     is_active = Column(Boolean, default=True)        # Whether user wants to use it
+    key_status = Column(String(20), default="unknown")  # working, rate_limited, invalid, unknown
     last_used = Column(DateTime, nullable=True)
     last_error = Column(Text, nullable=True)
+    last_checked = Column(DateTime, nullable=True)   # When status was last validated
     
     created_at = Column(DateTime, default=datetime.utcnow)
     
@@ -98,8 +100,10 @@ class UserAPIKey(Base):
             "key_preview": f"...{self.key_suffix}" if hide_key else self.key_value,
             "is_valid": self.is_valid,
             "is_active": self.is_active,
+            "key_status": self.key_status or ("working" if self.is_valid else "invalid"),
             "last_used": self.last_used.isoformat() if self.last_used else None,
             "last_error": self.last_error,
+            "last_checked": self.last_checked.isoformat() if self.last_checked else None,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
 

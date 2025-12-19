@@ -614,20 +614,95 @@ class AddAPIKeysRequest(BaseModel):
     keys: List[str]  # List of API keys
 
 
+def validate_single_api_key(api_key: str) -> dict:
+    """
+    Validate a single API key by testing Veo submission.
+    Returns: {"status": "working"|"rate_limited"|"invalid", "message": str}
+    """
+    VEO_MODEL = "veo-3.1-fast-generate-preview"
+    TEST_PROMPT = "A calm blue ocean wave gently rolling onto a sandy beach at sunset"
+    
+    try:
+        from google import genai
+        from google.genai import types
+        
+        client = genai.Client(api_key=api_key)
+        
+        # Step 1: Quick check if key works at all
+        try:
+            models = list(client.models.list())
+        except Exception as e:
+            error_str = str(e).lower()
+            if "suspended" in error_str:
+                return {"status": "invalid", "message": "Key suspended"}
+            elif "invalid" in error_str or "api_key_invalid" in error_str:
+                return {"status": "invalid", "message": "Invalid API key"}
+            elif "401" in str(e):
+                return {"status": "invalid", "message": "Unauthorized"}
+            elif "403" in str(e):
+                return {"status": "invalid", "message": "Permission denied"}
+            else:
+                return {"status": "invalid", "message": f"API error: {str(e)[:50]}"}
+        
+        # Step 2: Try to submit a Veo generation
+        config = types.GenerateVideosConfig(
+            aspect_ratio="9:16",
+            resolution="720p",
+            duration_seconds="8",
+        )
+        
+        operation = client.models.generate_videos(
+            model=VEO_MODEL,
+            prompt=TEST_PROMPT,
+            config=config,
+        )
+        
+        # If we get here, the key can submit to Veo!
+        return {"status": "working", "message": "Key working"}
+        
+    except Exception as e:
+        error_str = str(e).lower()
+        
+        if "429" in str(e) or "resource_exhausted" in error_str:
+            return {"status": "rate_limited", "message": "Rate limited (quota exhausted)"}
+        elif "suspended" in error_str:
+            return {"status": "invalid", "message": "Key suspended"}
+        elif "permission" in error_str or "403" in str(e):
+            return {"status": "invalid", "message": "No Veo access"}
+        elif "404" in str(e) or "not found" in error_str:
+            return {"status": "invalid", "message": "Veo model not available"}
+        else:
+            # Unknown error - treat as rate limited to be safe
+            return {"status": "rate_limited", "message": f"Error: {str(e)[:40]}"}
+
+
 @app.get("/api/user/keys")
 async def list_user_api_keys(
     db: DBSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user),
 ):
-    """List all API keys for the current user"""
+    """List all API keys for the current user with status summary"""
     keys = db.query(UserAPIKey).filter(
         UserAPIKey.user_id == current_user.id
     ).order_by(UserAPIKey.created_at.desc()).all()
+    
+    # Calculate summary
+    working = sum(1 for k in keys if k.key_status == "working" and k.is_active)
+    rate_limited = sum(1 for k in keys if k.key_status == "rate_limited" and k.is_active)
+    invalid = sum(1 for k in keys if k.key_status == "invalid" or not k.is_valid)
+    inactive = sum(1 for k in keys if not k.is_active)
     
     return {
         "keys": [k.to_dict() for k in keys],
         "count": len(keys),
         "has_keys": len(keys) > 0,
+        "summary": {
+            "working": working,
+            "rate_limited": rate_limited,
+            "invalid": invalid,
+            "inactive": inactive,
+            "total": len(keys),
+        }
     }
 
 
@@ -637,7 +712,7 @@ async def add_user_api_key(
     db: DBSession = Depends(get_db_session),
     current_user: User = Depends(get_current_user),
 ):
-    """Add a single API key for the current user"""
+    """Add a single API key for the current user - validates immediately"""
     key_value = request.key.strip()
     
     # Basic validation
@@ -656,24 +731,34 @@ async def add_user_api_key(
     if existing:
         raise HTTPException(status_code=400, detail="This API key is already added")
     
-    # Create new key
+    # Validate the key with Veo API
+    print(f"[API Keys] Validating new key ...{key_value[-6:]}", flush=True)
+    validation = validate_single_api_key(key_value)
+    
+    # Create new key with validation status
     new_key = UserAPIKey(
         user_id=current_user.id,
         key_value=key_value,
         key_name=request.name,
         key_suffix=key_value[-6:],
-        is_valid=True,
+        is_valid=(validation["status"] != "invalid"),
         is_active=True,
+        key_status=validation["status"],
+        last_error=validation["message"] if validation["status"] != "working" else None,
+        last_checked=datetime.utcnow(),
     )
     
     db.add(new_key)
     db.commit()
     db.refresh(new_key)
     
+    status_emoji = {"working": "✅", "rate_limited": "⚠️", "invalid": "❌"}.get(validation["status"], "❓")
+    
     return {
         "success": True,
         "key": new_key.to_dict(),
-        "message": "API key added successfully"
+        "validation": validation,
+        "message": f"{status_emoji} Key added - {validation['message']}"
     }
 
 
@@ -784,6 +869,85 @@ async def toggle_user_api_key(
         "success": True,
         "is_active": key.is_active,
         "message": f"API key {'activated' if key.is_active else 'deactivated'}"
+    }
+
+
+@app.post("/api/user/keys/{key_id}/revalidate")
+async def revalidate_user_api_key(
+    key_id: int,
+    db: DBSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+):
+    """Re-validate a user's API key"""
+    key = db.query(UserAPIKey).filter(
+        UserAPIKey.id == key_id,
+        UserAPIKey.user_id == current_user.id
+    ).first()
+    
+    if not key:
+        raise HTTPException(status_code=404, detail="API key not found")
+    
+    # Validate the key
+    print(f"[API Keys] Re-validating key ...{key.key_suffix}", flush=True)
+    validation = validate_single_api_key(key.key_value)
+    
+    # Update status
+    key.is_valid = (validation["status"] != "invalid")
+    key.key_status = validation["status"]
+    key.last_error = validation["message"] if validation["status"] != "working" else None
+    key.last_checked = datetime.utcnow()
+    db.commit()
+    
+    status_emoji = {"working": "✅", "rate_limited": "⚠️", "invalid": "❌"}.get(validation["status"], "❓")
+    
+    return {
+        "success": True,
+        "key": key.to_dict(),
+        "validation": validation,
+        "message": f"{status_emoji} {validation['message']}"
+    }
+
+
+@app.post("/api/user/keys/revalidate-all")
+async def revalidate_all_user_api_keys(
+    db: DBSession = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+):
+    """Re-validate all of user's API keys"""
+    keys = db.query(UserAPIKey).filter(
+        UserAPIKey.user_id == current_user.id
+    ).all()
+    
+    if not keys:
+        return {"success": True, "message": "No keys to validate", "results": []}
+    
+    results = []
+    for key in keys:
+        print(f"[API Keys] Re-validating key ...{key.key_suffix}", flush=True)
+        validation = validate_single_api_key(key.key_value)
+        
+        key.is_valid = (validation["status"] != "invalid")
+        key.key_status = validation["status"]
+        key.last_error = validation["message"] if validation["status"] != "working" else None
+        key.last_checked = datetime.utcnow()
+        
+        results.append({
+            "key_suffix": key.key_suffix,
+            "status": validation["status"],
+            "message": validation["message"]
+        })
+    
+    db.commit()
+    
+    working = sum(1 for r in results if r["status"] == "working")
+    rate_limited = sum(1 for r in results if r["status"] == "rate_limited")
+    invalid = sum(1 for r in results if r["status"] == "invalid")
+    
+    return {
+        "success": True,
+        "message": f"Validated {len(keys)} keys: {working} working, {rate_limited} rate-limited, {invalid} invalid",
+        "summary": {"working": working, "rate_limited": rate_limited, "invalid": invalid},
+        "results": results
     }
 
 
