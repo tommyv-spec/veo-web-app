@@ -1402,8 +1402,12 @@ class VeoGenerator:
             # Mark this key as rate-limited for 300 seconds (5 minutes)
             # Google's rate limits typically last 1-5 minutes
             self.key_pool.mark_key_rate_limited(self._current_key_index, duration_seconds=300)
-            key_suffix = self.api_keys.gemini_api_keys[self._current_key_index][-8:]
-            vlog(f"[VeoGenerator] 🚫 Key {self._current_key_index + 1} (...{key_suffix}) rate-limited for 300s")
+            # Safe access with bounds check
+            if self._current_key_index < len(self.api_keys.gemini_api_keys):
+                key_suffix = self.api_keys.gemini_api_keys[self._current_key_index][-8:]
+                vlog(f"[VeoGenerator] 🚫 Key {self._current_key_index + 1} (...{key_suffix}) rate-limited for 300s")
+            else:
+                vlog(f"[VeoGenerator] 🚫 Key {self._current_key_index + 1} rate-limited for 300s (key index out of range for suffix)")
         
         # Clear cached client so next _get_client() gets a fresh key
         self.client = None

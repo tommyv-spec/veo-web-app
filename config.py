@@ -825,7 +825,9 @@ class KeyPoolManager:
             working_reserved = [i for i in reserved if i in working_keys]
             rate_limited_reserved = [i for i in reserved if i in rate_limited_keys]
             
-            key_suffixes = [api_keys_config.gemini_api_keys[i][-8:] for i in reserved]
+            # Safe access with bounds checking
+            total_available = len(api_keys_config.gemini_api_keys)
+            key_suffixes = [api_keys_config.gemini_api_keys[i][-8:] if i < total_available else f"?{i}?" for i in reserved]
             print(f"[KeyPoolManager] Job {job_id[:8]}: Reserved {len(reserved)} keys ({len(working_reserved)} working, {len(rate_limited_reserved)} rate-limited): {key_suffixes}", flush=True)
             
             return reserved
@@ -890,6 +892,9 @@ class KeyPoolManager:
             # Use a ready key if available
             if ready_keys:
                 key_idx = ready_keys[0]
+                if key_idx >= len(api_keys_config.gemini_api_keys):
+                    print(f"[KeyPoolManager] ERROR: key_idx {key_idx} >= len(keys) {len(api_keys_config.gemini_api_keys)}", flush=True)
+                    return None
                 self._key_last_used[key_idx] = now
                 key_suffix = api_keys_config.gemini_api_keys[key_idx][-8:]
                 print(f"[KeyPoolManager] Using key {key_idx+1} (...{key_suffix}) - {len(ready_keys)} ready, {len(rate_limited_keys)} rate-limited", flush=True)
@@ -899,6 +904,9 @@ class KeyPoolManager:
             if cooldown_keys:
                 cooldown_keys.sort(key=lambda x: x[1])  # Sort by last_used ascending
                 key_idx = cooldown_keys[0][0]
+                if key_idx >= len(api_keys_config.gemini_api_keys):
+                    print(f"[KeyPoolManager] ERROR: cooldown key_idx {key_idx} >= len(keys) {len(api_keys_config.gemini_api_keys)}", flush=True)
+                    return None
                 wait_time = self._min_key_cooldown_seconds - (now - cooldown_keys[0][1]).total_seconds()
                 if wait_time > 0:
                     print(f"[KeyPoolManager] All {len(reserved_keys)} reserved keys on cooldown, waiting {wait_time:.1f}s", flush=True)
@@ -913,6 +921,9 @@ class KeyPoolManager:
             if rate_limited_keys:
                 rate_limited_keys.sort(key=lambda x: x[1])  # Sort by remaining time
                 key_idx, remaining = rate_limited_keys[0]
+                if key_idx >= len(api_keys_config.gemini_api_keys):
+                    print(f"[KeyPoolManager] ERROR: rate-limited key_idx {key_idx} >= len(keys) {len(api_keys_config.gemini_api_keys)}", flush=True)
+                    return None
                 if remaining > 0:
                     print(f"[KeyPoolManager] All {len(reserved_keys)} reserved keys rate-limited, waiting {remaining:.1f}s for key {key_idx+1} to recover", flush=True)
                     import time
