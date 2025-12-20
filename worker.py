@@ -611,7 +611,7 @@ class JobWorker:
                         db.commit()
                         add_job_log(
                             db, job_id,
-                            f"⏸️ Job paused: All {rate_limited_count} API keys are rate-limited (429). Wait 2-3 minutes or add new keys, then Resume.",
+                            f"⏸️ Job paused: All {rate_limited_count} API keys are rate-limited (429). Wait 5 minutes or add new keys, then Resume.",
                             "WARNING", "system"
                         )
                         # Raise special exception that won't mark job as failed
@@ -1001,6 +1001,11 @@ class JobWorker:
                                 # Only one image - no interpolation
                                 use_end_frame = False
                                 end_frame_reason = "last clip: single image, no interpolation"
+                        elif is_last_clip:
+                            # LAST CLIP in storyboard mode without explicit end frame
+                            # NO end frame - clip ends naturally
+                            use_end_frame = False
+                            end_frame_reason = "last clip (storyboard mode), no end frame"
                         elif clip_mode == "blend":
                             # BLEND mode: Use next different image in cycle
                             # NOT same image - that causes same-frame generation issues
@@ -1022,11 +1027,9 @@ class JobWorker:
                                 actual_end_idx = start_idx
                                 end_frame_reason = "blend mode: same image for interpolation"
                         else:
-                            # FRESH or CONTINUE mode: No end frame
+                            # FRESH or CONTINUE mode (non-last clip): No end frame
                             use_end_frame = False
-                            if is_last_clip:
-                                end_frame_reason = "last clip, no end frame (ends naturally)"
-                            elif clip_mode == "fresh":
+                            if clip_mode == "fresh":
                                 end_frame_reason = "fresh mode, no end frame"
                             else:
                                 end_frame_reason = "continue mode, no end frame"

@@ -559,7 +559,7 @@ class APIKeysConfig:
         This is the ONLY reliable way to check if a key has Veo quota available.
         
         - Keys that can submit: marked as valid
-        - Keys that get 429: marked as rate-limited (blocked 120s)
+        - Keys that get 429: marked as rate-limited (blocked 300s)
         - Keys that fail with other errors: marked as invalid
         
         Returns the number of valid keys (including rate-limited ones).
@@ -668,9 +668,10 @@ class APIKeysConfig:
                 valid_count += 1
                 if is_rate_limited:
                     rate_limited_count += 1
-                    # Mark as rate-limited in KeyPoolManager for 120 seconds
-                    key_pool.mark_key_rate_limited(key_index, duration_seconds=120)
-                    log(f"[APIKeys] ⚠ Key {key_index + 1} (...{key_suffix}): {message} - blocked 120s")
+                    # Mark as rate-limited in KeyPoolManager for 300 seconds (5 minutes)
+                    # Google's rate limits typically last 1-5 minutes
+                    key_pool.mark_key_rate_limited(key_index, duration_seconds=300)
+                    log(f"[APIKeys] ⚠ Key {key_index + 1} (...{key_suffix}): {message} - blocked 300s")
                 else:
                     working_count += 1
                     log(f"[APIKeys] ✓ Key {key_index + 1} (...{key_suffix}): {message}")
@@ -768,7 +769,7 @@ class KeyPoolManager:
         
         # Configuration
         self._min_key_cooldown_seconds = 8  # Don't reuse a key within 8 seconds
-        self._rate_limit_duration_seconds = 120  # Short-term rate limit block (2 minutes)
+        self._rate_limit_duration_seconds = 300  # Short-term rate limit block (5 minutes)
         
         self._initialized = True
         print("[KeyPoolManager] Initialized", flush=True)
@@ -783,6 +784,8 @@ class KeyPoolManager:
         Reserve N keys for a specific job.
         If job already has reserved keys, returns those instead of reserving more.
         Returns list of key indices that were reserved.
+        
+        Prioritizes keys that are NOT rate-limited (working keys first).
         """
         with self._lock:
             # Check if this job already has reserved keys
@@ -792,24 +795,38 @@ class KeyPoolManager:
                 return existing
             
             total_keys = len(api_keys_config.gemini_api_keys)
-            available_indices = []
+            now = datetime.now()
             
-            # Find keys that are: not reserved, not permanently invalid
-            # NOTE: We don't check old 1-hour blocking - only permanent invalid keys
+            # Separate keys into working and rate-limited
+            working_keys = []
+            rate_limited_keys = []
+            
             for idx in range(total_keys):
                 if idx in api_keys_config._invalid_keys:
                     continue
                 if idx in self._key_reserved_by:
                     continue
-                available_indices.append(idx)
+                
+                # Check if rate-limited
+                if idx in self._key_rate_limited_until and self._key_rate_limited_until[idx] > now:
+                    rate_limited_keys.append(idx)
+                else:
+                    working_keys.append(idx)
+            
+            # Prioritize working keys, then fall back to rate-limited if needed
+            available_indices = working_keys + rate_limited_keys
             
             # Reserve up to num_keys
             reserved = available_indices[:num_keys]
             for idx in reserved:
                 self._key_reserved_by[idx] = job_id
             
+            # Log what we reserved
+            working_reserved = [i for i in reserved if i in working_keys]
+            rate_limited_reserved = [i for i in reserved if i in rate_limited_keys]
+            
             key_suffixes = [api_keys_config.gemini_api_keys[i][-8:] for i in reserved]
-            print(f"[KeyPoolManager] Job {job_id[:8]}: Reserved {len(reserved)} keys: {key_suffixes}", flush=True)
+            print(f"[KeyPoolManager] Job {job_id[:8]}: Reserved {len(reserved)} keys ({len(working_reserved)} working, {len(rate_limited_reserved)} rate-limited): {key_suffixes}", flush=True)
             
             return reserved
     

@@ -1399,11 +1399,11 @@ class VeoGenerator:
         The old APIKeysConfig system is NOT used - all key management goes through KeyPoolManager.
         """
         if self._current_key_index is not None and block_current:
-            # Mark this key as rate-limited for 120 seconds
-            # 60s is often not enough - quota resets can take longer
-            self.key_pool.mark_key_rate_limited(self._current_key_index, duration_seconds=120)
+            # Mark this key as rate-limited for 300 seconds (5 minutes)
+            # Google's rate limits typically last 1-5 minutes
+            self.key_pool.mark_key_rate_limited(self._current_key_index, duration_seconds=300)
             key_suffix = self.api_keys.gemini_api_keys[self._current_key_index][-8:]
-            vlog(f"[VeoGenerator] 🚫 Key {self._current_key_index + 1} (...{key_suffix}) rate-limited for 120s")
+            vlog(f"[VeoGenerator] 🚫 Key {self._current_key_index + 1} (...{key_suffix}) rate-limited for 300s")
         
         # Clear cached client so next _get_client() gets a fresh key
         self.client = None
@@ -1555,7 +1555,7 @@ class VeoGenerator:
                     user_message="API keys exhausted. Job will pause - resume later when quota resets.",
                     details={"rate_limit_retries": rate_limit_retries, "should_pause": True},
                     recoverable=True,
-                    suggestion="Wait 2-3 minutes for quota to reset, then resume the job"
+                    suggestion="Wait 5 minutes for quota to reset, then resume the job"
                 )
                 return result
             
@@ -1749,7 +1749,7 @@ class VeoGenerator:
                                 user_message="All API keys are temporarily blocked",
                                 details={"rate_limited": rate_limited, "total": total, "should_pause": True},
                                 recoverable=True,
-                                suggestion="Wait for keys to recover (~2 minutes)"
+                                suggestion="Wait for keys to recover (~5 minutes)"
                             )
                             self._emit_error(error)
                             # Don't count this as a real attempt - it's just rate limiting
