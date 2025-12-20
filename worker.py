@@ -292,14 +292,14 @@ class JobWorker:
         """Run a single clip redo"""
         generator = None
         
-        # Clip is already in _processing_redo_clips (added by _check_redo_queue)
-        # Just verify it's still there (defensive check)
-        with self._redo_lock:
-            if clip_id not in self._processing_redo_clips:
-                print(f"[Worker] Clip {clip_id} not in processing set - may have been cancelled", flush=True)
-                return
-        
         try:
+            # Clip is already in _processing_redo_clips (added by _check_redo_queue)
+            # Just verify it's still there (defensive check)
+            with self._redo_lock:
+                if clip_id not in self._processing_redo_clips:
+                    print(f"[Worker] Clip {clip_id} not in processing set - may have been cancelled", flush=True)
+                    return  # Now inside try block, so finally will run
+            
             with get_db() as db:
                 clip = db.query(Clip).filter(Clip.id == clip_id).first()
                 job = db.query(Job).filter(Job.id == job_id).first()
@@ -2930,6 +2930,9 @@ class JobWorker:
         processing_clips = set()
         processing_lock = threading.Lock()
         
+        # Track which redo clips we've already logged about (to prevent spam)
+        logged_redo_clips = set()
+        
         def process_clip_async(clip_index: int, is_redo: bool = False):
             """Process a single clip (redo or newly-pending) asynchronously"""
             try:
@@ -3108,9 +3111,15 @@ class JobWorker:
                             approval_executor.submit(process_clip_async, clip_index, False)
                 
                 # Note: Redos are handled by the independent _check_redo_queue() processor
-                # We just log that they exist here
+                # We just log NEW redo requests here (avoid spam)
                 if redo_indices:
-                    print(f"[Worker] Redo requests detected: clips {[i+1 for i in redo_indices]} (handled by independent processor)", flush=True)
+                    new_redos = [i for i in redo_indices if i not in logged_redo_clips]
+                    if new_redos:
+                        print(f"[Worker] Redo requests detected: clips {[i+1 for i in new_redos]} (handled by independent processor)", flush=True)
+                        logged_redo_clips.update(new_redos)
+                    
+                    # Clear logged clips that are no longer in redo queue (redo completed or cancelled)
+                    logged_redo_clips.intersection_update(redo_indices)
             
             # Sleep before next check (1 second polling)
             time.sleep(1)
@@ -3122,8 +3131,14 @@ class JobWorker:
                     clips = db.query(Clip).filter(Clip.job_id == job_id).all()
                     approved = sum(1 for c in clips if c.approval_status == "approved")
                     pending = sum(1 for c in clips if c.approval_status == "pending_review")
+                    redo_queued = [c for c in clips if c.status == ClipStatus.REDO_QUEUED.value]
                     total = len(clips)
                     print(f"[Worker] Approval status: {approved}/{total} approved, {pending} pending review", flush=True)
+                    
+                    # Warn about stuck redos
+                    if redo_queued:
+                        print(f"[Worker] ⚠️ {len(redo_queued)} clips stuck in REDO_QUEUED: {[c.clip_index + 1 for c in redo_queued]}", flush=True)
+                        print(f"[Worker] _processing_redo_clips has {len(self._processing_redo_clips)} items", flush=True)
         
         finally:
             # Cleanup executor
