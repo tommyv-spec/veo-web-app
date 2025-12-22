@@ -499,7 +499,7 @@ class JobWorker:
                 original_scene_image = start_frame
                 
                 # CONTINUE MODE: For clips that require previous clip's video frame
-                # Determine clip_mode from job config (scenes data)
+                # Determine clip_mode from job config (check line first, then scene)
                 clip_mode = "blend"
                 requires_previous = False
                 
@@ -514,21 +514,28 @@ class JobWorker:
                     else:
                         dialogue_lines = dialogue_raw
                     
-                    # Determine which scene this clip belongs to
-                    if scenes_data and clip.clip_index < len(dialogue_lines):
+                    if clip.clip_index < len(dialogue_lines):
                         line_data = dialogue_lines[clip.clip_index]
                         scene_idx = line_data.get("scene_index", 0)
                         
-                        # Find the scene and get its mode
-                        for scene in scenes_data:
-                            if scene.get("scene_index") == scene_idx:
-                                clip_mode = scene.get("mode", "blend")
-                                break
+                        # Check line first for clip_mode
+                        clip_mode = line_data.get("clip_mode")
+                        
+                        # If not on line, look up from scenes_data
+                        if not clip_mode and scenes_data:
+                            for scene in scenes_data:
+                                if scene.get("sceneIndex") == scene_idx or scene.get("scene_index") == scene_idx:
+                                    clip_mode = scene.get("clipMode") or scene.get("mode", "blend")
+                                    break
+                        
+                        # Default to blend if still not found
+                        if not clip_mode:
+                            clip_mode = "blend"
                         
                         # Check if this clip requires previous (same scene, continue mode, not first clip)
                         if clip_mode == "continue" and clip.clip_index > 0:
-                            prev_line = dialogue_lines[clip.clip_index - 1] if clip.clip_index > 0 else None
-                            if prev_line and prev_line.get("scene_index") == scene_idx:
+                            prev_line = dialogue_lines[clip.clip_index - 1]
+                            if prev_line.get("scene_index", 0) == scene_idx:
                                 requires_previous = True
                         
                         print(f"[Redo] Clip {clip.clip_index + 1}: mode={clip_mode}, requires_previous={requires_previous}", flush=True)
@@ -1075,13 +1082,28 @@ class JobWorker:
         clip_info = []  # List of dicts with all clip metadata
         
         for i, line_data in enumerate(dialogue_data):
+            # Determine clip_mode - check line first, then scene
+            clip_mode = line_data.get("clip_mode")
+            scene_idx = line_data.get("scene_index", 0)
+            
+            # If not on line, look up from scenes_data
+            if not clip_mode and scenes_data:
+                for scene in scenes_data:
+                    if scene.get("sceneIndex") == scene_idx or scene.get("scene_index") == scene_idx:
+                        clip_mode = scene.get("clipMode") or scene.get("mode", "blend")
+                        break
+            
+            # Default to blend if still not found
+            if not clip_mode:
+                clip_mode = "blend"
+            
             info = {
                 "index": i,
                 "text": line_data["text"],
                 "dialogue_id": line_data["id"],
                 "image_idx": line_data.get("start_image_idx", i % num_images) if not single_image_mode else 0,
-                "scene_index": line_data.get("scene_index", 0),
-                "clip_mode": line_data.get("clip_mode", "blend"),  # 'blend' | 'continue' | 'fresh'
+                "scene_index": scene_idx,
+                "clip_mode": clip_mode,
                 "scene_transition": line_data.get("scene_transition"),  # 'blend' | 'cut' | None
                 "requires_previous": False,  # Will be set below
                 "start_frame": None,  # Will be set or calculated
@@ -1976,11 +1998,12 @@ class JobWorker:
                             clip.output_filename = new_filename
                             clip.prompt_text = result.get("prompt_text")
                             
-                            # Track video path for CONTINUE mode chaining
+                            # Track video path for reference (NOT in approved_clip_videos yet - user must approve first)
                             if result.get("output_path"):
                                 video_path = str(result["output_path"])
-                                approved_clip_videos[clip_index] = video_path
                                 completed_clip_videos[clip_index] = video_path
+                                # NOTE: Don't add to approved_clip_videos here!
+                                # That happens when user approves (in waiting_clips check)
                         elif result.get("skipped") and result.get("skip_reason") == "celebrity_filter":
                             # Celebrity filter triggered - mark as skipped
                             clip.status = ClipStatus.SKIPPED.value
@@ -2230,10 +2253,10 @@ class JobWorker:
                         current_start_index = inner_result.get("end_index", current_start_index)
                         print(f"[Worker] Clip {clip_index}: Chaining end frame '{end_frame_used.name if hasattr(end_frame_used, 'name') else end_frame_used}' to next clip", flush=True)
                         
-                        # Also track in approved videos for continue mode compatibility
+                        # Track completion (NOT approved yet - user must approve first)
                         video_path = str(inner_result.get("output_path")) if inner_result.get("output_path") else None
-                        approved_clip_videos[clip_index] = video_path
                         completed_clip_videos[clip_index] = video_path
+                        # NOTE: Don't add to approved_clip_videos - that happens on user approval
                     else:
                         # No end frame - try to find next clean image for continuity
                         print(f"[Worker] Clip {clip_index}: No end frame returned, finding next clean image", flush=True)
@@ -3312,9 +3335,9 @@ class JobWorker:
                             if result.get("output_path"):
                                 video_path = str(result["output_path"])
                                 completed_clip_videos[clip_index] = video_path
-                                # Also track in approved_clip_videos for CONTINUE mode chaining
-                                # Even though this clip isn't approved yet, we need the path for subsequent clips
-                                approved_clip_videos[clip_index] = video_path
+                                # NOTE: Don't add to approved_clip_videos here!
+                                # CONTINUE mode clips must wait for user approval first.
+                                # approved_clip_videos is populated when approval is detected in waiting_clips check.
                         else:
                             # Check if this is a "no keys" situation - re-queue as redo
                             if result.get("no_keys") or result.get("should_pause"):
