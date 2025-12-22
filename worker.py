@@ -499,9 +499,41 @@ class JobWorker:
                 original_scene_image = start_frame
                 
                 # CONTINUE MODE: For clips that require previous clip's video frame
-                # Extract the last frame from previous clip's approved video
-                clip_mode = getattr(clip, 'clip_mode', None) or 'blend'
-                requires_previous = getattr(clip, 'requires_previous', False)
+                # Determine clip_mode from job config (scenes data)
+                clip_mode = "blend"
+                requires_previous = False
+                
+                try:
+                    dialogue_raw = json.loads(job.dialogue_json)
+                    scenes_data = None
+                    dialogue_lines = []
+                    
+                    if isinstance(dialogue_raw, dict):
+                        dialogue_lines = dialogue_raw.get("lines", [])
+                        scenes_data = dialogue_raw.get("scenes", None)
+                    else:
+                        dialogue_lines = dialogue_raw
+                    
+                    # Determine which scene this clip belongs to
+                    if scenes_data and clip.clip_index < len(dialogue_lines):
+                        line_data = dialogue_lines[clip.clip_index]
+                        scene_idx = line_data.get("scene_index", 0)
+                        
+                        # Find the scene and get its mode
+                        for scene in scenes_data:
+                            if scene.get("scene_index") == scene_idx:
+                                clip_mode = scene.get("mode", "blend")
+                                break
+                        
+                        # Check if this clip requires previous (same scene, continue mode, not first clip)
+                        if clip_mode == "continue" and clip.clip_index > 0:
+                            prev_line = dialogue_lines[clip.clip_index - 1] if clip.clip_index > 0 else None
+                            if prev_line and prev_line.get("scene_index") == scene_idx:
+                                requires_previous = True
+                        
+                        print(f"[Redo] Clip {clip.clip_index + 1}: mode={clip_mode}, requires_previous={requires_previous}", flush=True)
+                except Exception as e:
+                    print(f"[Redo] Could not parse clip_mode from config: {e}", flush=True)
                 
                 if clip_mode == "continue" and requires_previous and clip.clip_index > 0:
                     print(f"[Redo] CONTINUE mode clip - checking for previous clip's video", flush=True)
@@ -1246,8 +1278,6 @@ class JobWorker:
                     status=initial_status,
                     start_frame=start_frame_name,
                     end_frame=end_frame_name,
-                    clip_mode=info.get("clip_mode", "blend"),
-                    requires_previous=info.get("requires_previous", False),
                 )
                 db.add(clip)
             
