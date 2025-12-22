@@ -141,10 +141,10 @@ def get_api_keys_with_fallback(api_keys_json: str = None) -> APIKeysConfig:
     if openai_key:
         api_keys_config.openai_api_key = openai_key
     
-    # Log current state
-    available = api_keys_config.get_available_key_count()
-    blocked = len(api_keys_config.blocked_keys)
-    print(f"[Worker] API Keys: {available} available, {blocked} blocked", flush=True)
+    # Log current state using KeyPoolManager
+    from config import key_pool
+    pool_status = key_pool.get_pool_status_summary(api_keys_config)
+    print(f"[Worker] API Keys: {pool_status['available']} available, {pool_status['rate_limited']} rate-limited, {pool_status['invalid']} invalid", flush=True)
     
     return api_keys_config
 
@@ -206,6 +206,9 @@ class JobWorker:
     
     def _process_jobs(self):
         """Main job processing loop"""
+        last_status_log = time.time()
+        last_resume_check = time.time()
+        
         while not self.shutdown_event.is_set():
             try:
                 # Check for pending jobs in database
@@ -213,6 +216,24 @@ class JobWorker:
                 
                 # Check for redo requests
                 self._check_redo_queue()
+                
+                # Periodically check if paused jobs can be resumed (rate limits may have expired)
+                # Check every 30 seconds
+                if time.time() - last_resume_check > 30:
+                    last_resume_check = time.time()
+                    self._resume_waiting_jobs()
+                
+                # Log key pool status every 60 seconds (helps debug parallel job issues)
+                if time.time() - last_status_log > 60:
+                    last_status_log = time.time()
+                    try:
+                        from config import key_pool, api_keys_config
+                        if key_pool and api_keys_config:
+                            status = key_pool.get_pool_status_summary(api_keys_config)
+                            running_count = len(self.running_jobs)
+                            print(f"[KeyPool] Status: {status['available']} available, {status['rate_limited']} rate-limited, {status['invalid']} invalid | {running_count} jobs running", flush=True)
+                    except Exception:
+                        pass
                 
                 time.sleep(app_config.worker_poll_interval)
             except Exception as e:
@@ -225,6 +246,17 @@ class JobWorker:
         Redos run independently of main jobs - they don't count against capacity.
         This is the PRIMARY redo processor - it starts redos immediately.
         """
+        # First check if any keys are available - no point starting redos if all keys rate-limited
+        try:
+            from config import key_pool, api_keys_config
+            if key_pool and api_keys_config:
+                status = key_pool.get_pool_status_summary(api_keys_config)
+                if status["available"] == 0:
+                    # No keys available - skip redo processing this cycle
+                    return
+        except Exception:
+            pass  # If we can't check, proceed anyway
+        
         with get_db() as db:
             # Get clips queued for redo
             redo_clips = db.query(Clip).filter(
@@ -352,7 +384,7 @@ class JobWorker:
                 if not images:
                     raise ValueError(f"No images found in {images_dir}")
                 
-                # Create generator (redo mode - shares job's key reservation)
+                # Create generator for redo (uses dynamic key pool - all keys shared)
                 generator = VeoGenerator(
                     config=config,
                     api_keys=api_keys,
@@ -370,11 +402,14 @@ class JobWorker:
                 generator.on_progress = on_progress
                 generator.on_error = on_error
                 
-                # Find frames
+                # Find frames from clip record
                 start_frame = None
                 end_frame = None
                 start_index = 0
                 end_index = 0
+                
+                # Log what we're looking for
+                print(f"[Redo] Clip {clip.clip_index + 1}: Looking for start_frame='{clip.start_frame}', end_frame='{clip.end_frame}'", flush=True)
                 
                 for i, img in enumerate(images):
                     if img.name == clip.start_frame:
@@ -386,16 +421,20 @@ class JobWorker:
                 
                 if not start_frame:
                     # Use first image as fallback
+                    print(f"[Redo] WARNING: start_frame '{clip.start_frame}' not found in images, using fallback", flush=True)
                     start_frame = images[0]
                     start_index = 0
+                else:
+                    print(f"[Redo] Found start_frame: {start_frame.name} at index {start_index}", flush=True)
                 
                 # For interpolation: use the stored end_frame, or same image if not set
                 if config.use_interpolation:
                     if end_frame:
                         # Use the stored end frame
-                        pass
+                        print(f"[Redo] Found end_frame: {end_frame.name} at index {end_index}", flush=True)
                     elif clip.end_frame:
                         # end_frame name is stored but file not found - try to find it
+                        print(f"[Redo] WARNING: end_frame '{clip.end_frame}' not found, searching again...", flush=True)
                         for i, img in enumerate(images):
                             if img.name == clip.end_frame:
                                 end_frame = img
@@ -404,12 +443,15 @@ class JobWorker:
                     
                     if not end_frame:
                         # No specific end frame - use same image for interpolation
+                        print(f"[Redo] No end_frame found, using start_frame for interpolation", flush=True)
                         end_frame = start_frame
                         end_index = start_index
                 else:
                     # No interpolation - no end frame needed
                     end_frame = None
                     end_index = start_index
+                
+                print(f"[Redo] FINAL frames: start={start_frame.name if start_frame else None} (idx={start_index}), end={end_frame.name if end_frame else None} (idx={end_index})", flush=True)
                 
                 # Initialize voice profile for consistency
                 voice_id = generator.initialize_voice_profile(start_frame)
@@ -488,8 +530,9 @@ class JobWorker:
                         clip.error_code = None
                         clip.error_message = None
                         
-                        if result.get("end_frame_used"):
-                            clip.end_frame = result["end_frame_used"].name
+                        # NOTE: Do NOT update clip.start_frame or clip.end_frame during redo!
+                        # The original frames should be preserved. The redo just generates
+                        # a new version of the clip using the same frames.
                         
                         add_job_log(
                             db, job_id,
@@ -497,24 +540,45 @@ class JobWorker:
                             "INFO", "redo"
                         )
                     else:
-                        clip.status = ClipStatus.FAILED.value
-                        if result["error"]:
-                            clip.error_code = result["error"].code.value
-                            clip.error_message = result["error"].message
-                        
-                        add_job_log(
-                            db, job_id,
-                            f"Redo failed for clip {clip.clip_index + 1}: {result.get('error', 'Unknown error')}",
-                            "ERROR", "redo"
-                        )
+                        # Check if this is a "no keys" situation - should re-queue, not fail
+                        if result.get("no_keys") or result.get("should_pause"):
+                            # Re-queue the redo - it will be picked up when keys are available
+                            clip.status = ClipStatus.REDO_QUEUED.value
+                            # Don't increment attempt count - this wasn't a real attempt
+                            add_job_log(
+                                db, job_id,
+                                f"Redo for clip {clip.clip_index + 1} re-queued: API keys temporarily unavailable",
+                                "WARNING", "redo"
+                            )
+                        else:
+                            # Real failure - mark as failed
+                            clip.status = ClipStatus.FAILED.value
+                            if result.get("error"):
+                                clip.error_code = result["error"].code.value
+                                clip.error_message = result["error"].message
+                            
+                            add_job_log(
+                                db, job_id,
+                                f"Redo failed for clip {clip.clip_index + 1}: {result.get('error', 'Unknown error')}",
+                                "ERROR", "redo"
+                            )
                     
                     db.commit()
                 
+                # Determine event type based on result
+                if result["success"]:
+                    event_type = "redo_completed"
+                elif result.get("no_keys") or result.get("should_pause"):
+                    event_type = "redo_requeued"
+                else:
+                    event_type = "redo_failed"
+                
                 self._broadcast_event(job_id, {
-                    "type": "redo_completed",
+                    "type": event_type,
                     "clip_id": clip_id,
                     "clip_index": clip.clip_index,
                     "success": result["success"],
+                    "requeued": result.get("no_keys") or result.get("should_pause"),
                     "attempt": clip.generation_attempt,
                     "output": result["output_path"].name if result.get("output_path") else None,
                 })
@@ -526,15 +590,35 @@ class JobWorker:
             with get_db() as db:
                 clip = db.query(Clip).filter(Clip.id == clip_id).first()
                 if clip:
-                    clip.status = ClipStatus.FAILED.value
-                    clip.error_code = error.code.value
-                    clip.error_message = error.message
+                    # Check if this is a rate-limit error - re-queue instead of fail
+                    error_str = str(e).lower()
+                    is_rate_limit = (
+                        error.code.value == "RATE_LIMIT_429" or
+                        "rate" in error_str or
+                        "429" in error_str or
+                        "no api keys available" in error_str or
+                        "all keys are rate-limited" in error_str
+                    )
+                    
+                    if is_rate_limit:
+                        # Re-queue the redo
+                        clip.status = ClipStatus.REDO_QUEUED.value
+                        add_job_log(
+                            db, job_id,
+                            f"Redo for clip {clip.clip_index + 1} re-queued: {error.message}",
+                            "WARNING", "redo"
+                        )
+                    else:
+                        # Real failure
+                        clip.status = ClipStatus.FAILED.value
+                        clip.error_code = error.code.value
+                        clip.error_message = error.message
                     db.commit()
         finally:
             # Always remove clip from processing set
             with self._redo_lock:
                 self._processing_redo_clips.discard(clip_id)
-            # Cleanup generator (but don't release keys since job may still be running)
+            # Cleanup generator (dynamic keys, so just clears state)
             if generator:
                 generator.cleanup()
     
@@ -679,22 +763,21 @@ class JobWorker:
                     job_id=job_id,
                 )
                 
-                # Check if no keys were available (all reserved by other jobs)
-                if getattr(generator, '_no_keys_at_start', False) or len(generator.reserved_keys) == 0:
-                    # No keys available - pause job to wait
+                # Check if ALL keys are rate-limited or invalid (using dynamic pool)
+                from config import key_pool
+                pool_status = key_pool.get_pool_status_summary(api_keys)
+                if pool_status["available"] == 0:
+                    # No keys available - pause job to wait for rate limits to clear
                     job.status = JobStatus.PAUSED.value
                     db.commit()
                     
-                    # Get more info about why no keys were reserved
-                    from config import key_pool
-                    reserved_count = len(key_pool._key_reserved_by) if key_pool else 0
                     add_job_log(
                         db, job_id,
-                        f"⏸️ Job queued: All {reserved_count} API key(s) are reserved by other running jobs. Will auto-resume when a key becomes free.",
+                        f"⏸️ Job queued: All {pool_status['total']} API keys are rate-limited ({pool_status['rate_limited']}) or invalid ({pool_status['invalid']}). Will auto-resume when keys recover.",
                         "INFO", "system"
                     )
-                    print(f"[Worker] Job {job_id[:8]} paused - all {reserved_count} keys reserved by other jobs", flush=True)
-                    raise JobPausedException("No API keys available - waiting for other jobs to complete")
+                    print(f"[Worker] Job {job_id[:8]} paused - {pool_status['rate_limited']} keys rate-limited, {pool_status['invalid']} invalid", flush=True)
+                    raise JobPausedException("No API keys available - waiting for rate limits to clear")
                 
                 # Set up callbacks
                 def on_progress(clip_index, status, message, details):
@@ -767,18 +850,22 @@ class JobWorker:
     def _resume_waiting_jobs(self):
         """Check for paused jobs waiting for keys and resume them.
         
-        IMPORTANT: Only call this when a job COMPLETES (not when it pauses).
-        This prevents infinite loops when all keys are rate-limited.
+        With the NEW dynamic key pool, we just check if any keys are available
+        (not rate-limited). No need to check for "free" vs "reserved" keys since
+        all keys are shared dynamically.
         """
         try:
             from config import key_pool, api_keys_config
             
-            # First check if any keys are actually working (not rate-limited)
-            if api_keys_config:
-                working_count = api_keys_config.get_available_key_count()
-                if working_count == 0:
-                    print(f"[Worker] No working keys available - skipping auto-resume", flush=True)
+            # Check if any keys are actually available using KeyPoolManager
+            if api_keys_config and key_pool:
+                status = key_pool.get_pool_status_summary(api_keys_config)
+                if status["available"] == 0:
+                    print(f"[Worker] No keys available ({status['rate_limited']} rate-limited) - skipping auto-resume", flush=True)
                     return
+                available_count = status["available"]
+            else:
+                return
             
             with get_db() as db:
                 # Find paused jobs (waiting for keys)
@@ -789,30 +876,21 @@ class JobWorker:
                 if not paused_jobs:
                     return
                 
-                print(f"[Worker] Found {len(paused_jobs)} paused job(s), {working_count} working keys available", flush=True)
+                print(f"[Worker] Found {len(paused_jobs)} paused job(s), {available_count} keys available", flush=True)
                 
                 for job in paused_jobs:
-                    # Check if any keys are free (not reserved by other jobs)
-                    total_keys = len(api_keys_config.gemini_api_keys) if api_keys_config else 0
-                    reserved_count = len(key_pool._key_reserved_by) if key_pool else 0
-                    free_keys = total_keys - reserved_count
-                    
-                    if free_keys > 0:
-                        # Keys available, resume this job
-                        job.status = JobStatus.PENDING.value
-                        db.commit()
-                        self.job_queue.put(job.id)
-                        add_job_log(
-                            db, job.id,
-                            f"▶️ Job auto-resumed: {free_keys} API key(s) now available.",
-                            "INFO", "system"
-                        )
-                        print(f"[Worker] Auto-resumed paused job {job.id[:8]} ({free_keys} keys free)", flush=True)
-                        # Only resume one job at a time
-                        break
-                    else:
-                        print(f"[Worker] Job {job.id[:8]} still waiting - all keys reserved", flush=True)
-                        break
+                    # With dynamic keys, just resume if ANY keys are available
+                    job.status = JobStatus.PENDING.value
+                    db.commit()
+                    self.job_queue.put(job.id)
+                    add_job_log(
+                        db, job.id,
+                        f"▶️ Job auto-resumed: {available_count} API key(s) now available.",
+                        "INFO", "system"
+                    )
+                    print(f"[Worker] Auto-resumed paused job {job.id[:8]} ({available_count} keys available)", flush=True)
+                    # Only resume one job at a time to prevent overload
+                    break
                         
         except Exception as e:
             print(f"[Worker] Error checking waiting jobs: {e}", flush=True)
@@ -1193,24 +1271,29 @@ class JobWorker:
         print(f"[Worker] Initial queue: {len(pending_clips)} pending, {len(waiting_clips)} waiting for approval", flush=True)
         
         def check_keys_available():
-            """Check if any API keys are available"""
-            available = generator.api_keys.get_available_key_count()
-            return available > 0
+            """Check if any API keys are available using the KeyPoolManager"""
+            from config import key_pool
+            status = key_pool.get_pool_status_summary(generator.api_keys)
+            return status["available"] > 0
         
         def send_no_keys_alert(job_id: str, retry_count: int):
             """Alert admin that keys are exhausted"""
+            from config import key_pool
+            status = key_pool.get_pool_status_summary(generator.api_keys)
+            
             alert_msg = f"🚨 API KEYS EXHAUSTED - Job {job_id[:8]} paused (retry {retry_count}/{max_no_keys_retries})"
             print(f"\n{'='*60}", flush=True)
             print(alert_msg, flush=True)
+            print(f"[KeyPool] Status: {status['available']} available, {status['rate_limited']} rate-limited, {status['invalid']} invalid", flush=True)
             print(f"{'='*60}\n", flush=True)
             
             # Log to database
             with get_db() as db:
                 add_job_log(
                     db, job_id,
-                    f"⚠️ All API keys exhausted! Waiting {no_keys_wait_seconds}s before retry {retry_count}/{max_no_keys_retries}",
+                    f"⚠️ All API keys exhausted! {status['rate_limited']} rate-limited, waiting {no_keys_wait_seconds}s (attempt {retry_count}/{max_no_keys_retries})",
                     "WARNING", "system",
-                    details={"keys_status": generator.api_keys.get_status()}
+                    details={"pool_status": status}
                 )
             
             # Broadcast to UI
@@ -1219,11 +1302,11 @@ class JobWorker:
                 "retry_count": retry_count,
                 "max_retries": max_no_keys_retries,
                 "wait_seconds": no_keys_wait_seconds,
-                "message": f"All API keys exhausted. Waiting {no_keys_wait_seconds//60} minutes... (attempt {retry_count}/{max_no_keys_retries})"
+                "message": f"All API keys exhausted ({status['rate_limited']} rate-limited). Waiting {no_keys_wait_seconds//60} min... ({retry_count}/{max_no_keys_retries})"
             })
             
             # Send email alert
-            total_keys = len(generator.api_keys.gemini_keys) if hasattr(generator.api_keys, 'gemini_keys') else 0
+            total_keys = status['total']
             send_key_alert_email("no_keys", 0, total_keys, job_id)
         
         def check_redo_clips():
@@ -1563,11 +1646,22 @@ class JobWorker:
                     return Path(frame).name
                 return str(frame).split('/')[-1] if '/' in str(frame) else str(frame)
             
-            start_frame_name = get_frame_name(start_frame)
-            end_frame_name = get_frame_name(end_frame) if end_frame else None
+            # For generation, we use start_frame (which may be extracted frame for CONTINUE mode)
+            # But for DATABASE STORAGE, we ALWAYS store the ORIGINAL scene image names
+            # This ensures redo can find the correct images
+            original_start_name = get_frame_name(original_scene_image)  # Always the original uploaded image
+            original_end_name = get_frame_name(frames.get("end_frame")) if frames.get("end_frame") else None
+            
+            # For logging, show what we're actually using for generation
+            actual_start_name = get_frame_name(start_frame)
+            actual_end_name = get_frame_name(end_frame) if end_frame else None
             
             # Update clip status to generating
             print(f"[Worker] Clip {clip_index}: Updating status to GENERATING", flush=True)
+            print(f"[Worker] Clip {clip_index}: DB will store: start='{original_start_name}', end='{original_end_name}'", flush=True)
+            if actual_start_name != original_start_name:
+                print(f"[Worker] Clip {clip_index}: Generation will use extracted frame: '{actual_start_name}'", flush=True)
+            
             with get_db() as db:
                 clip = db.query(Clip).filter(
                     Clip.job_id == job_id,
@@ -1577,8 +1671,9 @@ class JobWorker:
                 if clip:
                     clip.status = ClipStatus.GENERATING.value
                     clip.started_at = datetime.utcnow()
-                    clip.start_frame = start_frame_name
-                    clip.end_frame = end_frame_name
+                    # CRITICAL: Store ORIGINAL image names, not extracted frame names!
+                    clip.start_frame = original_start_name
+                    clip.end_frame = original_end_name
                     db.commit()
                     print(f"[Worker] Clip {clip_index}: Status updated to GENERATING", flush=True)
                 else:
@@ -1586,15 +1681,17 @@ class JobWorker:
             
             # Log exact frame assignment for debugging
             print(f"[Worker] CLIP {clip_index} FRAME ASSIGNMENT:", flush=True)
-            print(f"  - start_frame: {start_frame_name} (mode={clip_mode})", flush=True)
-            print(f"  - end_frame: {end_frame_name if end_frame_name else 'NONE (no interpolation)'}", flush=True)
+            print(f"  - start_frame (for generation): {actual_start_name} (mode={clip_mode})", flush=True)
+            print(f"  - end_frame (for generation): {actual_end_name if actual_end_name else 'NONE (no interpolation)'}", flush=True)
+            print(f"  - original_start (stored in DB): {original_start_name}", flush=True)
+            print(f"  - original_end (stored in DB): {original_end_name}", flush=True)
             
             self._broadcast_event(job_id, {
                 "type": "clip_started",
                 "clip_index": clip_index,
                 "dialogue_id": dialogue_id,
-                "start_frame": start_frame_name,
-                "end_frame": end_frame_name,
+                "start_frame": original_start_name,  # UI shows original, not extracted
+                "end_frame": original_end_name,
             })
             
             # Check if start frame is blacklisted (only for Path objects, not extracted frames)
@@ -1747,11 +1844,20 @@ class JobWorker:
                                 "WARNING", "celebrity_filter"
                             )
                         else:
-                            clip.status = ClipStatus.FAILED.value
-                            error_obj = result.get("error")
-                            if error_obj:
-                                clip.error_code = error_obj.code.value if hasattr(error_obj, 'code') else "UNKNOWN"
-                                clip.error_message = str(error_obj.message if hasattr(error_obj, 'message') else error_obj)[:500]
+                            # Check if this is a "no keys" situation - re-queue as redo
+                            if result.get("no_keys") or result.get("should_pause"):
+                                clip.status = ClipStatus.REDO_QUEUED.value
+                                add_job_log(
+                                    db, job_id,
+                                    f"Clip {clip_index + 1} re-queued: API keys temporarily unavailable",
+                                    "WARNING", "system"
+                                )
+                            else:
+                                clip.status = ClipStatus.FAILED.value
+                                error_obj = result.get("error")
+                                if error_obj:
+                                    clip.error_code = error_obj.code.value if hasattr(error_obj, 'code') else "UNKNOWN"
+                                    clip.error_message = str(error_obj.message if hasattr(error_obj, 'message') else error_obj)[:500]
                         
                         db.commit()
                     
@@ -2140,10 +2246,19 @@ class JobWorker:
                             clip.output_filename = new_filename
                             clip.approval_status = "pending_review"
                         else:
-                            clip.status = ClipStatus.FAILED.value
-                            error_obj = result.get("error")
-                            if error_obj:
-                                clip.error_message = str(error_obj)[:500]
+                            # Check if this is a "no keys" situation - re-queue as redo
+                            if result.get("no_keys") or result.get("should_pause"):
+                                clip.status = ClipStatus.REDO_QUEUED.value
+                                add_job_log(
+                                    db, job_id,
+                                    f"Clip {clip_index + 1} re-queued: API keys temporarily unavailable",
+                                    "WARNING", "system"
+                                )
+                            else:
+                                clip.status = ClipStatus.FAILED.value
+                                error_obj = result.get("error")
+                                if error_obj:
+                                    clip.error_message = str(error_obj)[:500]
                         db.commit()
                 
                 self._broadcast_event(job_id, {
@@ -2397,9 +2512,11 @@ class JobWorker:
                 # Reset retry counter when keys are available
                 no_keys_retries = 0
                 
-                # Determine batch size based on available keys
-                available_keys = generator.api_keys.get_available_key_count()
-                total_keys = len(generator.api_keys.gemini_keys) if hasattr(generator.api_keys, 'gemini_keys') else 0
+                # Determine batch size based on available keys (using KeyPoolManager)
+                from config import key_pool
+                pool_status = key_pool.get_pool_status_summary(generator.api_keys)
+                available_keys = pool_status["available"]
+                total_keys = pool_status["total"]
                 
                 # Check for critical alerts only (no_keys) - low_keys is skipped
                 if available_keys == 0:
@@ -3015,11 +3132,21 @@ class JobWorker:
                             if result.get("output_path"):
                                 completed_clip_videos[clip_index] = str(result["output_path"])
                         else:
-                            clip.status = ClipStatus.FAILED.value
-                            error_obj = result.get("error")
-                            if error_obj:
-                                clip.error_message = str(error_obj)[:500]
-                            failed += 1
+                            # Check if this is a "no keys" situation - re-queue as redo
+                            if result.get("no_keys") or result.get("should_pause"):
+                                # Re-queue as redo to be picked up when keys are available
+                                clip.status = ClipStatus.REDO_QUEUED.value
+                                add_job_log(
+                                    db, job_id,
+                                    f"Clip {clip_index + 1} re-queued: API keys temporarily unavailable",
+                                    "WARNING", "system"
+                                )
+                            else:
+                                clip.status = ClipStatus.FAILED.value
+                                error_obj = result.get("error")
+                                if error_obj:
+                                    clip.error_message = str(error_obj)[:500]
+                                failed += 1
                         db.commit()
                 
                 self._broadcast_event(job_id, {

@@ -844,6 +844,132 @@ class KeyPoolManager:
             if released:
                 print(f"[KeyPoolManager] Job {job_id[:8]}: Released {len(released)} keys back to pool", flush=True)
     
+    def get_any_available_key(self, api_keys_config: 'APIKeysConfig') -> Optional[Tuple[int, str]]:
+        """
+        Get ANY available key from the pool - fully dynamic, no reservations.
+        
+        This is the NEW approach for parallel jobs:
+        - No static key assignments
+        - All jobs share all keys dynamically
+        - Rate-limited keys are skipped
+        - Cooldown keys are waited for (short wait)
+        
+        Returns (key_index, api_key) or None if ALL keys are rate-limited.
+        """
+        # First pass: try to get a ready key without waiting
+        with self._lock:
+            now = datetime.now()
+            total_keys = len(api_keys_config.gemini_api_keys)
+            
+            # Clean up expired rate limits
+            for idx in list(self._key_rate_limited_until.keys()):
+                if self._key_rate_limited_until[idx] <= now:
+                    del self._key_rate_limited_until[idx]
+            
+            # Categorize all keys
+            ready_keys = []
+            cooldown_keys = []
+            rate_limited_keys = []
+            
+            for idx in range(total_keys):
+                # Skip permanently invalid keys
+                if idx in api_keys_config._invalid_keys:
+                    continue
+                
+                # Check if rate-limited
+                if idx in self._key_rate_limited_until:
+                    remaining = (self._key_rate_limited_until[idx] - now).total_seconds()
+                    if remaining > 0:
+                        rate_limited_keys.append((idx, remaining))
+                        continue
+                
+                # Check cooldown (8s between uses of same key)
+                last_used = self._key_last_used.get(idx)
+                if last_used:
+                    elapsed = (now - last_used).total_seconds()
+                    if elapsed < self._min_key_cooldown_seconds:
+                        cooldown_keys.append((idx, elapsed))
+                        continue
+                
+                ready_keys.append(idx)
+            
+            # Priority 1: Use a ready key (no waiting needed)
+            if ready_keys:
+                key_idx = ready_keys[0]
+                self._key_last_used[key_idx] = now
+                key_suffix = api_keys_config.gemini_api_keys[key_idx][-8:]
+                print(f"[KeyPool] Using key {key_idx+1} (...{key_suffix}) - {len(ready_keys)} ready, {len(cooldown_keys)} cooldown, {len(rate_limited_keys)} rate-limited", flush=True)
+                return (key_idx, api_keys_config.gemini_api_keys[key_idx])
+            
+            # Priority 2: If we have cooldown keys, pick one to wait for
+            # RELEASE LOCK before sleeping to allow other threads to proceed
+            if cooldown_keys:
+                # Pick the key closest to being ready
+                cooldown_keys.sort(key=lambda x: x[1], reverse=True)  # Sort by elapsed time descending
+                key_idx, elapsed = cooldown_keys[0]
+                wait_time = self._min_key_cooldown_seconds - elapsed
+                key_to_wait = (key_idx, wait_time, api_keys_config.gemini_api_keys[key_idx])
+            else:
+                key_to_wait = None
+            
+            # Priority 3: Check rate-limited keys
+            if not key_to_wait and rate_limited_keys:
+                soonest_idx, soonest_time = min(rate_limited_keys, key=lambda x: x[1])
+                
+                # If soonest recovery is within 30 seconds, wait for it
+                if soonest_time <= 30:
+                    key_to_wait = (soonest_idx, soonest_time + 1, api_keys_config.gemini_api_keys[soonest_idx])
+                    is_rate_limited_wait = True
+                else:
+                    # Long wait - return None and let caller handle it (pause job)
+                    print(f"[KeyPool] All {total_keys} keys rate-limited, soonest recovery: key {soonest_idx+1} in {soonest_time:.0f}s - returning None", flush=True)
+                    return None
+            else:
+                is_rate_limited_wait = False
+            
+            if not key_to_wait and not ready_keys:
+                print(f"[KeyPool] No keys available (all invalid?)", flush=True)
+                return None
+        
+        # Wait OUTSIDE the lock so other threads aren't blocked
+        if key_to_wait:
+            key_idx, wait_time, api_key = key_to_wait
+            if wait_time > 0:
+                wait_type = "rate-limit recovery" if is_rate_limited_wait else "cooldown"
+                print(f"[KeyPool] Waiting {wait_time:.1f}s for key {key_idx+1} ({wait_type})", flush=True)
+                import time
+                time.sleep(wait_time)
+            
+            # Re-acquire lock to mark key as used
+            with self._lock:
+                # Check if key is still available (another thread might have taken it)
+                now = datetime.now()
+                if is_rate_limited_wait and key_idx in self._key_rate_limited_until:
+                    del self._key_rate_limited_until[key_idx]
+                self._key_last_used[key_idx] = now
+                key_suffix = api_key[-8:]
+                print(f"[KeyPool] Using key {key_idx+1} (...{key_suffix}) after wait", flush=True)
+                return (key_idx, api_key)
+        
+        return None
+    
+    def get_pool_status_summary(self, api_keys_config: 'APIKeysConfig') -> dict:
+        """Get a summary of pool status for logging/debugging."""
+        with self._lock:
+            now = datetime.now()
+            total = len(api_keys_config.gemini_api_keys)
+            invalid = len(api_keys_config._invalid_keys)
+            rate_limited = sum(1 for idx in self._key_rate_limited_until 
+                              if self._key_rate_limited_until.get(idx, now) > now)
+            available = total - invalid - rate_limited
+            
+            return {
+                "total": total,
+                "available": available,
+                "rate_limited": rate_limited,
+                "invalid": invalid,
+            }
+
     def get_best_key(self, job_id: str, reserved_keys: List[int], api_keys_config: 'APIKeysConfig') -> Optional[Tuple[int, str]]:
         """
         Get the best available key for a job.
@@ -917,24 +1043,32 @@ class KeyPoolManager:
                 print(f"[KeyPoolManager] Using key {key_idx+1} (...{key_suffix}) after cooldown", flush=True)
                 return (key_idx, api_keys_config.gemini_api_keys[key_idx])
             
-            # Priority 3: Wait for rate-limited keys to recover
+            # Priority 3: If all keys are rate-limited, DON'T BLOCK - return None
+            # Let the caller handle it (pause job, retry later, etc.)
+            # Blocking here would freeze the thread for minutes!
             if rate_limited_keys:
                 rate_limited_keys.sort(key=lambda x: x[1])  # Sort by remaining time
                 key_idx, remaining = rate_limited_keys[0]
                 if key_idx >= len(api_keys_config.gemini_api_keys):
                     print(f"[KeyPoolManager] ERROR: rate-limited key_idx {key_idx} >= len(keys) {len(api_keys_config.gemini_api_keys)}", flush=True)
                     return None
-                if remaining > 0:
-                    print(f"[KeyPoolManager] All {len(reserved_keys)} reserved keys rate-limited, waiting {remaining:.1f}s for key {key_idx+1} to recover", flush=True)
+                
+                # If remaining time is very short (< 5s), wait for it
+                if remaining > 0 and remaining <= 5:
+                    print(f"[KeyPoolManager] Waiting {remaining:.1f}s for key {key_idx+1} to recover (short wait)", flush=True)
                     import time
                     time.sleep(remaining + 1)
-                # Clear the rate limit and use this key
-                if key_idx in self._key_rate_limited_until:
-                    del self._key_rate_limited_until[key_idx]
-                self._key_last_used[key_idx] = datetime.now()
-                key_suffix = api_keys_config.gemini_api_keys[key_idx][-8:]
-                print(f"[KeyPoolManager] Using key {key_idx+1} (...{key_suffix}) after rate-limit recovery", flush=True)
-                return (key_idx, api_keys_config.gemini_api_keys[key_idx])
+                    # Clear the rate limit and use this key
+                    if key_idx in self._key_rate_limited_until:
+                        del self._key_rate_limited_until[key_idx]
+                    self._key_last_used[key_idx] = datetime.now()
+                    key_suffix = api_keys_config.gemini_api_keys[key_idx][-8:]
+                    print(f"[KeyPoolManager] Using key {key_idx+1} (...{key_suffix}) after short wait", flush=True)
+                    return (key_idx, api_keys_config.gemini_api_keys[key_idx])
+                else:
+                    # Long wait - don't block, return None
+                    print(f"[KeyPoolManager] All {len(reserved_keys)} keys rate-limited, soonest recovery in {remaining:.0f}s - returning None (caller should pause)", flush=True)
+                    return None
             
             # Priority 4: Try to borrow a free key from the pool
             borrowed_key = self._try_borrow_free_key(job_id, api_keys_config)

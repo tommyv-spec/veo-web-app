@@ -956,9 +956,15 @@ def get_mime_type(path: Path) -> str:
 
 
 def is_rate_limit_error(exception: Exception) -> bool:
-    """Check if exception is a rate limit error"""
-    s = str(exception)
-    return "429" in s or "RESOURCE_EXHAUSTED" in s
+    """Check if exception is a rate limit error or no-keys-available error"""
+    s = str(exception).lower()
+    # Standard rate limit errors
+    if "429" in s or "resource_exhausted" in s:
+        return True
+    # Our custom "no keys available" error from _get_client()
+    if "no api keys available" in s or "all keys are rate-limited" in s:
+        return True
+    return False
 
 
 def is_celebrity_error(operation) -> bool:
@@ -1202,37 +1208,22 @@ class VeoGenerator:
         self.openai_key = openai_key
         self.job_id = job_id or f"job_{id(self)}"
         
-        # Key pool integration
+        # Key pool integration - NEW DYNAMIC APPROACH
+        # No static key reservations - all keys are shared dynamically
         from config import key_pool
         self.key_pool = key_pool
-        self.reserved_keys: List[int] = []
+        self.reserved_keys: List[int] = []  # Legacy - kept for compatibility
         self._current_key_index: Optional[int] = None
-        self._is_key_owner = False  # Only owner releases keys on cleanup
+        self._is_key_owner = True  # Always owner in dynamic mode
         
-        # Check if keys already reserved for this job
-        existing_keys = key_pool.get_reserved_keys_for_job(self.job_id)
-        if existing_keys:
-            # Reuse existing keys (we're a redo or secondary generator)
-            self.reserved_keys = existing_keys
-            self._is_key_owner = False
-            self._no_keys_at_start = False
+        # Check pool status at start (for logging/debugging)
+        pool_status = key_pool.get_pool_status_summary(api_keys)
+        if pool_status["available"] == 0:
+            self._no_keys_at_start = True
+            vlog(f"[VeoGenerator] WARNING: No keys available at start ({pool_status['rate_limited']} rate-limited, {pool_status['invalid']} invalid)")
         else:
-            # Reserve ALL available keys (up to 12) - not just parallel_clips
-            # This gives us backup keys when some hit rate limits
-            total_available = len([i for i in range(len(api_keys.gemini_api_keys)) 
-                                   if i not in api_keys._invalid_keys])
-            num_keys_needed = min(total_available, 12)  # Cap at 12 keys
-            if num_keys_needed > 0:
-                self.reserved_keys = key_pool.reserve_keys_for_job(
-                    self.job_id, 
-                    num_keys_needed, 
-                    api_keys
-                )
-                self._is_key_owner = True
-                self._no_keys_at_start = len(self.reserved_keys) == 0
-            else:
-                self._no_keys_at_start = True
-                self._is_key_owner = True
+            self._no_keys_at_start = False
+            vlog(f"[VeoGenerator] Key pool: {pool_status['available']} available, {pool_status['rate_limited']} rate-limited, {pool_status['total']} total")
         
         self.blacklist: Set[Path] = set()  # Shared blacklist (used directly in sequential, as hint in parallel)
         self.celebrity_hints: Set[Path] = set()  # Global hint for celebrity-filtered images (parallel mode)
@@ -1254,11 +1245,12 @@ class VeoGenerator:
         self.paused = False
     
     def cleanup(self):
-        """Release reserved keys back to the pool. Call when job is done."""
-        if self.reserved_keys and self._is_key_owner:
-            self.key_pool.release_keys_for_job(self.job_id)
-            self.reserved_keys = []
-            self._is_key_owner = False
+        """Cleanup when job is done. With dynamic keys, just clear state."""
+        # In dynamic mode, we don't need to release keys since they're not reserved
+        # Just clear our state
+        self.reserved_keys = []
+        self._current_key_index = None
+        vlog(f"[VeoGenerator] Cleanup complete for job {self.job_id[:8] if self.job_id else 'unknown'}")
     
     def get_frame_analysis_for_image(self, image_path: Path) -> dict:
         """
@@ -1373,25 +1365,24 @@ class VeoGenerator:
         return self.voice_profile_id
     
     def _get_client(self) -> 'genai.Client':
-        """Get or create Gemini client using the key pool for smart rotation"""
+        """Get or create Gemini client using DYNAMIC key selection.
+        
+        NEW: Uses fully dynamic key pool - any available key can be used by any job.
+        This ensures keys are efficiently shared between parallel jobs.
+        """
         if not GENAI_AVAILABLE:
             raise RuntimeError("google-genai package not installed.")
         
-        # Use key pool for smart key selection
-        if self.reserved_keys:
-            result = self.key_pool.get_best_key(self.job_id, self.reserved_keys, self.api_keys)
-            if result:
-                key_index, api_key = result
-                self._current_key_index = key_index
-                return genai.Client(api_key=api_key)
-            
-            raise ValueError("No API keys available - all keys are rate-limited or invalid")
+        # DYNAMIC approach: Get any available key from the pool
+        # This allows all jobs to share keys efficiently
+        result = self.key_pool.get_any_available_key(self.api_keys)
+        if result:
+            key_index, api_key = result
+            self._current_key_index = key_index
+            return genai.Client(api_key=api_key)
         
-        # Fallback to old method if no reserved keys
-        api_key = self.api_keys.get_current_gemini_key()
-        if not api_key:
-            raise ValueError("No Gemini API key available")
-        return genai.Client(api_key=api_key)
+        # No keys available - all are rate-limited or invalid
+        raise ValueError("No API keys available - all keys are rate-limited or invalid")
     
     def _rotate_key(self, block_current: bool = True):
         """Mark current key as rate-limited in KeyPoolManager.
@@ -1413,11 +1404,11 @@ class VeoGenerator:
         self.client = None
     
     def _get_pool_status(self) -> tuple:
-        """Get current status from KeyPoolManager for this job's reserved keys."""
-        status = self.key_pool.get_status()
-        total = len(self.reserved_keys)
-        rate_limited = sum(1 for idx in self.reserved_keys if idx in status.get("rate_limits", {}))
-        available = total - rate_limited
+        """Get current status from KeyPoolManager - DYNAMIC (all keys, not just reserved)."""
+        status = self.key_pool.get_pool_status_summary(self.api_keys)
+        total = status["total"]
+        rate_limited = status["rate_limited"]
+        available = status["available"]
         return available, rate_limited, total
     
     def _emit_progress(self, clip_index: int, status: str, message: str, details: Dict = None):
@@ -1513,25 +1504,39 @@ class VeoGenerator:
         
         # Check if any reserved keys are available BEFORE starting attempts
         available, rate_limited, total = self._get_pool_status()
-        if available == 0 and total > 0:
-            vlog(f"[VeoGenerator] ⚠️ All {total} reserved keys are rate-limited. Will wait for recovery...")
-            # Don't fail immediately - get_best_key will wait for recovery
+        if available == 0 and rate_limited > 0:
+            vlog(f"[VeoGenerator] ⚠️ All {total} keys are rate-limited. Will wait for recovery...")
+            # Don't fail immediately - get_any_available_key will handle this
         elif total == 0:
-            vlog(f"[VeoGenerator] ❌ No API keys reserved for this job!")
+            vlog(f"[VeoGenerator] ❌ No API keys configured!")
             result["error"] = VeoError(
                 code=ErrorCode.RATE_LIMIT,
-                message="No API keys available",
-                user_message="No API keys are available for this job.",
-                details={"reserved_keys": total},
+                message="No API keys configured",
+                user_message="No API keys are configured.",
+                details={"total_keys": total},
                 recoverable=False,
                 suggestion="Check API key configuration"
             )
             result["no_keys"] = True
             self._emit_progress(
                 clip_index, "error",
-                f"No API keys available.",
-                {"reserved_keys": total}
+                f"No API keys configured.",
+                {"total_keys": total}
             )
+            return result
+        elif available == 0:
+            # All keys are invalid (not rate-limited, but not available either)
+            vlog(f"[VeoGenerator] ❌ All {total} keys are invalid!")
+            result["error"] = VeoError(
+                code=ErrorCode.API_KEY_INVALID,
+                message="All API keys are invalid",
+                user_message="All API keys have been marked as invalid.",
+                details={"total_keys": total, "should_pause": True},
+                recoverable=True,
+                suggestion="Check your API keys in the settings"
+            )
+            result["no_keys"] = True
+            result["should_pause"] = True
             return result
         
         failed_end_frames = []
@@ -1747,7 +1752,10 @@ class VeoGenerator:
                         available, rate_limited, total = self._get_pool_status()
                         
                         if available == 0:
-                            error = VeoError(
+                            # ALL keys are rate-limited - don't retry, immediately signal pause
+                            # Retrying with 30s sleeps when NO keys exist is wasteful
+                            vlog(f"[VeoGenerator] All {total} reserved keys rate-limited - signaling immediate pause")
+                            result["error"] = VeoError(
                                 code=ErrorCode.RATE_LIMIT, 
                                 message="All reserved keys rate-limited", 
                                 user_message="All API keys are temporarily blocked",
@@ -1755,14 +1763,9 @@ class VeoGenerator:
                                 recoverable=True,
                                 suggestion="Wait for keys to recover (~5 minutes)"
                             )
-                            self._emit_error(error)
-                            # Don't count this as a real attempt - it's just rate limiting
-                            is_rate_limit_retry = True
-                            rate_limit_retries += 1
-                            vlog(f"[VeoGenerator] All {total} reserved keys rate-limited, waiting 30s (rate limit retry {rate_limit_retries}/{max_rate_limit_retries})")
-                            # Wait for keys to potentially unblock (reduced from 120s)
-                            time.sleep(30)
-                            break
+                            result["should_pause"] = True  # Also at top level for easy checking
+                            result["no_keys"] = True
+                            return result  # Immediate return, no retry loops
                         
                         self._emit_progress(
                             clip_index, "rate_limited",
@@ -1779,11 +1782,28 @@ class VeoGenerator:
                     # Check if we exhausted all submit retries due to rate limits
                     # Don't count this as a real attempt failure
                     if is_rate_limit_error(e) and submit_attempt >= self.config.max_retries_submit - 1:
+                        # Check if all keys are now rate-limited
+                        available, rate_limited, total = self._get_pool_status()
+                        if available == 0:
+                            # No keys left - immediately return should_pause
+                            vlog(f"[VeoGenerator] All {total} keys exhausted after {submit_attempt} submit retries - signaling immediate pause")
+                            result["error"] = VeoError(
+                                code=ErrorCode.RATE_LIMIT, 
+                                message="All keys exhausted during submit retries", 
+                                user_message="All API keys are temporarily blocked",
+                                details={"rate_limited": rate_limited, "total": total, "should_pause": True},
+                                recoverable=True,
+                                suggestion="Wait for keys to recover (~5 minutes)"
+                            )
+                            result["should_pause"] = True  # Also at top level for easy checking
+                            result["no_keys"] = True
+                            return result
+                        
                         is_rate_limit_retry = True
                         rate_limit_retries += 1
                         vlog(f"[VeoGenerator] Rate limit exhausted all {self.config.max_retries_submit} submit retries - will retry (rate limit retry {rate_limit_retries}/{max_rate_limit_retries})")
-                        # Wait longer before the next attempt cycle
-                        time.sleep(30)
+                        # Reduced wait - just 5 seconds since we have keys cycling
+                        time.sleep(5)
                         break
                     
                     failed_end_frames.append(actual_end_frame)
