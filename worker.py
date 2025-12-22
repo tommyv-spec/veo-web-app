@@ -411,50 +411,143 @@ class JobWorker:
                 # Log what we're looking for
                 print(f"[Redo] Clip {clip.clip_index + 1}: Looking for start_frame='{clip.start_frame}', end_frame='{clip.end_frame}'", flush=True)
                 
+                # SAFEGUARD: Detect if stored frame name is an extracted frame (not original image)
+                # Extracted frames have patterns like: "enhanced_", "_lastframe", "_extracted"
+                def is_extracted_frame_name(name):
+                    if not name:
+                        return False
+                    name_lower = name.lower()
+                    return any(pattern in name_lower for pattern in ["enhanced_", "_lastframe", "_extracted", "lastframe_"])
+                
+                stored_start = clip.start_frame
+                stored_end = clip.end_frame
+                
+                # If stored frame is an extracted frame, try to find the original scene image
+                if is_extracted_frame_name(stored_start):
+                    print(f"[Redo] WARNING: start_frame '{stored_start}' appears to be an extracted frame, will use scene image", flush=True)
+                    # Try to extract original image name from the pattern (e.g., "1_image_03_20251222..." -> look for image_XX)
+                    # Fall back to finding by clip's scene index
+                    stored_start = None  # Will trigger fallback below
+                
                 for i, img in enumerate(images):
-                    if img.name == clip.start_frame:
+                    if stored_start and img.name == stored_start:
                         start_frame = img
                         start_index = i
-                    if clip.end_frame and img.name == clip.end_frame:
+                    if stored_end and img.name == stored_end:
                         end_frame = img
                         end_index = i
                 
                 if not start_frame:
-                    # Use first image as fallback
-                    print(f"[Redo] WARNING: start_frame '{clip.start_frame}' not found in images, using fallback", flush=True)
-                    start_frame = images[0]
-                    start_index = 0
+                    # Fallback: Use original scene image based on clip index from dialogue
+                    # Try to determine correct image from clip_index and scene structure
+                    print(f"[Redo] WARNING: start_frame '{clip.start_frame}' not found in images", flush=True)
+                    
+                    # Parse scenes from config to find correct image for this clip
+                    if config_data.get("dialogue_json"):
+                        try:
+                            dialogue_raw = json.loads(job.dialogue_json)
+                            if isinstance(dialogue_raw, dict) and "lines" in dialogue_raw:
+                                lines = dialogue_raw["lines"]
+                                if clip.clip_index < len(lines):
+                                    line_data = lines[clip.clip_index]
+                                    scene_img_idx = line_data.get("start_image_idx", clip.clip_index % len(images))
+                                    if scene_img_idx < len(images):
+                                        start_frame = images[scene_img_idx]
+                                        start_index = scene_img_idx
+                                        print(f"[Redo] Using scene image from dialogue: {start_frame.name} at index {start_index}", flush=True)
+                        except Exception as e:
+                            print(f"[Redo] Failed to parse dialogue for scene image: {e}", flush=True)
+                    
+                    # Final fallback: use first image
+                    if not start_frame:
+                        print(f"[Redo] Using fallback: images[0] = {images[0].name}", flush=True)
+                        start_frame = images[0]
+                        start_index = 0
                 else:
                     print(f"[Redo] Found start_frame: {start_frame.name} at index {start_index}", flush=True)
                 
-                # For interpolation: use the stored end_frame, or same image if not set
-                if config.use_interpolation:
+                # For interpolation: ONLY use end frame if the clip ORIGINALLY had one
+                # CONTINUE mode clips have end_frame=None and should stay that way
+                if clip.end_frame:
+                    # Clip was created with an end frame - try to find it
                     if end_frame:
-                        # Use the stored end frame
                         print(f"[Redo] Found end_frame: {end_frame.name} at index {end_index}", flush=True)
-                    elif clip.end_frame:
-                        # end_frame name is stored but file not found - try to find it
+                    else:
+                        # end_frame name is stored but file not found - try to find it again
                         print(f"[Redo] WARNING: end_frame '{clip.end_frame}' not found, searching again...", flush=True)
                         for i, img in enumerate(images):
                             if img.name == clip.end_frame:
                                 end_frame = img
                                 end_index = i
                                 break
-                    
-                    if not end_frame:
-                        # No specific end frame - use same image for interpolation
-                        print(f"[Redo] No end_frame found, using start_frame for interpolation", flush=True)
-                        end_frame = start_frame
-                        end_index = start_index
+                        
+                        if not end_frame:
+                            # Still not found - use same image as fallback for interpolation
+                            print(f"[Redo] end_frame still not found, using start_frame for interpolation", flush=True)
+                            end_frame = start_frame
+                            end_index = start_index
                 else:
-                    # No interpolation - no end frame needed
+                    # Clip was created WITHOUT end frame (CONTINUE/FRESH mode)
+                    # Keep it that way - no interpolation for this clip
+                    print(f"[Redo] Clip has no end_frame (CONTINUE/FRESH mode) - no interpolation", flush=True)
                     end_frame = None
                     end_index = start_index
                 
                 print(f"[Redo] FINAL frames: start={start_frame.name if start_frame else None} (idx={start_index}), end={end_frame.name if end_frame else None} (idx={end_index})", flush=True)
                 
-                # Initialize voice profile for consistency
-                voice_id = generator.initialize_voice_profile(start_frame)
+                # Store original scene image for voice profile and subject description
+                original_scene_image = start_frame
+                
+                # CONTINUE MODE: For clips that require previous clip's video frame
+                # Extract the last frame from previous clip's approved video
+                clip_mode = getattr(clip, 'clip_mode', None) or 'blend'
+                requires_previous = getattr(clip, 'requires_previous', False)
+                
+                if clip_mode == "continue" and requires_previous and clip.clip_index > 0:
+                    print(f"[Redo] CONTINUE mode clip - checking for previous clip's video", flush=True)
+                    
+                    # Find previous clip
+                    prev_clip = db.query(Clip).filter(
+                        Clip.job_id == job_id,
+                        Clip.clip_index == clip.clip_index - 1
+                    ).first()
+                    
+                    if prev_clip and prev_clip.approval_status == "approved" and prev_clip.output_filename:
+                        # Get previous clip's video path
+                        prev_video_path = output_dir / prev_clip.output_filename
+                        print(f"[Redo] Previous clip {prev_clip.clip_index + 1} video: {prev_video_path}", flush=True)
+                        
+                        if prev_video_path.exists():
+                            # Extract frame from previous video
+                            try:
+                                import cv2
+                                cap = cv2.VideoCapture(str(prev_video_path))
+                                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                                
+                                # Get frame near the end (8 frames from end)
+                                target_frame = max(0, total_frames - 8)
+                                cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
+                                ret, frame = cap.read()
+                                cap.release()
+                                
+                                if ret:
+                                    # Save extracted frame
+                                    extracted_path = output_dir / f"redo_{clip.clip_index}_extracted.jpg"
+                                    cv2.imwrite(str(extracted_path), frame)
+                                    start_frame = extracted_path
+                                    print(f"[Redo] Extracted frame from previous video: {extracted_path.name}", flush=True)
+                                    add_job_log(db, job_id, f"Redo using extracted frame from clip {prev_clip.clip_index + 1}", "INFO", "redo")
+                                else:
+                                    print(f"[Redo] Failed to extract frame from previous video", flush=True)
+                            except Exception as e:
+                                print(f"[Redo] Error extracting frame: {e}", flush=True)
+                        else:
+                            print(f"[Redo] Previous video not found: {prev_video_path}", flush=True)
+                    else:
+                        print(f"[Redo] Previous clip not approved or has no video", flush=True)
+                
+                # Initialize voice profile for consistency (use original scene image)
+                voice_id = generator.initialize_voice_profile(original_scene_image)
                 add_job_log(db, job_id, f"Voice Profile for redo: {voice_id}", "INFO", "voice")
                 
                 # Determine prompt to use
@@ -470,27 +563,35 @@ class JobWorker:
                 if redo_feedback:
                     add_job_log(db, job_id, f"User feedback for redo: {redo_feedback}", "INFO", "redo")
                 
+                # Store clip values before leaving db context
+                clip_dialogue_text = clip.dialogue_text
+                clip_dialogue_id = clip.dialogue_id
+                clip_clip_index = clip.clip_index
+                clip_generation_attempt = clip.generation_attempt
+                clip_use_logged_params = clip.use_logged_params
+                
                 self._broadcast_event(job_id, {
                     "type": "redo_started",
                     "clip_id": clip_id,
-                    "clip_index": clip.clip_index,
-                    "attempt": clip.generation_attempt,
-                    "use_logged_params": clip.use_logged_params,
+                    "clip_index": clip_clip_index,
+                    "attempt": clip_generation_attempt,
+                    "use_logged_params": clip_use_logged_params,
                     "redo_feedback": redo_feedback,
                 })
             
             # Generate clip (outside db context to avoid long transactions)
-            # Use start_frame as scene_image for redo (it's the original scene image)
+            # Use original_scene_image for scene_image (for voice profile, subject description)
+            # Use start_frame for actual generation (may be extracted frame for CONTINUE mode)
             result = generator.generate_single_clip(
                 start_frame=start_frame,
                 end_frame=end_frame,
-                dialogue_line=clip.dialogue_text,
-                dialogue_id=clip.dialogue_id,
-                clip_index=clip.clip_index,
+                dialogue_line=clip_dialogue_text,
+                dialogue_id=clip_dialogue_id,
+                clip_index=clip_clip_index,
                 output_dir=output_dir,
                 images_list=images,
                 current_end_index=end_index,
-                scene_image=start_frame,  # For redo, use start_frame as scene image
+                scene_image=original_scene_image,  # Original scene image for analysis
                 redo_feedback=redo_feedback,  # Pass user's feedback
                 generation_mode=config.generation_mode,  # Pass generation mode for blacklist scoping
             )
@@ -710,7 +811,7 @@ class JobWorker:
                 
                 add_job_log(
                     db, job_id, 
-                    f"🔑 {working_now} working API keys available. Running {config.parallel_clips} parallel clips",
+                    f"🔑 {working_now} working API keys available ({rate_limited_count} rate-limited). Running {config.parallel_clips} parallel clips",
                     "INFO", "system"
                 )
                 
@@ -1145,6 +1246,8 @@ class JobWorker:
                     status=initial_status,
                     start_frame=start_frame_name,
                     end_frame=end_frame_name,
+                    clip_mode=info.get("clip_mode", "blend"),
+                    requires_previous=info.get("requires_previous", False),
                 )
                 db.add(clip)
             
@@ -1152,6 +1255,10 @@ class JobWorker:
         
         # Build clip_frames list for processing
         clip_frames = []
+        # CRITICAL: Store original frame names BEFORE any modifications
+        # These will be used for DB storage - NEVER overwritten with extracted frames
+        original_clip_frames = {}
+        
         for i, info in enumerate(clip_info):
             start_frame = images[info["start_idx"]]
             
@@ -1160,6 +1267,12 @@ class JobWorker:
                 end_frame = images[info["end_idx"]]
             else:
                 end_frame = None
+            
+            # Store ORIGINAL frame names (these NEVER change)
+            original_clip_frames[i] = {
+                "start_frame": start_frame.name if hasattr(start_frame, 'name') else str(start_frame),
+                "end_frame": end_frame.name if end_frame and hasattr(end_frame, 'name') else None,
+            }
             
             clip_frames.append({
                 "start_index": info["start_idx"],
@@ -1171,6 +1284,8 @@ class JobWorker:
                 "scene_index": info["scene_index"],
                 "original_scene_idx": info["image_idx"],  # Original scene image index for subject description
             })
+        
+        print(f"[Worker] Original clip frames preserved: {original_clip_frames}", flush=True)
         
         # VALIDATION: Prevent same-frame assignments (start == end)
         # EXCEPTION: Single image mode WITH interpolation - same frame is intentional
@@ -1830,6 +1945,12 @@ class JobWorker:
                             clip.approval_status = "pending_review"
                             clip.output_filename = new_filename
                             clip.prompt_text = result.get("prompt_text")
+                            
+                            # Track video path for CONTINUE mode chaining
+                            if result.get("output_path"):
+                                video_path = str(result["output_path"])
+                                approved_clip_videos[clip_index] = video_path
+                                completed_clip_videos[clip_index] = video_path
                         elif result.get("skipped") and result.get("skip_reason") == "celebrity_filter":
                             # Celebrity filter triggered - mark as skipped
                             clip.status = ClipStatus.SKIPPED.value
@@ -2058,19 +2179,10 @@ class JobWorker:
                             print(f"[Worker] Clip {clip_index}: Available images: {available}", flush=True)
                             print(f"[Worker] Clip {clip_index}: Blacklisted: {[img.name for img in generator.blacklist]}", flush=True)
                     
-                    # Update DB with new start frame
-                    with get_db() as db:
-                        clip = db.query(Clip).filter(
-                            Clip.job_id == job_id,
-                            Clip.clip_index == clip_index
-                        ).first()
-                        if clip:
-                            clip.start_frame = current_start_frame.name if hasattr(current_start_frame, 'name') else str(current_start_frame)
-                            # Also update end frame in DB
-                            new_end = clip_frames[clip_index].get("end_frame")
-                            if new_end:
-                                clip.end_frame = new_end.name if hasattr(new_end, 'name') else str(new_end)
-                            db.commit()
+                    # NOTE: Do NOT update clip.start_frame/end_frame here!
+                    # Clips are created with original frame names and those should be preserved.
+                    # The current_start_frame may be an extracted frame for CONTINUE mode,
+                    # which is correct for generation but should NOT be stored in DB.
                 
                 # Process this clip synchronously
                 print(f"[Worker] Sequential: Processing clip {clip_index + 1}/{len(clip_frames)}", flush=True)
@@ -2184,15 +2296,18 @@ class JobWorker:
                     if clip:
                         clip.status = ClipStatus.GENERATING.value
                         clip.started_at = datetime.utcnow()
-                        clip.start_frame = start_frame.name if hasattr(start_frame, 'name') else str(start_frame)
-                        clip.end_frame = end_frame.name if end_frame and hasattr(end_frame, 'name') else None
+                        # NOTE: Do NOT update start_frame/end_frame here!
+                        # They were set correctly at clip creation and should be preserved.
+                        # The start_frame/end_frame variables may be modified for CONTINUE mode.
                         db.commit()
                 
+                # Broadcast with original frame names (for UI display)
+                orig_frames = original_clip_frames.get(clip_index, {})
                 self._broadcast_event(job_id, {
                     "type": "clip_started",
                     "clip_index": clip_index,
-                    "start_frame": start_frame.name if hasattr(start_frame, 'name') else str(start_frame),
-                    "end_frame": end_frame.name if end_frame and hasattr(end_frame, 'name') else None,
+                    "start_frame": orig_frames.get("start_frame", ""),
+                    "end_frame": orig_frames.get("end_frame"),
                 })
                 
                 # Track the confirmed frames via callback
@@ -2385,17 +2500,9 @@ class JobWorker:
                     final_end = clip_frames[clip_index].get("end_frame")
                     print(f"[Worker] DEBUG Clip {clip_index} FINAL: {final_start.name if hasattr(final_start, 'name') else final_start} → {final_end.name if final_end and hasattr(final_end, 'name') else final_end}", flush=True)
                     
-                    # Update DB with new frames
-                    with get_db() as db:
-                        clip = db.query(Clip).filter(
-                            Clip.job_id == job_id,
-                            Clip.clip_index == clip_index
-                        ).first()
-                        if clip:
-                            clip.start_frame = clip_frames[clip_index]["start_frame"].name if hasattr(clip_frames[clip_index]["start_frame"], 'name') else str(clip_frames[clip_index]["start_frame"])
-                            if clip_frames[clip_index].get("end_frame"):
-                                clip.end_frame = clip_frames[clip_index]["end_frame"].name if hasattr(clip_frames[clip_index]["end_frame"], 'name') else str(clip_frames[clip_index]["end_frame"])
-                            db.commit()
+                    # NOTE: Do NOT update clip.start_frame/end_frame here!
+                    # They were set correctly at clip creation. The clip_frames values
+                    # may be modified for CONTINUE mode chaining, but DB should preserve originals.
                 
                 # Log confirmed frames to job log for debugging
                 with get_db() as db:
@@ -3068,10 +3175,14 @@ class JobWorker:
                         clip.started_at = datetime.utcnow()
                         db.commit()
                         
+                        # Get pool status for logging
+                        from config import key_pool
+                        pool_status = key_pool.get_pool_status_summary(generator.api_keys)
+                        
                         if is_redo:
-                            add_job_log(db, job_id, f"🔄 Processing redo for clip {clip_index + 1}", "INFO", "redo")
+                            add_job_log(db, job_id, f"🔄 Processing redo for clip {clip_index + 1} (🔑 {pool_status['available']} keys working, {pool_status['rate_limited']} rate-limited)", "INFO", "redo")
                         else:
-                            add_job_log(db, job_id, f"▶️ Processing clip {clip_index + 1} (predecessor approved)", "INFO", "approval")
+                            add_job_log(db, job_id, f"▶️ Processing clip {clip_index + 1} (predecessor approved) (🔑 {pool_status['available']} keys working, {pool_status['rate_limited']} rate-limited)", "INFO", "approval")
                 
                 self._broadcast_event(job_id, {
                     "type": "clip_started",
@@ -3080,9 +3191,47 @@ class JobWorker:
                     "end_frame": frames["end_frame"].name if frames["end_frame"] and hasattr(frames["end_frame"], 'name') else None,
                 })
                 
+                # CONTINUE mode: Extract frame from previous clip's video
+                actual_start_frame = frames["start_frame"]
+                original_scene_image = frames["start_frame"]  # Keep original for scene_image param
+                clip_mode = frames.get("clip_mode", "blend")
+                requires_previous = frames.get("requires_previous", False)
+                
+                if clip_mode == "continue" and requires_previous and clip_index > 0:
+                    prev_idx = clip_index - 1
+                    print(f"[Worker] process_clip_async: Clip {clip_index} is CONTINUE mode, checking for previous clip video", flush=True)
+                    
+                    # Look up previous clip's video from approved_clip_videos OR from database
+                    prev_video = approved_clip_videos.get(prev_idx)
+                    
+                    if not prev_video:
+                        # Try to get from database
+                        with get_db() as db:
+                            prev_clip = db.query(Clip).filter(
+                                Clip.job_id == job_id,
+                                Clip.clip_index == prev_idx
+                            ).first()
+                            if prev_clip and prev_clip.approval_status == "approved" and prev_clip.output_filename:
+                                prev_video = str(output_dir / prev_clip.output_filename)
+                                approved_clip_videos[prev_idx] = prev_video  # Cache it
+                                print(f"[Worker] process_clip_async: Got previous video from DB: {prev_video}", flush=True)
+                    
+                    if prev_video and Path(prev_video).exists():
+                        print(f"[Worker] process_clip_async: Extracting frame from {prev_video}", flush=True)
+                        extracted = extract_frame_from_video(Path(prev_video), frame_offset=-8)
+                        if extracted:
+                            # Enhance with Nano Banana Pro
+                            enhanced = enhance_frame_with_nano_banana(extracted, original_scene_image)
+                            actual_start_frame = enhanced
+                            print(f"[Worker] process_clip_async: Using {'enhanced' if enhanced != extracted else 'extracted'} frame", flush=True)
+                        else:
+                            print(f"[Worker] process_clip_async: Frame extraction failed, using original", flush=True)
+                    else:
+                        print(f"[Worker] process_clip_async: Previous video not available (prev_video={prev_video}), using original", flush=True)
+                
                 try:
                     result = generator.generate_single_clip(
-                        start_frame=frames["start_frame"],
+                        start_frame=actual_start_frame,
                         end_frame=frames["end_frame"],
                         dialogue_line=line_data["text"],
                         dialogue_id=line_data["id"],
@@ -3090,6 +3239,7 @@ class JobWorker:
                         output_dir=output_dir,
                         images_list=images,
                         current_end_index=frames["end_index"] if frames["end_index"] is not None else frames["start_index"],
+                        scene_image=original_scene_image,  # Pass original for voice/analysis
                         redo_feedback=redo_feedback,
                         generation_mode=generation_mode,
                     )
@@ -3130,7 +3280,11 @@ class JobWorker:
                             clip.approval_status = "pending_review"
                             completed += 1
                             if result.get("output_path"):
-                                completed_clip_videos[clip_index] = str(result["output_path"])
+                                video_path = str(result["output_path"])
+                                completed_clip_videos[clip_index] = video_path
+                                # Also track in approved_clip_videos for CONTINUE mode chaining
+                                # Even though this clip isn't approved yet, we need the path for subsequent clips
+                                approved_clip_videos[clip_index] = video_path
                         else:
                             # Check if this is a "no keys" situation - re-queue as redo
                             if result.get("no_keys") or result.get("should_pause"):

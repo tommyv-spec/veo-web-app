@@ -188,6 +188,10 @@ class Clip(Base):
     start_frame = Column(String(255), nullable=True)
     end_frame = Column(String(255), nullable=True)
     
+    # Clip mode for redo support (blend, continue, fresh)
+    clip_mode = Column(String(20), default="blend")
+    requires_previous = Column(Boolean, default=False)  # True if this clip needs previous clip's video
+    
     # Generation parameters (for regeneration)
     prompt_text = Column(Text, nullable=True)
     

@@ -68,6 +68,16 @@ class ErrorHandler:
         r"too.?many.?requests",
     ]
     
+    # Transient errors - model overloaded, should retry with same key
+    TRANSIENT_PATTERNS = [
+        r"overloaded",
+        r"'code':\s*14",
+        r"code:\s*14",
+        r"UNAVAILABLE",
+        r"temporarily",
+        r"try.?again.?later",
+    ]
+    
     CELEBRITY_PATTERNS = [
         r"celebrity",
         r"likenesses",
@@ -167,6 +177,17 @@ class ErrorHandler:
         details: Dict
     ) -> Optional[VeoError]:
         """Classify error by string pattern matching"""
+        
+        # Transient errors (model overloaded) - should retry with SAME key
+        if self._matches_patterns(error_str, self.TRANSIENT_PATTERNS):
+            return VeoError(
+                code=ErrorCode.RATE_LIMIT,  # Use RATE_LIMIT code but different message
+                message="Model temporarily overloaded (code 14)",
+                user_message="The model is temporarily overloaded. Retrying...",
+                details={**details, "transient": True},
+                recoverable=True,
+                suggestion="Wait a moment - this is a temporary service issue."
+            )
         
         # Rate limit
         if self._matches_patterns(error_str, self.RATE_LIMIT_PATTERNS):

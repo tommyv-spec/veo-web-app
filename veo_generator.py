@@ -956,13 +956,30 @@ def get_mime_type(path: Path) -> str:
 
 
 def is_rate_limit_error(exception: Exception) -> bool:
-    """Check if exception is a rate limit error or no-keys-available error"""
+    """Check if exception is a rate limit error, no-keys-available error, or transient overload error"""
     s = str(exception).lower()
     # Standard rate limit errors
     if "429" in s or "resource_exhausted" in s:
         return True
     # Our custom "no keys available" error from _get_client()
     if "no api keys available" in s or "all keys are rate-limited" in s:
+        return True
+    # Model overloaded / service unavailable (gRPC code 14 = UNAVAILABLE)
+    if "overloaded" in s or "'code': 14" in s or "code: 14" in s:
+        return True
+    # Other transient errors that should trigger retry
+    if "unavailable" in s or "temporarily" in s:
+        return True
+    return False
+
+
+def is_transient_error(exception: Exception) -> bool:
+    """Check if exception is a transient error that should trigger retry (not key rotation)"""
+    s = str(exception).lower()
+    # Model overloaded - retry with same key after backoff
+    if "overloaded" in s or "'code': 14" in s or "code: 14" in s:
+        return True
+    if "unavailable" in s or "temporarily" in s:
         return True
     return False
 
@@ -1379,6 +1396,8 @@ class VeoGenerator:
         if result:
             key_index, api_key = result
             self._current_key_index = key_index
+            key_suffix = api_key[-8:]
+            vlog(f"[VeoGenerator] Using key {key_index + 1} (...{key_suffix})")
             return genai.Client(api_key=api_key)
         
         # No keys available - all are rate-limited or invalid
@@ -1504,6 +1523,10 @@ class VeoGenerator:
         
         # Check if any reserved keys are available BEFORE starting attempts
         available, rate_limited, total = self._get_pool_status()
+        
+        # Log pool status at clip start
+        vlog(f"[Clip {clip_index}] Key pool: {available} working, {rate_limited} rate-limited (of {total} total)")
+        
         if available == 0 and rate_limited > 0:
             vlog(f"[VeoGenerator] ⚠️ All {total} keys are rate-limited. Will wait for recovery...")
             # Don't fail immediately - get_any_available_key will handle this
@@ -1744,7 +1767,22 @@ class VeoGenerator:
                     
                 except Exception as e:
                     vlog(f"[VeoGenerator] Submit error: {str(e)[:200]}")
-                    if is_rate_limit_error(e) and submit_attempt < self.config.max_retries_submit:
+                    
+                    # Check for transient errors (model overloaded) - retry with SAME key
+                    if is_transient_error(e) and submit_attempt < self.config.max_retries_submit:
+                        # Model overloaded - NOT a key issue, don't rotate keys
+                        backoff_time = min(5 * (submit_attempt + 1), 30)  # 5s, 10s, 15s... cap at 30s
+                        vlog(f"[VeoGenerator] Model overloaded, waiting {backoff_time}s before retry (attempt {submit_attempt + 1})...")
+                        self._emit_progress(
+                            clip_index, "retrying",
+                            f"Model temporarily overloaded, retrying in {backoff_time}s...",
+                            {"attempt": submit_attempt + 1, "backoff": backoff_time}
+                        )
+                        time.sleep(backoff_time)
+                        continue
+                    
+                    # Check for rate limit errors - rotate keys
+                    if is_rate_limit_error(e) and not is_transient_error(e) and submit_attempt < self.config.max_retries_submit:
                         # Mark current key as rate-limited in KeyPoolManager
                         self._rotate_key(block_current=True)
                         
@@ -1769,7 +1807,7 @@ class VeoGenerator:
                         
                         self._emit_progress(
                             clip_index, "rate_limited",
-                            f"Rate limited, trying next key... ({available}/{total} available)",
+                            f"Key rate-limited, switching... ({available} working, {rate_limited} rate-limited)",
                             {"available": available, "rate_limited": rate_limited, "total": total}
                         )
                         
@@ -1842,8 +1880,28 @@ class VeoGenerator:
                     
             except Exception as e:
                 error_str = str(e)
+                # Check for transient errors (model overloaded) - wait and retry
+                if is_transient_error(e):
+                    vlog(f"[Clip {clip_index}] Model overloaded during poll - waiting 10s before retry...")
+                    self._emit_progress(
+                        clip_index, "poll_retry",
+                        f"Model temporarily overloaded, retrying...",
+                        {"error": error_str[:100]}
+                    )
+                    time.sleep(10)
+                    # Try polling again with same key
+                    try:
+                        while not operation.done:
+                            if self.cancelled:
+                                return result
+                            time.sleep(self.config.poll_interval_sec)
+                            operation = submit_client.operations.get(operation)
+                    except Exception as retry_e:
+                        vlog(f"[Clip {clip_index}] Poll retry also failed: {type(retry_e).__name__}: {retry_e}")
+                        failed_end_frames.append(actual_end_frame)
+                        continue
                 # Check if it's a rate limit error during polling - wait and retry with same key
-                if is_rate_limit_error(e):
+                elif is_rate_limit_error(e):
                     vlog(f"[Clip {clip_index}] Rate limit during poll - waiting 30s before retry...")
                     self._emit_progress(
                         clip_index, "poll_rate_limit",
